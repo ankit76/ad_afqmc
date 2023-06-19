@@ -32,14 +32,6 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
   ham_data = ham.rot_ham(ham_data)
   ham_data = ham.prop_ham(ham_data, propagator.dt)
 
-  global_block_weights = None
-  global_block_energies = None
-  global_block_observables = None
-  if rank == 0:
-    global_block_weights = np.zeros(size * propagator.n_blocks)
-    global_block_energies = np.zeros(size * propagator.n_blocks)
-    global_block_observables = np.zeros(size * propagator.n_blocks)
-  
   prop_data = {}
   norb = ham.norb
   nelec  = ham.nelec
@@ -67,7 +59,7 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
     print(f"# {n:5d}      {e_estimate:.9e}     {init_time:.2e} ")
   comm.Barrier()
 
-  propagator_eq = propagation.propagator(propagator.dt, propagator.n_steps, n_blocks=50)
+  propagator_eq = propagation.propagator(propagator.dt, n_steps=propagator.n_steps, n_blocks=25, n_sr_blocks=2)
 
   for n in range(1, neql+1):
     block_energy_n, prop_data = sampler.propagate_phaseless(ham, ham_data, propagator_eq, prop_data, trial)
@@ -85,12 +77,11 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
     prop_data['key'], subkey = random.split(prop_data['key'])
     zeta = random.uniform(subkey)
     prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration_mpi(prop_data['walkers'], prop_data['weights'], zeta, comm)
-    e_estimate = 0.9 * e_estimate + 0.1 * block_energy_n
+    prop_data['e_estimate'] = 0.9 * prop_data['e_estimate'] + 0.1 * block_energy_n[0]
 
     comm.Barrier()
     if rank == 0:
-      print(
-          f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ", flush=True)
+      print(f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ", flush=True)
     comm.Barrier()
 
   local_large_deviations = np.array(0)
@@ -101,6 +92,14 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
     print("#\n# Sampling sweeps:")
     print("#  Iter        Mean energy          Stochastic error       Mean observable       Walltime")
   comm.Barrier()
+
+  global_block_weights = None
+  global_block_energies = None
+  global_block_observables = None
+  if rank == 0:
+    global_block_weights = np.zeros(size * propagator.n_ad_blocks)
+    global_block_energies = np.zeros(size * propagator.n_ad_blocks)
+    global_block_observables = np.zeros(size * propagator.n_ad_blocks)
 
   propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad(ham, ham_data, x, y, propagator, z, trial)
   prop_data_tangent = {}
@@ -143,9 +142,9 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
     prop_data['key'], subkey = random.split(prop_data['key'])
     zeta = random.uniform(subkey)
     prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration_mpi(prop_data['walkers'], prop_data['weights'], zeta, comm)
-    e_estimate = 0.9 * e_estimate + 0.1 * block_energy_n
+    prop_data['e_estimate'] = 0.9 * prop_data['e_estimate'] + 0.1 * block_energy_n
 
-    if n % (max(propagator.n_blocks//10, 1)) == 0:
+    if n % (max(propagator.n_ad_blocks//10, 1)) == 0:
       comm.Barrier()
       if rank == 0:
         e_afqmc, energy_error = stat_utils.blocking_analysis(global_block_weights[:(n+1) * size], global_block_energies[:(n+1) * size], neql=0)
@@ -154,7 +153,7 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
           print(f" {n:5d}      {e_afqmc:.9e}        {energy_error:.9e}        {obs_afqmc:.9e}       {time.time() - init:.2e} ", flush=True)
         else:
           print(f" {n:5d}      {e_afqmc:.9e}                -              {obs_afqmc:.9e}       {time.time() - init:.2e} ", flush=True)
-        np.savetxt('samples_jax.dat', np.stack((global_block_weights[:(n+1) * size], global_block_energies[:(n+1) * size], global_block_observables[:(n+1) * size])).T)
+        np.savetxt('samples_raw.dat', np.stack((global_block_weights[:(n+1) * size], global_block_energies[:(n+1) * size], global_block_observables[:(n+1) * size])).T)
       comm.Barrier()
 
   global_large_deviations = np.array(0)
@@ -199,7 +198,7 @@ def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
     pickle.dump(options, f)
   if script is None:
     path = os.path.abspath(__file__)
-    dir_path = os.path.dirname(path)  
+    dir_path = os.path.dirname(path)
     script = f'{dir_path}/mpi_jax.py'
   if mpi_prefix is None:
     mpi_prefix = "mpirun "
@@ -208,4 +207,4 @@ def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
   os.system(f'export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script}')
 
 
-  
+

@@ -29,8 +29,8 @@ nelec = nelec // 2
 options['dt'] = options.get('dt', 0.01)
 options['n_walkers'] = options.get('n_walkers', 50)
 options['n_steps'] = options.get('n_steps', 50)
-options['n_sr_blocks'] = options.get('n_sr_blocks', 50)
-options['n_ad_blocks'] = options.get('n_ad_blocks', 2)
+options['n_sr_blocks'] = options.get('n_sr_blocks', 1)
+options['n_ad_blocks'] = options.get('n_ad_blocks', 50)
 options['n_blocks'] = options.get('n_blocks', 50)
 options['seed'] = options.get('seed', np.random.randint(1, 1e6))
 options['n_eql'] = options.get('n_eql', 1)
@@ -41,7 +41,7 @@ ham_data['h1'] = h1
 ham_data['chol'] = chol.reshape(nchol, -1)
 ham = hamiltonian.hamiltonian(nmo, nelec, nchol)
 
-prop = propagation.propagator(options['dt'], options['n_steps'], options['n_sr_blocks'], options['n_ad_blocks'], options['n_blocks'])
+prop = propagation.propagator(options['dt'], options['n_steps'], options['n_blocks'], options['n_sr_blocks'], options['n_ad_blocks'])
 
 trial = wavefunctions.rhf(nelec)
 

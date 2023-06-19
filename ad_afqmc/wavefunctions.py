@@ -74,8 +74,7 @@ class rhf():
     h2 = h2.reshape((h2.shape[0], h1.shape[0], h1.shape[0]))
     nelec = self.nelec
     h1 = (h1 + h1.T) / 2.
-    #nelec = nelec_proxy.shape[0]
-    
+
     def scanned_fun(carry, x):
       dm = carry
       f = jnp.einsum('gij,ik->gjk', h2, dm)
@@ -91,14 +90,14 @@ class rhf():
       e_sort = mo_energy[e_idx]
       nmo = mo_energy.size
       mo_occ = jnp.zeros(nmo)
-      nocc = nelec // 2
+      nocc = nelec
       mo_occ = mo_occ.at[e_idx[:nocc]].set(2)
       mocc = mo_coeff[:, jnp.nonzero(mo_occ, size=nocc)[0]]
       dm = (mocc * mo_occ[jnp.nonzero(mo_occ, size=nocc)[0]]).dot(mocc.T)
       return dm, mo_coeff
 
     norb = h1.shape[0]
-    dm0 = 2 * jnp.eye(norb, nelec//2).dot(jnp.eye(norb, nelec//2).T)
+    dm0 = 2 * jnp.eye(norb, nelec).dot(jnp.eye(norb, nelec).T)
     _, mo_coeff = lax.scan(scanned_fun, dm0, None, length=self.n_opt_iter)
 
     return mo_coeff[-1]

@@ -17,8 +17,8 @@ print = partial(print, flush=True)
 class propagator():
   dt: float = 0.01
   n_steps: int = 50
-  n_blocks: int = 50  
-  n_sr_blocks: int = 2
+  n_blocks: int = 50
+  n_sr_blocks: int = 1
   n_ad_blocks: int = 50
 
   # defining this separately because calculating vhs for a batch seems to be faster
@@ -63,7 +63,7 @@ class propagator():
     shifted_fields = fields - field_shifts
     shift_term = jnp.sum(shifted_fields * ham['mf_shifts'], axis=1)
     fb_term = jnp.sum(fields * field_shifts - field_shifts * field_shifts / 2., axis=1)
-    
+
     prop['walkers'] = self.apply_propagator_vmap(ham, prop['walkers'], shifted_fields)
 
     overlaps_new = trial.calc_overlap_vmap(prop['walkers'])
@@ -71,10 +71,10 @@ class propagator():
     imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
     imp_fun_phaseless = jnp.where(jnp.isnan(imp_fun_phaseless), 0., imp_fun_phaseless)
     imp_fun_phaseless = jnp.where(imp_fun_phaseless < 1.e-3, 0., imp_fun_phaseless) # type: ignore
-    imp_fun_phaseless = jnp.where(imp_fun_phaseless > 100., 0., imp_fun_phaseless) 
+    imp_fun_phaseless = jnp.where(imp_fun_phaseless > 100., 0., imp_fun_phaseless)
     prop['weights'] = imp_fun_phaseless * prop['weights']
     prop['weights'] = jnp.where(prop['weights'] > 100., 0., prop['weights'])
-    prop['pop_control_ene_shift'] = prop['e_estimate'] - 0.1 * jnp.log(jnp.sum(prop['weights']) / prop['walkers'].shape[0]) / self.dt # type: ignore
+    prop['pop_control_ene_shift'] = prop['e_estimate'] - 0.1 * jnp.array(jnp.log(jnp.sum(prop['weights']) / prop['walkers'].shape[0]) / self.dt) # type: ignore
     prop['overlaps'] = overlaps_new
     return prop
 
