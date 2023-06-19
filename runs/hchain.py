@@ -48,7 +48,8 @@ for nH in [ 4 ]:
     fh5['op'] = h1.flatten()
 
   pyscf_interface.prep_afqmc(mf)
-  driver.run_afqmc(nproc=2)
+  options = {'n_blocks': 25, 'n_sr_blocks': 2, 'n_ad_blocks': 40, 'n_walkers': 50, 'seed': 98}
+  driver.run_afqmc(options=options)
 
   print('\nrelaxed finite difference h1e:')
   dE = 1.e-5
