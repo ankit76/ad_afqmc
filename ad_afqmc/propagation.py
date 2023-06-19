@@ -16,10 +16,16 @@ print = partial(print, flush=True)
 @dataclass
 class propagator():
   dt: float = 0.01
-  n_steps: int = 50
-  n_blocks: int = 50
+  n_prop_steps: int = 50
+  n_ene_blocks: int = 50
   n_sr_blocks: int = 1
-  n_ad_blocks: int = 50
+  n_blocks: int = 50
+  ad_q: bool = True
+
+  def __post_init__(self):
+    if not self.ad_q:
+      self.n_ene_blocks = 5
+      self.n_sr_blocks = 10
 
   # defining this separately because calculating vhs for a batch seems to be faster
   #@checkpoint
@@ -79,7 +85,7 @@ class propagator():
     return prop
 
   def __hash__(self):
-    return hash((self.dt, self.n_steps, self.n_sr_blocks, self.n_ad_blocks, self.n_blocks))
+    return hash((self.dt, self.n_prop_steps, self.n_ene_blocks, self.n_sr_blocks, self.n_blocks))
 
 if __name__ == "__main__":
   prop = propagator()

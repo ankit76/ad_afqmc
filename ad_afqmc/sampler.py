@@ -24,7 +24,7 @@ def _step_scan(prop_data, fields, ham_data, propagator, trial):
 @partial(jit, static_argnums=(3,4))
 def _block_scan(prop_data, _x, ham_data, propagator, trial):
   prop_data['key'], subkey = random.split(prop_data['key'])
-  fields = random.normal(subkey, shape=(propagator.n_steps, prop_data['walkers'].shape[0], ham_data['chol'].shape[0]))
+  fields = random.normal(subkey, shape=(propagator.n_prop_steps, prop_data['walkers'].shape[0], ham_data['chol'].shape[0]))
   _step_scan_wrapper = lambda x, y: _step_scan(x, y, ham_data, propagator, trial)
   prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
   prop_data['n_killed_walkers'] += prop_data['weights'].size - jnp.count_nonzero(prop_data['weights'])
@@ -40,7 +40,7 @@ def _block_scan(prop_data, _x, ham_data, propagator, trial):
 @partial(jit, static_argnums=(3,4))
 def _sr_block_scan(prop_data, _x, ham_data, propagator, trial):
   _block_scan_wrapper = lambda x, y: _block_scan(x, y, ham_data, propagator, trial)
-  prop_data, (block_energy, block_weight) = lax.scan(_block_scan_wrapper, prop_data, None, length=propagator.n_blocks)
+  prop_data, (block_energy, block_weight) = lax.scan(checkpoint(_block_scan_wrapper), prop_data, None, length=propagator.n_ene_blocks)
   prop_data['key'], subkey = random.split(prop_data['key'])
   zeta = random.uniform(subkey)
   prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration(prop_data['walkers'], prop_data['weights'], zeta)
@@ -55,11 +55,12 @@ def _ad_block(prop_data, ham_data, propagator, trial):
   prop_data['n_killed_walkers'] = 0
   prop_data['pop_control_ene_shift'] = prop_data['e_estimate']
   prop_data, (block_energy, block_weight) = lax.scan(_sr_block_scan_wrapper, prop_data, None, length=propagator.n_sr_blocks)
-  prop_data['n_killed_walkers'] /= (propagator.n_blocks * prop_data['walkers'].shape[0])
+  prop_data['n_killed_walkers'] /= (propagator.n_sr_blocks * propagator.n_ene_blocks * prop_data['walkers'].shape[0])
   return prop_data, (block_energy, block_weight)
 
 @partial(jit, static_argnums=(0,4,6))
 def propagate_phaseless_ad(ham, ham_data, coupling, observable_op, propagator, prop_data, trial):
+  observable_op = (observable_op + observable_op.T) / 2.
   ham_data['h1'] = ham_data['h1'] + coupling * observable_op
   mo_coeff = trial.optimize_orbs(ham_data)
   ham_data = ham.rot_orbs(ham_data, mo_coeff)
@@ -81,6 +82,7 @@ def propagate_phaseless(ham, ham_data, propagator, prop_data, trial):
   prop_data['overlaps'] = trial.calc_overlap_vmap(prop_data['walkers'])
   prop_data['n_killed_walkers'] = 0
   prop_data, (block_energy, block_weight) = lax.scan(_sr_block_scan_wrapper, prop_data, None, length=propagator.n_sr_blocks)
-  prop_data['n_killed_walkers'] /= (propagator.n_blocks * prop_data['walkers'].shape[0])
+  prop_data['n_killed_walkers'] /= (propagator.n_sr_blocks *
+                                    propagator.n_ene_blocks * prop_data['walkers'].shape[0])
 
   return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data

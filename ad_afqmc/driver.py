@@ -59,7 +59,7 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
     print(f"# {n:5d}      {e_estimate:.9e}     {init_time:.2e} ")
   comm.Barrier()
 
-  propagator_eq = propagation.propagator(propagator.dt, n_steps=propagator.n_steps, n_blocks=25, n_sr_blocks=2)
+  propagator_eq = propagation.propagator(propagator.dt, n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
 
   for n in range(1, neql+1):
     block_energy_n, prop_data = sampler.propagate_phaseless(ham, ham_data, propagator_eq, prop_data, trial)
@@ -97,9 +97,9 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
   global_block_energies = None
   global_block_observables = None
   if rank == 0:
-    global_block_weights = np.zeros(size * propagator.n_ad_blocks)
-    global_block_energies = np.zeros(size * propagator.n_ad_blocks)
-    global_block_observables = np.zeros(size * propagator.n_ad_blocks)
+    global_block_weights = np.zeros(size * propagator.n_blocks)
+    global_block_energies = np.zeros(size * propagator.n_blocks)
+    global_block_observables = np.zeros(size * propagator.n_blocks)
 
   propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad(ham, ham_data, x, y, propagator, z, trial)
   prop_data_tangent = {}
@@ -109,7 +109,7 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
     else:
       prop_data_tangent[x] = np.zeros_like(prop_data[x])
 
-  for n in range(propagator.n_ad_blocks):
+  for n in range(propagator.n_blocks):
     coupling = 0.
     block_energy_n, block_observable_n, prop_data = jvp(propagate_phaseless_wrapper, (coupling, observable_op, prop_data), (1., 0. * observable_op, prop_data_tangent), has_aux=True)
     if np.isnan(block_observable_n):
@@ -144,7 +144,7 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
     prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration_mpi(prop_data['walkers'], prop_data['weights'], zeta, comm)
     prop_data['e_estimate'] = 0.9 * prop_data['e_estimate'] + 0.1 * block_energy_n
 
-    if n % (max(propagator.n_ad_blocks//10, 1)) == 0:
+    if n % (max(propagator.n_blocks//10, 1)) == 0:
       comm.Barrier()
       if rank == 0:
         e_afqmc, energy_error = stat_utils.blocking_analysis(global_block_weights[:(n+1) * size], global_block_energies[:(n+1) * size], neql=0)
