@@ -16,9 +16,13 @@ with h5py.File('FCIDUMP_chol', 'r') as fh5:
   h1 = jnp.array(fh5.get('hcore')).reshape(nmo, nmo)
   chol = jnp.array(fh5.get('chol')).reshape(-1, nmo, nmo)
 
-with h5py.File('observable.h5', 'r') as fh5:
-  [ observable_constant ] = fh5['constant']
-  observable_op = np.array(fh5.get('op')).reshape(nmo, nmo)
+try:
+  with h5py.File('observable.h5', 'r') as fh5:
+    [ observable_constant ] = fh5['constant']
+    observable_op = np.array(fh5.get('op')).reshape(nmo, nmo)
+    observable = [ observable_op, observable_constant ]
+except:
+  observable = None
 
 with open('options.bin', 'rb') as f:
   options = pickle.load(f)
@@ -34,6 +38,10 @@ options['n_sr_blocks'] = options.get('n_sr_blocks', 1)
 options['n_blocks'] = options.get('n_blocks', 50)
 options['seed'] = options.get('seed', np.random.randint(1, 1e6))
 options['n_eql'] = options.get('n_eql', 1)
+options['ad_mode'] = options.get('ad_mode', None)
+assert options['ad_mode'] in [None, 'forward', 'reverse']
+options['orbital_rotation'] = options.get('orbital_rotation', True)
+options['do_sr'] = options.get('do_sr', True)
 
 ham_data = {}
 ham_data['h0'] = h0
@@ -41,7 +49,8 @@ ham_data['h1'] = h1
 ham_data['chol'] = chol.reshape(nchol, -1)
 ham = hamiltonian.hamiltonian(nmo, nelec, nchol)
 
-prop = propagation.propagator(options['dt'], options['n_prop_steps'], options['n_ene_blocks'], options['n_sr_blocks'], options['n_blocks'])
+ad_q = (options['ad_mode'] != None)
+prop = propagation.propagator(options['dt'], options['n_prop_steps'], options['n_ene_blocks'], options['n_sr_blocks'], options['n_blocks'], ad_q)
 
 trial = wavefunctions.rhf(nelec)
 
@@ -56,7 +65,7 @@ if rank == 0:
 import time
 init = time.time()
 comm.Barrier()
-driver.afqmc(ham_data, ham, prop, trial, [ observable_op, observable_constant ], options)
+driver.afqmc(ham_data, ham, prop, trial, observable, options)
 comm.Barrier()
 end = time.time()
 if rank == 0:
