@@ -9,7 +9,7 @@ from ad_afqmc import driver, pyscf_interface
 
 print = partial(print, flush=True)
 
-r = 1.4
+r = 2.4
 for nH in [ 4 ]:
   print(f'number of H: {nH}\n')
   atomstring = ""
@@ -19,12 +19,18 @@ for nH in [ 4 ]:
   mf = scf.RHF(mol)
   mf.kernel()
 
+  umf = scf.UHF(mol)
+  umf.kernel()
+  mo1 = umf.stability(external=True)[0]
+  umf = umf.newton().run(mo1, umf.mo_occ)
+
   norb_frozen = 0
   overlap = mf.get_ovlp()
-  lo = fractional_matrix_power(mf.get_ovlp(), -0.5).T
-  #h1 = mf.mo_coeff.T.dot(mf.get_hcore()).dot(mf.mo_coeff)
-  lo_mo = mf.mo_coeff.T.dot(overlap).dot(lo)
-  h1 = np.einsum('i,j->ij', lo_mo[:, nH//2], lo_mo[:, nH//2])
+  h1 = mf.mo_coeff.T.dot(mf.get_hcore()).dot(mf.mo_coeff)
+
+  #lo = fractional_matrix_power(mf.get_ovlp(), -0.5).T
+  #lo_mo = mf.mo_coeff.T.dot(overlap).dot(lo)
+  #h1 = np.einsum('i,j->ij', lo_mo[:, nH//2], lo_mo[:, nH//2])
 
   if nH < 15:
     cisolver = fci.FCI(mf)
@@ -43,13 +49,24 @@ for nH in [ 4 ]:
   et = mycc.ccsd_t()
   print('CCSD(T) energy', mycc.e_tot + et)
 
+  pyscf_interface.prep_afqmc(umf)
+
+  with h5py.File('FCIDUMP_chol', 'r') as fh5:
+    h1 = np.array(fh5.get('hcore')).reshape(mol.nao, mol.nao)
+
   with h5py.File('observable.h5', 'w') as fh5:
     fh5['constant'] = np.array([ 0. ])
     fh5['op'] = h1.flatten()
 
-  pyscf_interface.prep_afqmc(mf)
-  options = {'n_ene_blocks': 25, 'n_sr_blocks': 2, 'n_blocks': 40, 'n_walkers': 50, 'seed': 98}
-  driver.run_afqmc(options=options, nproc=2)
+  options = {'n_eql': 2,
+             'n_ene_blocks': 25,
+             'n_sr_blocks': 2,
+             'n_blocks': 40,
+             'n_walkers': 50,
+             'seed': 98,
+             'walker_type': 'uhf',
+             'ad_mode': 'forward'}
+  driver.run_afqmc(options=options, nproc=4)
 
   print('\nrelaxed finite difference h1e:')
   dE = 1.e-5

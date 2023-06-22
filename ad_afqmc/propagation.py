@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import lax, jit, custom_jvp, vmap, random, vjp, jvp, checkpoint, dtypes
 from dataclasses import dataclass
+from ad_afqmc import sr, linalg_utils
 
 from functools import partial
 print = partial(print, flush=True)
@@ -21,14 +22,42 @@ class propagator():
   n_sr_blocks: int = 1
   n_blocks: int = 50
   ad_q: bool = True
+  n_walkers: int = 50
 
   def __post_init__(self):
     if not self.ad_q:
       self.n_ene_blocks = 5
       self.n_sr_blocks = 10
 
+  def init_prop_data(self, trial, wave_data, ham, ham_data):
+    prop_data = {}
+    prop_data['weights'] = jnp.ones(self.n_walkers)
+    prop_data['walkers'] = jnp.stack([jnp.eye(ham.norb, ham.nelec) + 0.j for _ in range(self.n_walkers)])
+    energy_samples = jnp.real(trial.calc_energy_vmap(ham_data, prop_data['walkers'], wave_data))
+    e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
+    prop_data['e_estimate'] = e_estimate
+    prop_data['pop_control_ene_shift'] = e_estimate
+    prop_data['overlaps'] = trial.calc_overlap_vmap(prop_data['walkers'], wave_data)
+    return prop_data
+  
+  @partial(jit, static_argnums=(0,))
+  def stochastic_reconfiguration_local(self, prop_data):
+    prop_data['key'], subkey = random.split(prop_data['key'])
+    zeta = random.uniform(subkey)
+    prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration(prop_data['walkers'], prop_data['weights'], zeta)
+    return prop_data
+  
+  def stochastic_reconfiguration_global(self, prop_data, comm):
+    prop_data['key'], subkey = random.split(prop_data['key'])
+    zeta = random.uniform(subkey)
+    prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration_mpi(prop_data['walkers'], prop_data['weights'], zeta, comm)
+    return prop_data
+  
+  def orthonormalize_walkers(self, prop_data):
+    prop_data['walkers'] = linalg_utils.qr_vmap(prop_data['walkers'])
+    return prop_data
+
   # defining this separately because calculating vhs for a batch seems to be faster
-  #@checkpoint
   @partial(jit, static_argnums=(0,))
   def apply_propagator(self, exp_h1, vhs_i, walker_i):
     walker_i = exp_h1.dot(walker_i)
@@ -40,7 +69,6 @@ class propagator():
     walker_i = exp_h1.dot(walker_i)
     return walker_i
 
-  #@checkpoint
   @partial(jit, static_argnums=(0,))
   def apply_propagator_vmap(self, ham, walkers, fields):
     vhs = 1.j * jnp.sqrt(self.dt) * fields.dot(ham['chol']).reshape(walkers.shape[0], walkers.shape[1], walkers.shape[1])
@@ -63,8 +91,8 @@ class propagator():
   #  #return primals_out, (0. * primals_out[0], 0. * primals_out[1])
 
   @partial(jit, static_argnums=(0,1))
-  def propagate(self, trial, ham, prop, fields):
-    force_bias = trial.calc_force_bias_vmap(prop['walkers'], ham)
+  def propagate(self, trial, ham, prop, fields, wave_data):
+    force_bias = trial.calc_force_bias_vmap(prop['walkers'], ham, wave_data)
     field_shifts = -jnp.sqrt(self.dt) * (1.j * force_bias - ham['mf_shifts'])
     shifted_fields = fields - field_shifts
     shift_term = jnp.sum(shifted_fields * ham['mf_shifts'], axis=1)
@@ -72,7 +100,7 @@ class propagator():
 
     prop['walkers'] = self.apply_propagator_vmap(ham, prop['walkers'], shifted_fields)
 
-    overlaps_new = trial.calc_overlap_vmap(prop['walkers'])
+    overlaps_new = trial.calc_overlap_vmap(prop['walkers'], wave_data)
     imp_fun, theta = self.calc_imp_fun(-jnp.sqrt(self.dt) * shift_term + fb_term + self.dt * (prop['pop_control_ene_shift'] + ham['h0_prop']), -jnp.sqrt(self.dt) * shift_term, overlaps_new, prop['overlaps'])
     imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
     imp_fun_phaseless = jnp.where(jnp.isnan(imp_fun_phaseless), 0., imp_fun_phaseless)
@@ -80,12 +108,58 @@ class propagator():
     imp_fun_phaseless = jnp.where(imp_fun_phaseless > 100., 0., imp_fun_phaseless)
     prop['weights'] = imp_fun_phaseless * prop['weights']
     prop['weights'] = jnp.where(prop['weights'] > 100., 0., prop['weights'])
-    prop['pop_control_ene_shift'] = prop['e_estimate'] - 0.1 * jnp.array(jnp.log(jnp.sum(prop['weights']) / prop['walkers'].shape[0]) / self.dt) # type: ignore
+    prop['pop_control_ene_shift'] = prop['e_estimate'] - 0.1 * jnp.array(jnp.log(jnp.sum(prop['weights']) / self.n_walkers) / self.dt) # type: ignore
     prop['overlaps'] = overlaps_new
     return prop
 
   def __hash__(self):
-    return hash((self.dt, self.n_prop_steps, self.n_ene_blocks, self.n_sr_blocks, self.n_blocks))
+    return hash((self.dt, self.n_prop_steps, self.n_ene_blocks, self.n_sr_blocks, self.n_blocks, self.n_walkers))
+
+@dataclass
+class propagator_uhf(propagator):
+
+  def init_prop_data(self, trial, wave_data, ham, ham_data):
+    prop_data = {}
+    prop_data['weights'] = jnp.ones(self.n_walkers)
+    walkers_up = jnp.stack([ wave_data[0][:, :ham.nelec[0]] + 0.j for _ in range(self.n_walkers)])
+    walkers_dn = jnp.stack([ wave_data[1][:, :ham.nelec[1]] + 0.j for _ in range(self.n_walkers)])
+    prop_data['walkers'] = [ walkers_up, walkers_dn ]
+    energy_samples = jnp.real(trial.calc_energy_vmap(ham_data, prop_data['walkers'], wave_data))
+    e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
+    prop_data['e_estimate'] = e_estimate
+    prop_data['pop_control_ene_shift'] = e_estimate
+    prop_data['overlaps'] = trial.calc_overlap_vmap(prop_data['walkers'], wave_data)
+    return prop_data
+  
+  @partial(jit, static_argnums=(0,))
+  def apply_propagator_vmap(self, ham, walkers, fields):
+    vhs = 1.j * jnp.sqrt(self.dt) * fields.dot(ham['chol']).reshape(walkers[0].shape[0], walkers[0].shape[1], walkers[0].shape[1])
+    walkers[0] = vmap(self.apply_propagator, in_axes=(None, 0, 0))(ham['exp_h1'][0], vhs, walkers[0])
+    walkers[1] = vmap(self.apply_propagator, in_axes=(None, 0, 0))(ham['exp_h1'][1], vhs, walkers[1])
+    return walkers
+
+  @partial(jit, static_argnums=(0,))
+  def stochastic_reconfiguration_local(self, prop_data):
+    prop_data['key'], subkey = random.split(prop_data['key'])
+    zeta = random.uniform(subkey)
+    prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration_uhf(
+        prop_data['walkers'], prop_data['weights'], zeta)
+    return prop_data
+
+  def stochastic_reconfiguration_global(self, prop_data, comm):
+    prop_data['key'], subkey = random.split(prop_data['key'])
+    zeta = random.uniform(subkey)
+    prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration_mpi_uhf(
+        prop_data['walkers'], prop_data['weights'], zeta, comm)
+    return prop_data
+
+  def orthonormalize_walkers(self, prop_data):
+    prop_data['walkers'] = linalg_utils.qr_vmap_uhf(prop_data['walkers'])
+    return prop_data
+  
+  def __hash__(self):
+    return hash((self.dt, self.n_prop_steps, self.n_ene_blocks, self.n_sr_blocks, self.n_blocks, self.n_walkers))
+
 
 if __name__ == "__main__":
   prop = propagator()

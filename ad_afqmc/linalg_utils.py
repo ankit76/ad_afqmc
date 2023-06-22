@@ -44,7 +44,13 @@ def _eigh_jvp_jitted_nob(v, Fmat, at):
     dv = jnp.dot(v, jnp.multiply(Fmat, vt_at_v))
     return dw, dv
 
-#@checkpoint
+@jit
 def qr_vmap(walkers):
   walkers, _ = vmap(jnp.linalg.qr)(walkers)
+  return walkers
+
+@jit
+def qr_vmap_uhf(walkers):
+  walkers[0], _ = vmap(jnp.linalg.qr)(walkers[0])
+  walkers[1], _ = vmap(jnp.linalg.qr)(walkers[1])
   return walkers

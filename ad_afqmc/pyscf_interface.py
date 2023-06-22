@@ -111,7 +111,8 @@ def prep_afqmc(mf, mo_coeff=None, norb_frozen=0, chol_cut=1e-5, integrals=None):
 
         trial_coeffs[0] = uhfCoeffs[:, :nbasis]
         trial_coeffs[1] = uhfCoeffs[:, nbasis:]
-        np.savetxt("uhf.txt", uhfCoeffs)
+        #np.savetxt("uhf.txt", uhfCoeffs)
+        np.savez('uhf.npz', mo_coeff=trial_coeffs)
 
     elif isinstance(mf, scf.rhf.RHF):
         hf_type = "rhf"

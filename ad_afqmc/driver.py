@@ -11,7 +11,7 @@ import jax.scipy as jsp
 from jax import lax, jit, custom_jvp, vmap, random, vjp, jvp, checkpoint, dtypes
 from mpi4py import MPI
 import pickle
-from ad_afqmc import linalg_utils, sr, sampler, propagation, stat_utils
+from ad_afqmc import sampler, propagation, stat_utils
 
 from functools import partial
 print = partial(print, flush=True)
@@ -20,34 +20,27 @@ comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
 
-def afqmc(ham_data, ham, propagator, trial, observable, options):
+def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
   init = time.time()
-  nwalkers = options['n_walkers']
   seed = options['seed']
   neql = options['n_eql']
   
-  if observable is not None: # forward or reverse
+  if options['ad_mode'] is not None: 
     observable_op = jnp.array(observable[0])
     observable_constant = observable[1]
-  else: # reverse or no_ad
-    observable_op = 0. * jnp.array(ham_data['h1'])
+  else: 
+    observable_op = jnp.array(ham_data['h1'])
     observable_constant = 0.
+  
+  rdm_op = 0. * jnp.array(ham_data['h1']) # for reverse mode
 
-  ham_data = ham.rot_ham(ham_data)
-  ham_data = ham.prop_ham(ham_data, propagator.dt)
+  ham_data = ham.rot_ham(ham_data, wave_data)
+  ham_data = ham.prop_ham(ham_data, propagator.dt, wave_data)
 
-  prop_data = {}
-  norb = ham.norb
-  nelec  = ham.nelec
-  prop_data['weights'] = jnp.ones(nwalkers)
-  prop_data['walkers'] = jnp.stack([jnp.eye(norb, nelec) + 0.j for _ in range(nwalkers)])
-  energy_samples = jnp.real(trial.calc_energy_vmap(ham_data, prop_data['walkers']))
-  e_estimate = jnp.array(jnp.sum(energy_samples) / nwalkers)
-  prop_data['e_estimate'] = e_estimate
-  prop_data['pop_control_ene_shift'] = e_estimate
+  prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data)
   prop_data['key'] = random.PRNGKey(seed+rank)
-  hf_rdm = 2 * np.eye(norb, nelec).dot(np.eye(norb, nelec).T)
-  hf_observable = np.sum(hf_rdm * observable_op)
+  trial_rdm1 = trial.get_rdm1(wave_data)
+  trial_observable = np.sum(trial_rdm1 * observable_op)
 
   comm.Barrier()
   init_time = time.time() - init
@@ -55,13 +48,16 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
     print("# Equilibration sweeps:")
     print("#   Iter        Block energy      Walltime")
     n = 0
-    print(f"# {n:5d}      {e_estimate:.9e}     {init_time:.2e} ")
+    print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
   comm.Barrier()
-
-  propagator_eq = propagation.propagator(propagator.dt, n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
+  
+  if options['walker_type'] == 'rhf':
+    propagator_eq = propagation.propagator(propagator.dt, n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
+  elif options['walker_type'] == 'uhf':
+    propagator_eq = propagation.propagator_uhf(propagator.dt, n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
 
   for n in range(1, neql+1):
-    block_energy_n, prop_data = sampler.propagate_phaseless(ham, ham_data, propagator_eq, prop_data, trial)
+    block_energy_n, prop_data = sampler.propagate_phaseless(ham, ham_data, propagator_eq, prop_data, trial, wave_data)
     block_energy_n = np.array([block_energy_n], dtype='float32')
     block_weight_n = np.array([jnp.sum(prop_data['weights'])], dtype='float32')
     block_weighted_energy_n = np.array([block_energy_n * block_weight_n], dtype='float32')
@@ -74,10 +70,8 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
       block_energy_n = total_block_energy_n / total_block_weight_n
     comm.Bcast(block_weight_n, root=0)
     comm.Bcast(block_energy_n, root=0)
-    prop_data['walkers'] = linalg_utils.qr_vmap(prop_data['walkers'])
-    prop_data['key'], subkey = random.split(prop_data['key'])
-    zeta = random.uniform(subkey)
-    prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration_mpi(prop_data['walkers'], prop_data['weights'], zeta, comm)
+    prop_data = propagator.orthonormalize_walkers(prop_data)
+    prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)    
     prop_data['e_estimate'] = 0.9 * prop_data['e_estimate'] + 0.1 * block_energy_n[0]
 
     comm.Barrier()
@@ -109,17 +103,19 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
       global_block_rdm1s = np.zeros((size * propagator.n_blocks, *(ham_data['h1'].shape)))
 
   if options['orbital_rotation'] == False and options['do_sr'] == False:
-    propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad_nosr_norot(ham, ham_data, x, y, propagator, z, trial)
+    propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad_nosr_norot(ham, ham_data, x, y, propagator, z, trial, wave_data)
   elif options['orbital_rotation'] == False:
-    propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad_norot(ham, ham_data, x, y, propagator, z, trial)
+    propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad_norot(ham, ham_data, x, y, propagator, z, trial, wave_data)
   elif options['do_sr'] == False:
-    propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad_nosr(ham, ham_data, x, y, propagator, z, trial)
+    propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad_nosr(ham, ham_data, x, y, propagator, z, trial, wave_data)
   else:
     propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad(ham, ham_data, x, y, 
-  propagator, z, trial)
+  propagator, z, trial, wave_data)
   prop_data_tangent = {}
   for x in prop_data:
-    if prop_data[x].dtype == 'uint32':
+    if isinstance(prop_data[x], list):
+      prop_data_tangent[x] = [np.zeros_like(y) for y in prop_data[x]]
+    elif prop_data[x].dtype == 'uint32':
       prop_data_tangent[x] = np.zeros(prop_data[x].shape, dtype=dtypes.float0)
     else:
       prop_data_tangent[x] = np.zeros_like(prop_data[x])
@@ -131,19 +127,19 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
       coupling = 0.
       block_energy_n, block_observable_n, prop_data = jvp(propagate_phaseless_wrapper, (coupling, observable_op, prop_data), (1., 0. * observable_op, prop_data_tangent), has_aux=True)
       if np.isnan(block_observable_n) or np.isinf(block_observable_n):
-        block_observable_n = hf_observable
+        block_observable_n = trial_observable
         local_large_deviations += 1
     elif options['ad_mode'] == 'reverse':
       coupling = 1.
-      block_energy_n, block_vjp_fun, prop_data = vjp(propagate_phaseless_wrapper, coupling, observable_op, prop_data, has_aux=True)
+      block_energy_n, block_vjp_fun, prop_data = vjp(propagate_phaseless_wrapper, coupling, rdm_op, prop_data, has_aux=True)
       block_rdm1_n = block_vjp_fun(1.)[1]
-      block_observable_n = np.sum(block_rdm1_n * ham_data['h1'])
+      block_observable_n = np.sum(block_rdm1_n * observable_op)
       if np.isnan(block_observable_n) or np.isinf(block_observable_n):
-        block_observable_n = hf_observable
-        block_rdm1_n = hf_rdm
+        block_observable_n = trial_observable
+        block_rdm1_n = trial_rdm1
         local_large_deviations += 1
     else:
-      block_energy_n, prop_data = sampler.propagate_phaseless(ham, ham_data, propagator, prop_data, trial)
+      block_energy_n, prop_data = sampler.propagate_phaseless(ham, ham_data, propagator, prop_data, trial, wave_data)
     
     block_energy_n = np.array([block_energy_n], dtype='float32')
     block_observable_n = np.array([block_observable_n + observable_constant], dtype='float32')
@@ -176,10 +172,8 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
       block_energy_n = np.sum(gather_weights * gather_energies) / np.sum(gather_weights)
 
     block_energy_n = comm.bcast(block_energy_n, root=0)
-    prop_data['walkers'] = linalg_utils.qr_vmap(prop_data['walkers'])
-    prop_data['key'], subkey = random.split(prop_data['key'])
-    zeta = random.uniform(subkey)
-    prop_data['walkers'], prop_data['weights'] = sr.stochastic_reconfiguration_mpi(prop_data['walkers'], prop_data['weights'], zeta, comm)
+    prop_data = propagator.orthonormalize_walkers(prop_data)
+    prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
     prop_data['e_estimate'] = 0.9 * prop_data['e_estimate'] + 0.1 * block_energy_n
 
     if n % (max(propagator.n_blocks//10, 1)) == 0:
@@ -242,7 +236,7 @@ def afqmc(ham_data, ham, propagator, trial, observable, options):
         print(f'AFQMC observable: {obs_afqmc}\n', flush=True)
       if options['ad_mode'] == 'reverse':
         avg_rdm1 = np.einsum('i,i...->...', global_block_weights, global_block_rdm1s) / np.sum(global_block_weights)
-        np.savetxt('rdm1_afqmc.dat', avg_rdm1)
+        np.savez('rdm1_afqmc.npz', rdm1=avg_rdm1)
   comm.Barrier()
 
 def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
