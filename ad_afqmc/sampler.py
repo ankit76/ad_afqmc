@@ -72,18 +72,22 @@ def propagate_phaseless_ad_nosr(ham, ham_data, coupling, observable_op, propagat
   ham_data['h1'] = ham_data['h1'] + coupling * observable_op
   wave_data = trial.optimize_orbs(ham_data, wave_data)
   ham_data = ham.rot_orbs(ham_data, wave_data)
-  ham_data = ham.rot_ham(ham_data)
+  ham_data = ham.rot_ham(ham_data, wave_data)
   ham_data = ham.prop_ham(ham_data, propagator.dt, wave_data)
 
+  prop_data['overlaps'] = trial.calc_overlap_vmap(prop_data['walkers'], wave_data)
+  prop_data['n_killed_walkers'] = 0
+  prop_data['pop_control_ene_shift'] = prop_data['e_estimate']
   _block_scan_wrapper = lambda x, y: _block_scan(x, y, ham_data, propagator, trial, wave_data)
   prop_data, (block_energy, block_weight) = lax.scan(checkpoint(_block_scan_wrapper), prop_data, None, length=propagator.n_ene_blocks)
+  prop_data['n_killed_walkers'] /= (propagator.n_sr_blocks * propagator.n_ene_blocks * propagator.n_walkers)
   return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
 
 @partial(jit, static_argnums=(0,4,6))
 def propagate_phaseless_ad_norot(ham, ham_data, coupling, observable_op, propagator, prop_data, trial, wave_data):
   ham_data['h1'] = ham_data['h1'] + coupling * observable_op
   ham_data = ham.rot_ham(ham_data, wave_data)
-  ham_data = ham.prop_ham(ham_data, propagator.dt)
+  ham_data = ham.prop_ham(ham_data, propagator.dt, wave_data)
 
   prop_data, (block_energy, block_weight) = _ad_block(prop_data, ham_data, propagator, trial, wave_data)
   return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
@@ -96,8 +100,12 @@ def propagate_phaseless_ad_nosr_norot(ham, ham_data, coupling, observable_op, pr
 
   def _block_scan_wrapper(x, y): return _block_scan(
       x, y, ham_data, propagator, trial, wave_data)
+  prop_data['overlaps'] = trial.calc_overlap_vmap(prop_data['walkers'], wave_data)
+  prop_data['n_killed_walkers'] = 0
+  prop_data['pop_control_ene_shift'] = prop_data['e_estimate']
   prop_data, (block_energy, block_weight) = lax.scan(checkpoint(
       _block_scan_wrapper), prop_data, None, length=propagator.n_ene_blocks)
+  prop_data['n_killed_walkers'] /= (propagator.n_sr_blocks * propagator.n_ene_blocks * propagator.n_walkers)
   return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
 
 @partial(jit, static_argnums=(0, 2, 4))
@@ -105,6 +113,7 @@ def propagate_phaseless(ham, ham_data, propagator, prop_data, trial, wave_data):
   def _sr_block_scan_wrapper(x, y): return _sr_block_scan(x, y, ham_data, propagator, trial, wave_data)
   prop_data['overlaps'] = trial.calc_overlap_vmap(prop_data['walkers'], wave_data)
   prop_data['n_killed_walkers'] = 0
+  prop_data['pop_control_ene_shift'] = prop_data['e_estimate']
   prop_data, (block_energy, block_weight) = lax.scan(_sr_block_scan_wrapper, prop_data, None, length=propagator.n_sr_blocks)
   prop_data['n_killed_walkers'] /= (propagator.n_sr_blocks *
                                     propagator.n_ene_blocks * propagator.n_walkers)
