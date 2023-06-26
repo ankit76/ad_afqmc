@@ -28,6 +28,7 @@ class hamiltonian():
 
   @partial(jit, static_argnums=(0,))
   def rot_ham(self, ham, wave_data=None):
+    ham['h1'] = (ham['h1'] + ham['h1'].T) / 2.
     ham['rot_h1'] = ham['h1'][:self.nelec, :].copy()
     ham['rot_chol'] = ham['chol'].reshape(-1, self.norb, self.norb)[:, :self.nelec, :].copy()
     return ham
@@ -58,6 +59,8 @@ class hamiltonian_uhf():
 
   @partial(jit, static_argnums=(0,))
   def rot_ham(self, ham, wave_data):
+    ham['h1'] = ham['h1'].at[0].set((ham['h1'][0] + ham['h1'][0].T) / 2.)
+    ham['h1'] = ham['h1'].at[1].set((ham['h1'][1] + ham['h1'][1].T) / 2.)
     trial = [ wave_data[0][:, :self.nelec[0]], wave_data[1][:, :self.nelec[1]] ]
     ham['rot_h1'] = [ trial[0].T @ ham['h1'][0], trial[1].T @ ham['h1'][1] ]
     ham['rot_chol'] = [ jnp.einsum('pi,gij->gpj', trial[0].T, ham['chol'].reshape(-1, self.norb, self.norb)),
@@ -75,7 +78,7 @@ class hamiltonian_uhf():
     v1 = jnp.real(1.j * jnp.einsum('g,gik->ik',
                                ham['mf_shifts'], ham['chol'].reshape(-1, self.norb, self.norb)))
     h1_mod = ham['h1'] - jnp.array([ v0 + v1, v0 + v1 ])
-    ham['exp_h1'] = jnp.array([ jsp.linalg.expm(-dt * h1_mod[0] / 2.), jsp.linalg.expm(-dt * h1_mod[0] / 2.) ]) 
+    ham['exp_h1'] = jnp.array([ jsp.linalg.expm(-dt * h1_mod[0] / 2.), jsp.linalg.expm(-dt * h1_mod[1] / 2.) ])
     return ham
 
   def __hash__(self):

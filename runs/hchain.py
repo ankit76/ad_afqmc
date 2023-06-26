@@ -61,50 +61,23 @@ for nH in [ 4 ]:
   options = {'n_eql': 2,
              'n_ene_blocks': 25,
              'n_sr_blocks': 2,
-             'n_blocks': 40,
+             'n_blocks': 10,
              'n_walkers': 50,
              'seed': 98,
              'walker_type': 'uhf',
-             'ad_mode': 'forward'}
-  driver.run_afqmc(options=options, nproc=4)
+             'ad_mode': 'reverse'}
+  driver.run_afqmc(options=options)
 
   print('\nrelaxed finite difference h1e:')
-  dE = 1.e-5
+  pyscf_interface.finite_difference_properties(mol, mf.get_hcore())
 
-  E = numpy.array([ 0., -dE, 0. ])
-  mf = scf.RHF(mol)
-  h1e = mf.get_hcore() * (1 + E[1])
-  mf.get_hcore = lambda *args: h1e
-  mf.verbose = 1
-  mf.kernel()
-  emf_m = mf.e_tot
-  mycc = cc.CCSD(mf)
-  mycc.frozen = norb_frozen
-  mycc.kernel()
-  emp2_m = mycc.e_hf + mycc.emp2
-  eccsd_m = mycc.e_tot
-  et = mycc.ccsd_t()
-  print('CCSD(T) energy', mycc.e_tot + et)
-  eccsdpt_m = mycc.e_tot + et
+  afqmc_rdm = np.load('rdm1_afqmc.npz')['rdm1']
+  lo = fractional_matrix_power(mf.get_ovlp(), -0.5).T
+  lo_mo = umf.mo_coeff[0].T.dot(overlap).dot(lo)
+  afqmc_rdm = np.einsum('sij,ip,jq->spq', afqmc_rdm, lo_mo, lo_mo)
 
-  E = numpy.array([ 0., dE, 0. ])
-  mf = scf.RHF(mol)
-  h1e = mf.get_hcore() * (1 + E[1])
-  mf.get_hcore = lambda *args: h1e
-  mf.verbose = 1
-  mf.kernel()
-  emf_p = mf.e_tot
-  mycc = cc.CCSD(mf)
-  mycc.frozen = norb_frozen
-  mycc.kernel()
-  emp2_p = mycc.e_hf + mycc.emp2
-  eccsd_p = mycc.e_tot
-  et = mycc.ccsd_t()
-  print('CCSD(T) energy', mycc.e_tot + et)
-  eccsdpt_p = mycc.e_tot + et
-
-  print(f'emf_m: {emf_m}, emf_p: {emf_p}, dip_mf: {(emf_p - emf_m) / 2 / dE}')
-  print(f'emp2_m: {emp2_m}, emp2_p: {emp2_p}, dip_mp2: {(emp2_p - emp2_m) / 2 / dE}')
-  print(f'eccsd_m: {eccsd_m}, eccsd_p: {eccsd_p}, dip_ccsd: {(eccsd_p - eccsd_m) / 2 / dE}')
-  print(f'eccsdpt_m: {eccsdpt_m}, eccsd_p: {eccsdpt_p}, dip_ccsdpt: {(eccsdpt_p - eccsdpt_m) / 2 / dE}')
+  lo_mo = mf.mo_coeff.T.dot(overlap).dot(lo)
+  fci_rdm = np.einsum('ij,ip,jq->pq', dm1, lo_mo, lo_mo)
+  print(f'\nafqmc_rdm:\n{afqmc_rdm}\n')
+  print(f'\nfci_rdm:\n{fci_rdm / 2.}\n')
 

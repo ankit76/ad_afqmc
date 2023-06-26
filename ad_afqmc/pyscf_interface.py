@@ -1,7 +1,7 @@
 import time
 import h5py
 import numpy as np
-from pyscf import __config__, ao2mo, fci, gto, lib, lo, mcscf, mp, scf, tools
+from pyscf import __config__, ao2mo, fci, gto, lib, lo, mcscf, mp, scf, cc, tools
 
 from functools import partial
 print = partial(print, flush=True)
@@ -295,4 +295,38 @@ def write_dqmc(hcore, hcore_mod, chol, nelec, nmo, enuc, ms=0, filename='FCIDUMP
         if mo_coeffs is not None:
           fh5['mo_coeffs_up'] = mo_coeffs[0]
           fh5['mo_coeffs_dn'] = mo_coeffs[1]
+
+def finite_difference_properties(mol, observable, epsilon=1.e-5, norb_frozen=0):
+  mf = scf.RHF(mol)
+  h1e = mf.get_hcore() - epsilon * observable
+  mf.get_hcore = lambda *args: h1e
+  mf.verbose = 1
+  mf.kernel()
+  emf_m = mf.e_tot
+  mycc = cc.CCSD(mf)
+  mycc.frozen = norb_frozen
+  mycc.kernel()
+  emp2_m = mycc.e_hf + mycc.emp2
+  eccsd_m = mycc.e_tot
+  et = mycc.ccsd_t()
+  eccsdpt_m = mycc.e_tot + et
+
+  mf = scf.RHF(mol)
+  h1e = mf.get_hcore() + epsilon * observable
+  mf.get_hcore = lambda *args: h1e
+  mf.verbose = 1
+  mf.kernel()
+  emf_p = mf.e_tot
+  mycc = cc.CCSD(mf)
+  mycc.frozen = norb_frozen
+  mycc.kernel()
+  emp2_p = mycc.e_hf + mycc.emp2
+  eccsd_p = mycc.e_tot
+  et = mycc.ccsd_t()
+  eccsdpt_p = mycc.e_tot + et
+
+  print(f'emf_m: {emf_m}, emf_p: {emf_p}, dip_mf: {(emf_p - emf_m) / 2 / epsilon}')
+  print(f'emp2_m: {emp2_m}, emp2_p: {emp2_p}, dip_mp2: {(emp2_p - emp2_m) / 2 / epsilon}')
+  print(f'eccsd_m: {eccsd_m}, eccsd_p: {eccsd_p}, dip_ccsd: {(eccsd_p - eccsd_m) / 2 / epsilon}')
+  print(f'eccsdpt_m: {eccsdpt_m}, eccsd_p: {eccsdpt_p}, dip_ccsdpt: {(eccsdpt_p - eccsdpt_m) / 2 / epsilon}')
 
