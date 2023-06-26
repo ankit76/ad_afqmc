@@ -162,10 +162,12 @@ class uhf():
   @partial(jit, static_argnums=0)
   def optimize_orbs(self, ham_data, wave_data):
     h1 = ham_data['h1']
+    h1 = h1.at[0].set((h1[0] + h1[0].T) / 2.)
+    h1 = h1.at[1].set((h1[1] + h1[1].T) / 2.)
     h2 = ham_data['chol']
     h2 = h2.reshape((h2.shape[0], h1.shape[1], h1.shape[1]))
     nelec = self.nelec
-    
+
     def scanned_fun(carry, x):
       dm = carry
       f_up = jnp.einsum('gij,ik->gjk', h2, dm[0])
