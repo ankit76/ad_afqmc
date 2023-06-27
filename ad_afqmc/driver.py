@@ -24,14 +24,14 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
   init = time.time()
   seed = options['seed']
   neql = options['n_eql']
-  
-  if options['ad_mode'] is not None: 
+
+  if options['ad_mode'] is not None:
     observable_op = jnp.array(observable[0])
     observable_constant = observable[1]
-  else: 
+  else:
     observable_op = jnp.array(ham_data['h1'])
     observable_constant = 0.
-  
+
   rdm_op = 0. * jnp.array(ham_data['h1']) # for reverse mode
 
   ham_data = ham.rot_ham(ham_data, wave_data)
@@ -50,11 +50,11 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     n = 0
     print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
   comm.Barrier()
-  
+
   if options['walker_type'] == 'rhf':
-    propagator_eq = propagation.propagator(propagator.dt, n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
+    propagator_eq = propagation.propagator(propagator.dt, n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10, n_walkers=options['n_walkers'])
   elif options['walker_type'] == 'uhf':
-    propagator_eq = propagation.propagator_uhf(propagator.dt, n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
+    propagator_eq = propagation.propagator_uhf(propagator.dt, n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10, n_walkers=options['n_walkers'])
 
   for n in range(1, neql+1):
     block_energy_n, prop_data = sampler.propagate_phaseless(ham, ham_data, propagator_eq, prop_data, trial, wave_data)
@@ -71,7 +71,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     comm.Bcast(block_weight_n, root=0)
     comm.Bcast(block_energy_n, root=0)
     prop_data = propagator.orthonormalize_walkers(prop_data)
-    prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)    
+    prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
     prop_data['e_estimate'] = 0.9 * prop_data['e_estimate'] + 0.1 * block_energy_n[0]
 
     comm.Barrier()
@@ -109,7 +109,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
   elif options['do_sr'] == False:
     propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad_nosr(ham, ham_data, x, y, propagator, z, trial, wave_data)
   else:
-    propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad(ham, ham_data, x, y, 
+    propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad(ham, ham_data, x, y,
   propagator, z, trial, wave_data)
   prop_data_tangent = {}
   for x in prop_data:
@@ -121,7 +121,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
       prop_data_tangent[x] = np.zeros_like(prop_data[x])
   block_rdm1_n = np.zeros_like(ham_data['h1'])
   block_observable_n = 0.
-  
+
   for n in range(propagator.n_blocks):
     if options['ad_mode'] == 'forward':
       coupling = 0.
@@ -140,12 +140,12 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         local_large_deviations += 1
     else:
       block_energy_n, prop_data = sampler.propagate_phaseless(ham, ham_data, propagator, prop_data, trial, wave_data)
-    
+
     block_energy_n = np.array([block_energy_n], dtype='float32')
     block_observable_n = np.array([block_observable_n + observable_constant], dtype='float32')
     block_weight_n = np.array([jnp.sum(prop_data['weights'])], dtype='float32')
     block_rdm1_n = np.array(block_rdm1_n, dtype='float32')
-    
+
     gather_weights = None
     gather_energies = None
     gather_observables = None
@@ -207,7 +207,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
       samples_clean, idx = stat_utils.reject_outliers(np.stack((global_block_weights, global_block_energies, global_block_observables)).T, 2)
     else:
       samples_clean, _ = stat_utils.reject_outliers(np.stack((global_block_weights, global_block_energies, global_block_observables)).T, 1)
-    
+
     print(f'# Number of outliers in post: {global_block_weights.size - samples_clean.shape[0]} ')
     np.savetxt('samples.dat', samples_clean)
     global_block_weights = samples_clean[:, 0]
@@ -224,7 +224,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
       print(f'AFQMC energy: {sig_e:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n')
     elif e_afqmc is not None:
       print(f'AFQMC energy: {e_afqmc}\n', flush=True)
-    
+
     if options['ad_mode'] is not None:
       obs_afqmc, err_afqmc = stat_utils.blocking_analysis  (global_block_weights, global_block_observables, neql=0, printQ=True)
       if err_afqmc is not None:
