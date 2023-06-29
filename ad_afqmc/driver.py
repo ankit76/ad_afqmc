@@ -25,7 +25,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
   seed = options['seed']
   neql = options['n_eql']
 
-  if options['ad_mode'] is not None:
+  if observable is not None:
     observable_op = jnp.array(observable[0])
     observable_constant = observable[1]
   else:
