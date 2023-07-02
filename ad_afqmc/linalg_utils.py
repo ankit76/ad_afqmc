@@ -54,3 +54,39 @@ def qr_vmap_uhf(walkers):
   walkers[0], _ = vmap(jnp.linalg.qr)(walkers[0])
   walkers[1], _ = vmap(jnp.linalg.qr)(walkers[1])
   return walkers
+
+# modified cholesky for a given matrix
+@partial(jit, static_argnums=(1,))
+def modified_cholesky(mat, norb):
+    diag = mat.diagonal()
+    size = mat.shape[0]
+    #norb = (jnp.sqrt(1+8*size).astype('int8') - 1)//2
+    nchol_max = size
+    nu = jnp.argmax(diag)
+    delta_max = diag[nu]
+    
+    def scanned_fun(carry, x):
+        carry['Mapprox'] += carry['chol_vecs'][x] * carry['chol_vecs'][x]
+        delta = diag - carry['Mapprox']
+        nu = jnp.argmax(jnp.abs(delta))
+        delta_max = jnp.abs(delta[nu])
+        #R = (carry['chol_vecs'][:x + 1, nu]).dot(carry['chol_vecs'][:x + 1, :])
+        R = (carry['chol_vecs'][:, nu]).dot(carry['chol_vecs'])
+        carry['chol_vecs'] = carry['chol_vecs'].at[x+1].set((mat[nu] - R) / (delta_max)**0.5)
+        return carry, x
+    
+    carry = {}
+    carry['Mapprox'] = jnp.zeros(size)
+    carry['chol_vecs'] = jnp.zeros((nchol_max, nchol_max))
+    carry['chol_vecs'] = carry['chol_vecs'].at[0].set(mat[nu] / delta_max**0.5)
+    carry, x = lax.scan(scanned_fun, carry, jnp.arange(nchol_max-1))
+
+    tril = jnp.tril_indices(norb)
+    def scanned_fun_1(carry, x):    
+        chol_mat = jnp.zeros((norb, norb))
+        chol_mat = chol_mat.at[tril].set(x)
+        chol_mat = chol_mat.T.at[tril].set(x)
+        return carry, chol_mat.reshape(-1)
+    
+    _, chol_vecs = lax.scan(scanned_fun_1, 1., carry['chol_vecs'])
+    return chol_vecs
