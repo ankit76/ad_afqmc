@@ -296,28 +296,36 @@ def write_dqmc(hcore, hcore_mod, chol, nelec, nmo, enuc, ms=0, filename='FCIDUMP
           fh5['mo_coeffs_up'] = mo_coeffs[0]
           fh5['mo_coeffs_dn'] = mo_coeffs[1]
 
-def finite_difference_properties(mol, observable, observable_constant=0., epsilon=1.e-5, norb_frozen=0, hf_type='rhf', relaxed=True):
+def finite_difference_properties(mol, observable, observable_constant=0., epsilon=1.e-5, norb_frozen=0, hf_type='rhf', relaxed=True, dm=None):
   print(f'#\n# Orbital {"" if relaxed else "un"}relaxed finite difference properties using {hf_type} reference')
   print(f'# epsilon: {epsilon}')
+  mf_coeff, mo_occ = None, None
   if hf_type == 'rhf':
     mf = scf.RHF(mol)
   elif hf_type == 'uhf':
     mf = scf.UHF(mol)
   if not relaxed:
     mf.verbose = 1
-    mf.kernel()
+    if dm is None:
+      mf.kernel()
+    else:
+      mf.kernel(dm)
     if hf_type == 'uhf':
       mo1 = mf.stability(external=True)[0]
       mf = mf.newton().run(mo1, mf.mo_occ)
       mo1 = mf.stability(external=True)[0]
       mf = mf.newton().run(mo1, mf.mo_occ)
-  mf_coeff = mf.mo_coeff.copy()
-  mf_occ = mf.mo_occ.copy()
+    mf_coeff = mf.mo_coeff.copy()
+    mf_occ = mf.mo_occ.copy()
+
   h1e = mf.get_hcore() - epsilon * observable
   mf.get_hcore = lambda *args: h1e
   mf.verbose = 1
   if relaxed:
-    mf.kernel()
+    if dm is None:
+      mf.kernel()
+    else:
+      mf.kernel(dm)
     if hf_type == 'uhf':
       mo1 = mf.stability(external=True)[0]
       mf = mf.newton().run(mo1, mf.mo_occ)
@@ -338,19 +346,16 @@ def finite_difference_properties(mol, observable, observable_constant=0., epsilo
     mf = scf.UHF(mol)
   if not relaxed:
     mf.verbose = 1
-    #mf.kernel()
-    #if hf_type == 'uhf':
-    #  mo1 = mf.stability(external=True)[0]
-    #  mf = mf.newton().run(mo1, mf.mo_occ)
-    #  mo1 = mf.stability(external=True)[0]
-    #  mf = mf.newton().run(mo1, mf.mo_occ)
     mf.mo_coeff = mf_coeff
     mf.mo_occ = mf_occ
   h1e = mf.get_hcore() + epsilon * observable
   mf.get_hcore = lambda *args: h1e
   mf.verbose = 1
   if relaxed:
-    mf.kernel()
+    if dm is None:
+      mf.kernel()
+    else:
+      mf.kernel(dm)
     if hf_type == 'uhf':
       mo1 = mf.stability(external=True)[0]
       mf = mf.newton().run(mo1, mf.mo_occ)
@@ -366,8 +371,7 @@ def finite_difference_properties(mol, observable, observable_constant=0., epsilo
   eccsdpt_p = mycc.e_tot + et + epsilon * observable_constant
 
   print('# FD single point energies:')
-  if relaxed:
-    print(f'# emf_m: {emf_m}, emf_p: {emf_p}')
+  print(f'# emf_m: {emf_m}, emf_p: {emf_p}')
   print(f'# emp2_m: {emp2_m}, emp2_p: {emp2_p}')
   print(f'# eccsd_m: {eccsd_m}, eccsd_p: {eccsd_p}')
   print(f'# eccsdpt_m: {eccsdpt_m}, eccsd_p: {eccsdpt_p}')
