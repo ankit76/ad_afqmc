@@ -237,7 +237,15 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
       elif obs_afqmc is not None:
         print(f'AFQMC observable: {obs_afqmc}\n', flush=True)
       if options['ad_mode'] == 'reverse':
+        #avg_rdm1 = np.einsum('i,i...->...', global_block_weights, global_block_rdm1s) / np.sum(global_block_weights)
+        norms_rdm1 = np.array(list(map(np.linalg.norm, global_block_rdm1s)))
+        samples_clean, idx = stat_utils.reject_outliers(np.stack((global_block_weights, norms_rdm1)).T, 1)
+        global_block_weights = samples_clean[:, 0]
+        global_block_rdm1s = global_block_rdm1s[idx]
         avg_rdm1 = np.einsum('i,i...->...', global_block_weights, global_block_rdm1s) / np.sum(global_block_weights)
+        errors_rdm1 = np.array(list(map(np.linalg.norm, global_block_rdm1s - avg_rdm1))) / np.linalg.norm(avg_rdm1)
+        print(f'# RDM noise:', flush=True)
+        obs_afqmc, err_afqmc = stat_utils.blocking_analysis(global_block_weights, errors_rdm1, neql=0, printQ=True)
         np.savez('rdm1_afqmc.npz', rdm1=avg_rdm1)
 
   comm.Barrier()
