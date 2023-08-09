@@ -3,38 +3,78 @@ import pytest
 import numpy as np
 os.environ['JAX_ENABLE_X64'] = 'True'
 os.environ['JAX_PLATFORM_NAME'] = 'cpu'
-from jax import numpy as jnp
+from jax import random, numpy as jnp
 from ad_afqmc import hamiltonian, propagation, wavefunctions
 
 seed = 102
 np.random.seed(seed)
 norb, nelec, nchol = 10, 5, 5
-prop_handler = propagation.propagator()
-ham_handler = hamiltonian.hamiltonian(norb, nelec, nchol)
-ham = { }
-ham['h0'] = np.random.rand(1,)[0]
-ham['h1'] = jnp.array(np.random.rand(norb, norb))
-ham['chol'] = jnp.array(np.random.rand(nchol, norb * norb))
-ham = ham_handler.prop_ham(ham, prop_handler.dt)
-ham = ham_handler.rot_ham(ham)
-prop = { }
-n_walkers = 6
-prop['walkers'] = jnp.array(np.random.rand(n_walkers, norb, nelec)) + 1.j * jnp.array(np.random.rand(n_walkers, norb, nelec))
-prop['fields'] = jnp.array(np.random.rand(n_walkers, nchol)) + 1.j * jnp.array(np.random.rand(n_walkers, nchol))
-trial = wavefunctions.rhf()
-prop['weights'] = jnp.array(np.random.rand(n_walkers,))
-prop['overlaps'] = jnp.array(np.random.rand(n_walkers,)) + 1.j * jnp.array(np.random.rand(n_walkers,))
-prop['pop_control_ene_shift'] = 0.0
-prop['e_estimate'] = 0.0
 
-def test_apply_propagator():
-  new_walkers = prop_handler.apply_propagator_vmap(ham, prop['walkers'], prop['fields'])
-  #assert np.allclose(jnp.real(overlap), -0.10794844182417201)
+ham_handler = hamiltonian.hamiltonian(norb, nelec, nchol)
+trial = wavefunctions.rhf(norb, nelec)
+prop_handler = propagation.propagator(n_walkers = 7)
+
+wave_data = jnp.eye(norb)
+
+ham_data = { }
+ham_data['h0'] = np.random.rand(1,)[0]
+ham_data['h1'] = jnp.array(np.random.rand(norb, norb))
+ham_data['chol'] = jnp.array(np.random.rand(nchol, norb * norb))
+ham_data = ham_handler.prop_ham(ham_data, prop_handler.dt)
+ham_data = ham_handler.rot_ham(ham_data)
+
+prop_data = prop_handler.init_prop_data(trial, wave_data, ham_handler, ham_data)
+prop_data['key'] = random.PRNGKey(seed)
+prop_data['overlaps'] = trial.calc_overlap_vmap(prop_data['walkers'], wave_data)
+
+nelec_sp = (5, 4)
+ham_handler_u = hamiltonian.hamiltonian_uhf(norb, nelec_sp, nchol)
+trial_u = wavefunctions.uhf(norb, nelec_sp)
+prop_handler_u = propagation.propagator_uhf(n_walkers = 7)
+
+wave_data_u = [jnp.array(np.random.rand(norb, nelec_sp[0])),
+             jnp.array(np.random.rand(norb, nelec_sp[1]))]
+
+ham_data_u = { }
+ham_data_u['h0'] = np.random.rand(1,)[0]
+ham_data_u['h1'] = jnp.array(np.random.rand(2, norb, norb))
+ham_data_u['chol'] = jnp.array(np.random.rand(nchol, norb * norb))
+ham_data_u = ham_handler_u.prop_ham(ham_data_u, prop_handler_u.dt, wave_data_u)
+ham_data_u = ham_handler_u.rot_ham(ham_data_u, wave_data_u)
+
+prop_data_u = prop_handler_u.init_prop_data(trial_u, wave_data_u, ham_handler_u, ham_data_u)
+prop_data_u['key'] = random.PRNGKey(seed)
+prop_data_u['overlaps'] = trial_u.calc_overlap_vmap(prop_data_u['walkers'], wave_data_u)
+
+fields = random.normal(random.PRNGKey(seed), shape=(
+    prop_handler.n_walkers, ham_data['chol'].shape[0]))
+
+def test_stochastic_reconfiguration_local():
+  prop_data_new = prop_handler.stochastic_reconfiguration_local(prop_data)
+  assert prop_data_new['walkers'].shape == prop_data['walkers'].shape
+  assert prop_data_new['weights'].shape == prop_data['weights'].shape
 
 def test_propagate():
-  prop_new = prop_handler.propagate(trial, ham, prop)
-  #assert np.allclose(jnp.real(overlap), -0.10794844182417201)
+  prop_data_new = prop_handler.propagate(trial, ham_data, prop_data, fields, wave_data)
+  assert prop_data_new['walkers'].shape == prop_data['walkers'].shape
+  assert prop_data_new['weights'].shape == prop_data['weights'].shape
+  assert prop_data_new['overlaps'].shape == prop_data['overlaps'].shape
+
+def test_stochastic_reconfiguration_local_u():
+  prop_data_new = prop_handler_u.stochastic_reconfiguration_local(prop_data_u)
+  assert prop_data_new['walkers'][0].shape == prop_data_u['walkers'][0].shape
+  assert prop_data_new['walkers'][1].shape == prop_data_u['walkers'][1].shape
+  assert prop_data_new['weights'].shape == prop_data_u['weights'].shape
+
+def test_propagate_u():
+  prop_data_new = prop_handler_u.propagate(trial_u, ham_data_u, prop_data_u, fields, wave_data_u)
+  assert prop_data_new['walkers'][0].shape == prop_data_u['walkers'][0].shape
+  assert prop_data_new['walkers'][1].shape == prop_data_u['walkers'][1].shape
+  assert prop_data_new['weights'].shape == prop_data_u['weights'].shape
+  assert prop_data_new['overlaps'].shape == prop_data_u['overlaps'].shape
 
 if __name__ == "__main__":
-  test_apply_propagator()
+  test_stochastic_reconfiguration_local()
   test_propagate()
+  test_stochastic_reconfiguration_local_u()
+  test_propagate_u()
