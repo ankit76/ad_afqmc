@@ -19,7 +19,7 @@ print = partial(print, flush=True)
 @dataclass
 class rhf():
   norb: int
-  nelec: int
+  nelec: int  # this is the number of electrons of each spin, so nelec = total_nelec // 2 
   n_opt_iter: int = 30
 
   @partial(jit, static_argnums=0)
@@ -68,7 +68,7 @@ class rhf():
     return rdm1
 
   @partial(jit, static_argnums=0)
-  def optimize_orbs(self, ham_data, wave_data):
+  def optimize_orbs(self, ham_data, wave_data=None):
     h1 = ham_data['h1']
     h2 = ham_data['chol']
     h2 = h2.reshape((h2.shape[0], h1.shape[0], h1.shape[0]))
@@ -102,7 +102,7 @@ class rhf():
     return mo_coeff[-1]
 
   def __hash__(self):
-    return hash((self.n_opt_iter,))
+    return hash((self.norb, self.nelec, self.n_opt_iter,))
 
 @dataclass
 class uhf():
@@ -213,4 +213,4 @@ class uhf():
     return mo_coeff[-1]
 
   def __hash__(self):
-    return hash((self.n_opt_iter,))
+    return hash((self.norb, self.nelec, self.n_opt_iter,))

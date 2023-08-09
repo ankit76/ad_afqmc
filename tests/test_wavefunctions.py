@@ -8,14 +8,26 @@ from ad_afqmc import wavefunctions
 
 seed = 102
 np.random.seed(seed)
-rhf = wavefunctions.rhf()
 norb, nelec, nchol = 10, 5, 5
+rhf = wavefunctions.rhf(norb, nelec)
 walker = jnp.array(np.random.rand(norb, nelec)) + 1.j * jnp.array(np.random.rand(norb, nelec))
-h0 = np.random.rand(1,)[0]
-rot_h1 = jnp.array(np.random.rand(nelec, norb))
-rot_chol = jnp.array(np.random.rand(nchol, nelec, norb))
-h1 = jnp.array(np.random.rand(norb, norb))
-chol = jnp.array(np.random.rand(nchol, norb, norb))
+ham_data = { }
+ham_data['h0'] = np.random.rand(1,)[0]
+ham_data['rot_h1'] = jnp.array(np.random.rand(nelec, norb))
+ham_data['rot_chol'] = jnp.array(np.random.rand(nchol, nelec, norb))
+ham_data['h1'] = jnp.array(np.random.rand(norb, norb))
+ham_data['chol'] = jnp.array(np.random.rand(nchol, norb, norb))
+
+nelec_sp = (3,2)
+uhf = wavefunctions.uhf(norb, nelec_sp)
+wave_data = [ jnp.array(np.random.rand(norb, nelec_sp[0])), jnp.array(np.random.rand(norb, nelec_sp[1])) ]
+walker_up, walker_dn = jnp.array(np.random.rand(norb, nelec_sp[0])) + 1.j * jnp.array(np.random.rand(norb, nelec_sp[0])), jnp.array(np.random.rand(norb, nelec_sp[1])) + 1.j * jnp.array(np.random.rand(norb, nelec_sp[1]))
+ham_data_u = { }
+ham_data_u['h0'] = ham_data['h0']
+ham_data_u['rot_h1'] = [ ham_data['rot_h1'][:nelec_sp[0], :], ham_data['rot_h1'][:nelec_sp[1], :] ]
+ham_data_u['rot_chol'] = [ ham_data['rot_chol'][:, :nelec_sp[0], :], ham_data['rot_chol'][:, :nelec_sp[1], :] ]
+ham_data_u['h1'] = jnp.array([ ham_data['h1'], ham_data['h1'] ])
+ham_data_u['chol'] = ham_data['chol']
 
 def test_rhf_overlap():
   overlap = rhf.calc_overlap(walker)
@@ -23,19 +35,48 @@ def test_rhf_overlap():
 
 def test_rhf_green():
   green = rhf.calc_green(walker)
+  assert green.shape == (nelec, norb)
   assert np.allclose(jnp.real(jnp.sum(green)), 12.181348093111438)
 
 def test_rhf_force_bias():
-  force_bias = rhf.calc_force_bias(walker, rot_chol)
+  force_bias = rhf.calc_force_bias(walker, ham_data['rot_chol'])
+  assert force_bias.shape == (nchol,)
   assert np.allclose(jnp.real(jnp.sum(force_bias)), 66.13455680423321)
 
 def test_rhf_energy():
-  energy = rhf.calc_energy(h0, rot_h1, rot_chol, walker)
+  energy = rhf.calc_energy(ham_data['h0'], ham_data['rot_h1'], ham_data['rot_chol'], walker)
   assert np.allclose(jnp.real(energy), 217.79874063608622)
 
 def test_rhf_optimize_orbs():
-  orbs = rhf.optimize_orbs(h1, chol, nelec)
-  assert np.allclose(jnp.sum(orbs), 3.014929093892039)
+  orbs = rhf.optimize_orbs(ham_data)
+  assert orbs.shape == (norb, norb)
+  assert np.allclose(jnp.sum(orbs), 2.9662577668717933)
+
+def test_uhf_overlap():
+  overlap = uhf.calc_overlap(walker_up, walker_dn,  wave_data)
+  assert np.allclose(jnp.real(overlap), -0.4029825074695857)
+
+def test_uhf_green():
+  green = uhf.calc_green(walker_up, walker_dn, wave_data)
+  assert green[0].shape == (nelec_sp[0], norb)
+  assert green[1].shape == (nelec_sp[1], norb)
+  assert np.allclose(jnp.real(jnp.sum(green[0])+jnp.sum(green[1])), 3.6324117896217394)
+
+def test_uhf_force_bias():
+  force_bias = uhf.calc_force_bias(walker_up, walker_dn, ham_data_u['rot_chol'], wave_data)
+  assert force_bias.shape == (nchol,)
+  assert np.allclose(jnp.real(jnp.sum(force_bias)), 10.441272099672341)
+
+def test_uhf_energy():
+  energy = uhf.calc_energy(
+      ham_data_u['h0'], ham_data_u['rot_h1'], ham_data_u['rot_chol'], walker_up, walker_dn, wave_data)
+  assert np.allclose(jnp.real(energy), -1.7203463308366032)
+
+def test_uhf_optimize_orbs():
+  orbs = uhf.optimize_orbs(ham_data_u, wave_data)
+  assert orbs[0].shape == (norb, norb)
+  assert orbs[1].shape == (norb, norb)
+  assert np.allclose(jnp.sum(orbs[0])+jnp.sum(orbs[1]), 7.402931219898609)
 
 if __name__ == "__main__":
   test_rhf_overlap()
@@ -43,4 +84,8 @@ if __name__ == "__main__":
   test_rhf_force_bias()
   test_rhf_energy()
   test_rhf_optimize_orbs()
-
+  test_uhf_overlap()
+  test_uhf_green()
+  test_uhf_force_bias()
+  test_uhf_energy()
+  test_uhf_optimize_orbs()
