@@ -107,7 +107,7 @@ class rhf():
 @dataclass
 class uhf():
   norb: int
-  nelec: int
+  nelec: Tuple[int, int]  
   n_opt_iter: int = 30
 
   @partial(jit, static_argnums=0)

@@ -31,7 +31,7 @@ options['n_prop_steps'] = options.get('n_prop_steps', 50)
 options['n_ene_blocks'] = options.get('n_ene_blocks', 50)
 options['n_sr_blocks'] = options.get('n_sr_blocks', 1)
 options['n_blocks'] = options.get('n_blocks', 50)
-options['seed'] = options.get('seed', np.random.randint(1, 1e6))
+options['seed'] = options.get('seed', np.random.randint(1, int(1e6)))
 options['n_eql'] = options.get('n_eql', 1)
 options['ad_mode'] = options.get('ad_mode', None)
 assert options['ad_mode'] in [None, 'forward', 'reverse']
