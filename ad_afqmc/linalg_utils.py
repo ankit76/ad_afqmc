@@ -13,6 +13,15 @@ from functools import partial
 print = partial(print, flush=True)
 
 @custom_jvp
+@jit
+def detach(x):
+  return x
+
+@detach.defjvp
+def detach_grad(primals, tangents):
+  return primals[0], 0. * tangents[0]
+
+@custom_jvp
 def _eigh(a):
     w, v = jnp.linalg.eigh(a)
     return w, v

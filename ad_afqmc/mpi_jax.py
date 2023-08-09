@@ -38,6 +38,7 @@ assert options['ad_mode'] in [None, 'forward', 'reverse']
 options['orbital_rotation'] = options.get('orbital_rotation', True)
 options['do_sr'] = options.get('do_sr', True)
 options['walker_type'] = options.get('walker_type', 'rhf')
+options['symmetry'] = options.get('symmetry', False)
 
 try:
   with h5py.File('observable.h5', 'r') as fh5:
@@ -55,6 +56,10 @@ ham_data['h0'] = h0
 ham_data['chol'] = chol.reshape(nchol, -1)
 if options['walker_type'] == 'rhf':
   ham_data['h1'] = h1
+  if options['symmetry']:
+    ham_data['mask'] = jnp.where(jnp.abs(ham_data['h1']) > 1.e-10, 1., 0.)
+  else:
+    ham_data['mask'] = jnp.ones(ham_data['h1'].shape)
   ham = hamiltonian.hamiltonian(nmo, nelec//2, nchol)
   prop = propagation.propagator(options['dt'], options['n_prop_steps'], options['n_ene_blocks'],
                               options['n_sr_blocks'], options['n_blocks'], ad_q, options['n_walkers'])
@@ -62,6 +67,10 @@ if options['walker_type'] == 'rhf':
   wave_data = jnp.eye(norb)
 elif options['walker_type'] == 'uhf':
   ham_data['h1'] = jnp.array([h1, h1])
+  if options['symmetry']:
+    ham_data['mask'] = jnp.where(jnp.abs(ham_data['h1']) > 1.e-10, 1., 0.)
+  else:
+    ham_data['mask'] = jnp.ones(ham_data['h1'].shape)
   ham = hamiltonian.hamiltonian_uhf(nmo, nelec_sp, nchol)
   prop = propagation.propagator_uhf(options['dt'], options['n_prop_steps'], options['n_ene_blocks'],
                                 options['n_sr_blocks'], options['n_blocks'], ad_q, options['n_walkers'])
@@ -79,10 +88,10 @@ if rank == 0:
 import time
 init = time.time()
 comm.Barrier()
-driver.afqmc(ham_data, ham, prop, trial, wave_data, observable, options)
+e_afqmc, err_afqmc = driver.afqmc(ham_data, ham, prop, trial, wave_data, observable, options)
 comm.Barrier()
 end = time.time()
 if rank == 0:
   print(f'ph_afqmc walltime: {end - init}', flush=True)
-
+  np.savetxt('ene_err.txt', np.array([ e_afqmc, err_afqmc ]))
 comm.Barrier()

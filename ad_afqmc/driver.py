@@ -201,6 +201,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     print(f'#\n# Number of large deviations: {global_large_deviations}', flush=True)
 
   comm.Barrier()
+  e_afqmc, e_err_afqmc = None, None
   if rank == 0:
     np.savetxt('samples_raw.dat', np.stack((global_block_weights, global_block_energies, global_block_observables)).T)
     if options['ad_mode'] is not None:
@@ -216,14 +217,15 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     if options['ad_mode'] == 'reverse':
       global_block_rdm1s = global_block_rdm1s[idx]
 
-    e_afqmc, err_afqmc = stat_utils.blocking_analysis(global_block_weights, global_block_energies, neql=0, printQ=True)
-    if err_afqmc is not None:
-      sig_dec = int(abs(np.floor(np.log10(err_afqmc))))
-      sig_err = np.around(np.round(err_afqmc * 10**sig_dec) * 10**(-sig_dec), sig_dec)
+    e_afqmc, e_err_afqmc = stat_utils.blocking_analysis(global_block_weights, global_block_energies, neql=0, printQ=True)
+    if e_err_afqmc is not None:
+      sig_dec = int(abs(np.floor(np.log10(e_err_afqmc))))
+      sig_err = np.around(np.round(e_err_afqmc * 10**sig_dec) * 10**(-sig_dec), sig_dec)
       sig_e = np.around(e_afqmc, sig_dec)
       print(f'AFQMC energy: {sig_e:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n')
     elif e_afqmc is not None:
       print(f'AFQMC energy: {e_afqmc}\n', flush=True)
+      e_err_afqmc = 0.
 
     if options['ad_mode'] is not None:
       obs_afqmc, err_afqmc = stat_utils.blocking_analysis  (global_block_weights, global_block_observables, neql=0, printQ=True)
@@ -235,9 +237,22 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
       elif obs_afqmc is not None:
         print(f'AFQMC observable: {obs_afqmc}\n', flush=True)
       if options['ad_mode'] == 'reverse':
+        #avg_rdm1 = np.einsum('i,i...->...', global_block_weights, global_block_rdm1s) / np.sum(global_block_weights)
+        norms_rdm1 = np.array(list(map(np.linalg.norm, global_block_rdm1s)))
+        samples_clean, idx = stat_utils.reject_outliers(np.stack((global_block_weights, norms_rdm1)).T, 1)
+        global_block_weights = samples_clean[:, 0]
+        global_block_rdm1s = global_block_rdm1s[idx]
         avg_rdm1 = np.einsum('i,i...->...', global_block_weights, global_block_rdm1s) / np.sum(global_block_weights)
+        errors_rdm1 = np.array(list(map(np.linalg.norm, global_block_rdm1s - avg_rdm1))) / np.linalg.norm(avg_rdm1)
+        print(f'# RDM noise:', flush=True)
+        obs_afqmc, err_afqmc = stat_utils.blocking_analysis(global_block_weights, errors_rdm1, neql=0, printQ=True)
         np.savez('rdm1_afqmc.npz', rdm1=avg_rdm1)
+
   comm.Barrier()
+  e_afqmc = comm.bcast(e_afqmc, root=0)
+  e_err_afqmc = comm.bcast(e_err_afqmc, root=0)
+  comm.Barrier()
+  return e_afqmc, e_err_afqmc
 
 def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
   if options is None:
@@ -253,4 +268,6 @@ def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
     if nproc is not None:
       mpi_prefix += f"-np {nproc} "
   os.system(f'export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script}')
+  ene_err = np.loadtxt('ene_err.txt')
+  return ene_err[0], ene_err[1]
 
