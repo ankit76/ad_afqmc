@@ -15,8 +15,8 @@ print = partial(print, flush=True)
 
 @dataclass
 class hamiltonian():
-  norb: int
-  nelec: int
+  norb: int   # number of spatial orbitals
+  nelec: int  # number of electrons of each spin, so nelec = total_nelec // 2 
   nchol: int
 
   @partial(jit, static_argnums=(0,))
@@ -49,7 +49,7 @@ class hamiltonian():
 
 @dataclass
 class hamiltonian_uhf():
-  norb: int
+  norb: int      # number of spatial orbitals
   nelec: tuple
   nchol: int
 
