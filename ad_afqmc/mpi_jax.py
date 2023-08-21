@@ -39,6 +39,7 @@ options['orbital_rotation'] = options.get('orbital_rotation', True)
 options['do_sr'] = options.get('do_sr', True)
 options['walker_type'] = options.get('walker_type', 'rhf')
 options['symmetry'] = options.get('symmetry', False)
+options['save_walkers'] = options.get('save_walkers', False)
 
 try:
   with h5py.File('observable.h5', 'r') as fh5:

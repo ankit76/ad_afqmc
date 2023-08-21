@@ -173,6 +173,11 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
 
     block_energy_n = comm.bcast(block_energy_n, root=0)
     prop_data = propagator.orthonormalize_walkers(prop_data)
+    
+    if options['save_walkers'] == True:
+      with open(f'prop_data_{rank}.bin', 'ab') as f:
+        pickle.dump(prop_data, f)
+
     prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
     prop_data['e_estimate'] = 0.9 * prop_data['e_estimate'] + 0.1 * block_energy_n
 
