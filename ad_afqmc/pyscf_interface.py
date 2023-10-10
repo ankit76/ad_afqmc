@@ -1,5 +1,7 @@
 import time
 import h5py
+import struct
+import pickle
 import numpy as np
 from pyscf import __config__, ao2mo, fci, gto, lib, lo, mcscf, mp, scf, cc, tools
 
@@ -388,3 +390,78 @@ def finite_difference_properties(mol, observable, observable_constant=0., epsilo
   print(f'CCSD observable: {obs_ccsd}')
   print(f'CCSD(T) observable: {obs_ccsdpt}')
   return obs_mf, obs_mp2, obs_ccsd, obs_ccsdpt
+
+# dice to noci
+# not tested
+def hci_to_noci(nelec_sp, fname='dets.bin', ndets=None):
+    state = {}
+    norbs = 0
+    with open(fname, 'rb') as f:
+        ndetsAll = struct.unpack('i', f.read(4))[0]
+        norbs = struct.unpack('i', f.read(4))[0]
+        if ndets is None:
+            ndets = ndetsAll
+        dets_up = np.zeros((ndets, norbs, nelec_sp[0]))
+        dets_dn = np.zeros((ndets, norbs, nelec_sp[1]))
+        for i in range(ndets):
+            coeff = struct.unpack('d', f.read(8))[0]
+            det = [[0 for i in range(norbs)], [0 for i in range(norbs)]]
+            for j in range(norbs):
+                nelec_up_counter = 0
+                nelec_dn_counter = 0
+                occ = struct.unpack('c', f.read(1))[0]
+                if (occ == b'a'):
+                    det[0][j] = 1
+                    dets_up[i][j, nelec_up_counter] = 1.
+                    nelec_up_counter += 1
+                elif (occ == b'b'):
+                    det[1][j] = 1
+                    dets_dn[i][j, nelec_dn_counter] = 1.
+                    nelec_dn_counter += 1
+                elif (occ == b'2'):
+                    det[0][j] = 1
+                    det[1][j] = 1
+                    dets_up[i][j, nelec_up_counter] = 1.
+                    dets_dn[i][j, nelec_dn_counter] = 1.
+                    nelec_up_counter += 1
+                    nelec_dn_counter += 1
+            state[tuple(map(tuple, det))] = coeff
+
+    return norbs, state, ndetsAll
+
+
+def fci_to_noci(fci, ndets=None, tol=1.e-4):
+    ci_coeffs = fci.ci
+    norb = fci.norb
+    nelec = fci.nelec
+    if ndets is None:
+        ndets = ci_coeffs.shape[0]
+    coeffs, occ_a, occ_b = zip(*fci.large_ci(ci_coeffs, norb, nelec, tol=tol, return_strs=False))
+    dets_up = np.zeros((ndets, norb, nelec[0]))
+    dets_dn = np.zeros((ndets, norb, nelec[1]))
+    for i in range(ndets):
+        for j in range(nelec[0]):
+            dets_up[i][occ_a[i][j], j] = 1.
+        for j in range(nelec[1]):
+            dets_dn[i][occ_b[i][j], j] = 1.
+    with open('dets.pkl', 'wb') as f:
+        pickle.dump([np.array(coeffs[:ndets]), [dets_up, dets_dn]], f)
+    return np.array(coeffs[:ndets]), [dets_up, dets_dn]
+
+if __name__ == "__main__":
+    from pyscf import gto, scf, fci
+    from ad_afqmc import pyscf_interface
+    
+    atomstring = f'''
+                     O 0.00000000 -0.13209669 0.00000000
+                     H 0.00000000 0.97970006  1.43152878
+                     H 0.00000000  0.97970006 -1.43152878
+                  '''
+    mol = gto.M(atom=atomstring, basis='sto-6g', verbose=3, unit='bohr', symmetry=1)
+    mf = scf.RHF(mol)
+    mf.kernel()
+    
+    ci = fci.FCI(mf)
+    ci.kernel()
+    
+    ci_coeffs, dets = pyscf_interface.fci_to_noci(ci, ndets=5)

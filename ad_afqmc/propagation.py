@@ -10,6 +10,7 @@ import jax.scipy as jsp
 from jax import lax, jit, custom_jvp, vmap, random, vjp, jvp, checkpoint, dtypes
 from dataclasses import dataclass
 from ad_afqmc import sr, linalg_utils
+import jax
 
 from functools import partial
 print = partial(print, flush=True)
@@ -23,6 +24,7 @@ class propagator():
   n_blocks: int = 50
   ad_q: bool = True
   n_walkers: int = 50
+  n_exp_terms: int = 6
 
   def __post_init__(self):
     if not self.ad_q:
@@ -54,7 +56,7 @@ class propagator():
     return prop_data
   
   def orthonormalize_walkers(self, prop_data):
-    prop_data['walkers'] = linalg_utils.qr_vmap(prop_data['walkers'])
+    prop_data['walkers'], _ = linalg_utils.qr_vmap(prop_data['walkers'])
     return prop_data
 
   # defining this separately because calculating vhs for a batch seems to be faster
@@ -64,8 +66,8 @@ class propagator():
     def scanned_fun(carry, x):
       carry = vhs_i.dot(carry)
       return carry, carry
-    _, vhs_n_walker = lax.scan(scanned_fun, walker_i, jnp.arange(1, 6))
-    walker_i = walker_i + jnp.sum(jnp.stack([ vhs_n_walker[n] / math.factorial(n+1) for n in range(5) ]), axis=0)
+    _, vhs_n_walker = lax.scan(scanned_fun, walker_i, jnp.arange(1, self.n_exp_terms))
+    walker_i = walker_i + jnp.sum(jnp.stack([ vhs_n_walker[n] / math.factorial(n+1) for n in range(self.n_exp_terms-1) ]), axis=0)
     walker_i = exp_h1.dot(walker_i)
     return walker_i
 
@@ -121,14 +123,19 @@ class propagator_uhf(propagator):
   def init_prop_data(self, trial, wave_data, ham, ham_data):
     prop_data = {}
     prop_data['weights'] = jnp.ones(self.n_walkers)
-    walkers_up = jnp.stack([ wave_data[0][:, :ham.nelec[0]] + 0.j for _ in range(self.n_walkers)])
-    walkers_dn = jnp.stack([ wave_data[1][:, :ham.nelec[1]] + 0.j for _ in range(self.n_walkers)])
+    if hasattr(trial, 'ndets'):
+      walkers_up = jnp.stack([ wave_data[1][0][0][:, :ham.nelec[0]] + 0.1j for _ in range(self.n_walkers)])
+      walkers_dn = jnp.stack([ wave_data[1][1][0][:, :ham.nelec[1]] + 0.1j for _ in range(self.n_walkers)])  
+    else:
+      walkers_up = jnp.stack([ wave_data[0][:, :ham.nelec[0]] + 0.j for _ in range(self.n_walkers)])
+      walkers_dn = jnp.stack([ wave_data[1][:, :ham.nelec[1]] + 0.j for _ in range(self.n_walkers)])
     prop_data['walkers'] = [ walkers_up, walkers_dn ]
     energy_samples = jnp.real(trial.calc_energy_vmap(ham_data, prop_data['walkers'], wave_data))
     e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
     prop_data['e_estimate'] = e_estimate
     prop_data['pop_control_ene_shift'] = e_estimate
     prop_data['overlaps'] = trial.calc_overlap_vmap(prop_data['walkers'], wave_data)
+    prop_data['norms'] = jnp.ones(self.n_walkers) + 0.j
     return prop_data
   
   @partial(jit, static_argnums=(0,))
@@ -154,9 +161,38 @@ class propagator_uhf(propagator):
     return prop_data
 
   def orthonormalize_walkers(self, prop_data):
-    prop_data['walkers'] = linalg_utils.qr_vmap_uhf(prop_data['walkers'])
+    prop_data['walkers'], _ = linalg_utils.qr_vmap_uhf(prop_data['walkers'])
     return prop_data
   
+  def orthogonalize_walkers(self, prop_data):
+    prop_data['walkers'], norms = linalg_utils.qr_vmap_uhf(prop_data['walkers'])
+    return prop_data, norms
+  
+  @partial(jit, static_argnums=(0))
+  def multiply_constant(self, walkers, constants):
+    walkers[0] = constants[0].reshape(-1, 1, 1) * walkers[0]
+    walkers[1] = constants[1].reshape(-1, 1, 1) * walkers[1]
+    return walkers
+
+  @partial(jit, static_argnums=(0, 1))
+  def propagate_free(self, trial, ham, prop, fields, wave_data):
+    #jax.debug.print('ham:\n{}', ham)
+    #jax.debug.print('prop:\n{}', prop)
+    #jax.debug.print('fields:\n{}', fields)
+    shift_term = jnp.einsum('wg,sg->sw', fields, ham['mf_shifts_fp'])
+    #jax.debug.print('shift_term:\n{}', shift_term)
+    constants = jnp.einsum('sw,s->sw', jnp.exp(-jnp.sqrt(self.dt)
+                           * shift_term), jnp.exp(self.dt * ham['h0_prop_fp']))
+    #jax.debug.print('constants:\n{}', constants)
+    prop['walkers'] = self.apply_propagator_vmap(ham, prop['walkers'], fields)
+    #jax.debug.print('walkers:\n{}', prop['walkers'])
+    prop['walkers'] = self.multiply_constant(prop['walkers'], constants)
+    #jax.debug.print('walkers after multi:\n{}', prop['walkers'])
+    prop, norms = self.orthogonalize_walkers(prop)
+    prop['norms'] *= norms[0] * norms[1]
+    prop['overlaps'] = trial.calc_overlap_vmap(prop['walkers'], wave_data) * prop['norms']
+    return prop
+
   def __hash__(self):
     return hash((self.dt, self.n_prop_steps, self.n_ene_blocks, self.n_sr_blocks, self.n_blocks, self.n_walkers))
 

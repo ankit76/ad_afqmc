@@ -33,11 +33,13 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     observable_constant = 0.
 
   rdm_op = 0. * jnp.array(ham_data['h1']) # for reverse mode
-
+  
+  #print(f'wave_data:\n{wave_data}')
   ham_data = ham.rot_ham(ham_data, wave_data)
-  ham_data = ham.prop_ham(ham_data, propagator.dt, wave_data)
-
+  ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
+  #print(f'ham_data:\n{ham_data}')
   prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data)
+  #print(f'prop_data:\n{prop_data}')
   prop_data['key'] = random.PRNGKey(seed+rank)
   trial_rdm1 = trial.get_rdm1(wave_data)
   trial_observable = np.sum(trial_rdm1 * observable_op)
@@ -276,3 +278,64 @@ def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
   ene_err = np.loadtxt('ene_err.txt')
   return ene_err[0], ene_err[1]
 
+
+def fp_afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
+  init = time.time()
+  seed = options['seed']
+
+  ham_data = ham.rot_ham(ham_data, wave_data)
+  ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
+  prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data)
+  prop_data['key'] = random.PRNGKey(seed+rank)
+
+  comm.Barrier()
+  init_time = time.time() - init
+  if rank == 0:
+    print("#\n# Sampling sweeps:")
+    print("#  Iter        Mean energy          Stochastic error       Walltime")
+  comm.Barrier()
+
+  global_block_weights = np.zeros(size * propagator.n_ene_blocks) + 0.j
+  global_block_energies = np.zeros(size * propagator.n_ene_blocks) + 0.j
+  
+  total_energy = np.zeros(propagator.n_blocks) + 0.j
+  total_weight = np.zeros(propagator.n_blocks) + 0.j
+  for n in range(propagator.n_ene_blocks): # hacking this variable for number of trajectories
+    prop_data_tr, energy_samples, weights, prop_data['key'] = sampler.propagate_free(
+        ham, ham_data, propagator, prop_data, trial, wave_data)
+    #print(prop_data_tr)
+    global_block_weights[n] = weights[0]
+    global_block_energies[n] = energy_samples[0]
+    total_weight += weights
+    total_energy += weights * (energy_samples - total_energy) / total_weight
+    if options['save_walkers'] == True:
+      if n > 0:
+        with open(f'prop_data_{rank}.bin', 'ab') as f:
+          pickle.dump(prop_data_tr, f)
+      else:
+        with open(f'prop_data_{rank}.bin', 'wb') as f:
+          pickle.dump(prop_data_tr, f)
+
+    if n % (max(propagator.n_ene_blocks//10, 1)) == 0:
+      comm.Barrier()
+      if rank == 0:
+        print(f'{n}: {total_energy}')
+    np.savetxt('samples_raw.dat', np.stack((global_block_weights, global_block_energies)).T)
+
+def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None):
+  if options is None:
+    options = {}
+  with open('options.bin', 'wb') as f:
+    pickle.dump(options, f)
+  if script is None:
+    path = os.path.abspath(__file__)
+    dir_path = os.path.dirname(path)
+    script = f'{dir_path}/mpi_jax.py'
+  if mpi_prefix is None:
+    mpi_prefix = "mpirun "
+    if nproc is not None:
+      mpi_prefix += f"-np {nproc} "
+  os.system(
+      f'export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script}')
+  #ene_err = np.loadtxt('ene_err.txt')
+  #return ene_err[0], ene_err[1]

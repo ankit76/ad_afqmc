@@ -37,6 +37,15 @@ class rhf():
   @partial(jit, static_argnums=0)
   def calc_green_vmap(self, walkers, wave_data=None):
     return vmap(self.calc_green, in_axes=(0, None))(walkers, wave_data)
+  
+  @partial(jit, static_argnums=0)
+  def calc_1rdm(self, walker, wave_data=None): # shouldnt be here
+    rdm1 = (walker.dot(jnp.linalg.inv(walker.T.conj().dot(walker))).dot(walker.T.conj())).T
+    return rdm1
+  
+  @partial(jit, static_argnums=0)
+  def calc_1rdm_vmap(self, walkers, wave_data=None):
+    return vmap(self.calc_1rdm, in_axes=(0, None))(walkers, wave_data)
 
   @partial(jit, static_argnums=0)
   def calc_force_bias(self, walker, rot_chol, wave_data=None):
@@ -214,3 +223,122 @@ class uhf():
 
   def __hash__(self):
     return hash((self.norb, self.nelec, self.n_opt_iter,))
+
+
+@dataclass
+class noci():
+  norb: int
+  nelec: Tuple[int, int]
+  ndets: int
+
+  @partial(jit, static_argnums=0)
+  def calc_overlap_single_det(self, walker_up, walker_dn, trial_up, trial_dn):
+    return jnp.linalg.det(trial_up[:, :self.nelec[0]].T @ walker_up) * jnp.linalg.det(trial_dn[:, :self.nelec[1]].T @ walker_dn)
+  
+  @partial(jit, static_argnums=0)
+  def calc_overlap(self, walker_up, walker_dn, wave_data):
+    ci_coeffs = wave_data[0]
+    dets = wave_data[1]
+    overlaps = vmap(self.calc_overlap_single_det, in_axes=(None,None,0,0))(walker_up, walker_dn, dets[0], dets[1])
+    return jnp.sum(ci_coeffs * overlaps)
+  
+  @partial(jit, static_argnums=0)
+  def calc_overlap_vmap(self, walkers, wave_data):
+    return vmap(self.calc_overlap, in_axes=(0, 0, None))(walkers[0], walkers[1], wave_data)
+
+  @partial(jit, static_argnums=0)
+  def calc_green_single_det(self, walker_up, walker_dn, trial_up, trial_dn):
+    green_up = (walker_up.dot(jnp.linalg.inv(
+        trial_up[:, :self.nelec[0]].T.dot(walker_up)))).T
+    green_dn = (walker_dn.dot(jnp.linalg.inv(
+        trial_dn[:, :self.nelec[1]].T.dot(walker_dn)))).T
+    return [green_up, green_dn]
+
+  @partial(jit, static_argnums=0)
+  def calc_green(self, walker_up, walker_dn, wave_data):
+    ci_coeffs = wave_data[0]
+    dets = wave_data[1]
+    overlaps = vmap(self.calc_overlap_single_det, in_axes=(
+        None, None, 0, 0))(walker_up, walker_dn, dets[0], dets[1])
+    overlap = jnp.sum(ci_coeffs * overlaps)
+    up_greens, dn_greens = vmap(self.calc_green_single_det, in_axes=(
+        None, None, 0, 0))(walker_up, walker_dn, dets[0], dets[1])
+    return up_greens, dn_greens, overlaps
+
+  @partial(jit, static_argnums=0)
+  def calc_force_bias(self, walker_up, walker_dn, rot_chol, wave_data):
+    ci_coeffs = wave_data[0]
+    dets = wave_data[1]
+    up_greens, dn_greens, overlaps = self.calc_green(walker_up, walker_dn, wave_data)
+    overlap = jnp.sum(ci_coeffs * overlaps)
+    fb_up = jnp.einsum(
+        'ngij,nij,n->g', rot_chol[0], up_greens, ci_coeffs * overlaps, optimize='optimal') / overlap
+    fb_dn = jnp.einsum(
+        'ngij,nij,n->g', rot_chol[1], dn_greens, ci_coeffs * overlaps, optimize='optimal') / overlap
+    return fb_up + fb_dn
+  
+  @partial(jit, static_argnums=0)
+  def calc_force_bias_vmap(self, walkers, ham, wave_data):
+    return vmap(self.calc_force_bias, in_axes=(0, 0, None, None))(walkers[0], walkers[1], ham['rot_chol'], wave_data)
+
+  @partial(jit, static_argnums=0)
+  def calc_energy_single_det(self, h0, rot_h1_up, rot_h1_dn, rot_chol_up, rot_chol_dn, walker_up, walker_dn, trial_up, trial_dn):
+    ene0 = h0
+    green_walker = self.calc_green_single_det(walker_up, walker_dn, trial_up, trial_dn)
+    ene1 = jnp.sum(green_walker[0] * rot_h1_up) + \
+        jnp.sum(green_walker[1] * rot_h1_dn)
+    f_up = jnp.einsum(
+        'gij,jk->gik', rot_chol_up, green_walker[0].T, optimize='optimal')
+    f_dn = jnp.einsum(
+        'gij,jk->gik', rot_chol_dn, green_walker[1].T, optimize='optimal')
+    c_up = vmap(jnp.trace)(f_up)
+    c_dn = vmap(jnp.trace)(f_dn)
+    exc_up = jnp.sum(vmap(lambda x: x * x.T)(f_up))
+    exc_dn = jnp.sum(vmap(lambda x: x * x.T)(f_dn))
+    ene2 = (jnp.sum(c_up * c_up) + jnp.sum(c_dn * c_dn) +
+            2. * jnp.sum(c_up * c_dn) - exc_up - exc_dn) / 2.
+
+    return ene2 + ene1 + ene0
+  
+  @partial(jit, static_argnums=0)
+  def calc_energy(self, h0, rot_h1, rot_chol, walker_up, walker_dn, wave_data):
+    ci_coeffs = wave_data[0]
+    dets = wave_data[1]
+    overlaps = vmap(self.calc_overlap_single_det, in_axes=(
+        None, None, 0, 0))(walker_up, walker_dn, dets[0], dets[1])
+    overlap = jnp.sum(ci_coeffs * overlaps)
+    energies = vmap(self.calc_energy_single_det, in_axes=(None, 0, 0, 0, 0, None, None, 0, 0))(h0, rot_h1[0], rot_h1[1], rot_chol[0], rot_chol[1], walker_up, walker_dn, dets[0], dets[1])
+    ene = jnp.sum(ci_coeffs * overlaps * energies) / overlap
+    return ene
+
+  @partial(jit, static_argnums=0)
+  def calc_energy_vmap(self, ham, walkers, wave_data):
+    return vmap(self.calc_energy, in_axes=(None, None, None, 0, 0, None))(ham['h0'], ham['rot_h1'], ham['rot_chol'], walkers[0], walkers[1], wave_data)
+
+  @partial(jit, static_argnums=0)
+  def get_trans_rdm1_single_det(self, sd_0_up, sd_0_dn, sd_1_up, sd_1_dn):
+    dm_up = (sd_0_up[:, :self.nelec[0]]).dot(jnp.linalg.inv(
+        sd_1_up[:, :self.nelec[0]].T.dot(sd_0_up[:, :self.nelec[0]]))).dot(sd_1_up[:, :self.nelec[0]].T)
+    dm_dn = (sd_0_dn[:, :self.nelec[1]]).dot(jnp.linalg.inv(
+        sd_1_dn[:, :self.nelec[1]].T.dot(sd_0_dn[:, :self.nelec[1]]))).dot(sd_1_dn[:, :self.nelec[1]].T)
+    return [dm_up, dm_dn]
+  
+  @partial(jit, static_argnums=0)
+  def get_rdm1(self, wave_data):
+    ci_coeffs = wave_data[0]
+    dets = wave_data[1]
+    overlaps = vmap(vmap(self.calc_overlap_single_det, in_axes=(
+        None, None, 0, 0)), in_axes=(0, 0, None, None))(dets[0], dets[1], dets[0], dets[1])  
+    overlap = jnp.sum(jnp.outer(ci_coeffs, ci_coeffs) * overlaps)
+    up_rdm1s, dn_rdm1s = vmap(vmap(self.get_trans_rdm1_single_det, in_axes=(0, 0, None, None)), in_axes=(None, None, 0, 0))(dets[0], dets[1], dets[0], dets[1])
+    up_rdm1 = jnp.einsum('hg,hgij->ij', jnp.outer(ci_coeffs, ci_coeffs) * overlaps, up_rdm1s) / overlap
+    dn_rdm1 = jnp.einsum('hg,hgij->ij', jnp.outer(ci_coeffs, ci_coeffs) * overlaps, dn_rdm1s) / overlap
+    return up_rdm1 + dn_rdm1
+  
+  # not implemented
+  @partial(jit, static_argnums=0)
+  def optimize_orbs(self, ham_data, wave_data):
+    return wave_data
+
+  def __hash__(self):
+    return hash((self.norb, self.nelec, self.ndets,))

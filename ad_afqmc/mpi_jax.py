@@ -40,6 +40,9 @@ options['do_sr'] = options.get('do_sr', True)
 options['walker_type'] = options.get('walker_type', 'rhf')
 options['symmetry'] = options.get('symmetry', False)
 options['save_walkers'] = options.get('save_walkers', False)
+options['trial'] = options.get('trial', 'rhf')
+options['ene0'] = options.get('ene0', 0.)
+options['free_projection'] = options.get('free_projection', False)
 
 try:
   with h5py.File('observable.h5', 'r') as fh5:
@@ -55,6 +58,7 @@ ad_q = (options['ad_mode'] != None)
 ham_data = {}
 ham_data['h0'] = h0
 ham_data['chol'] = chol.reshape(nchol, -1)
+ham_data['ene0'] = options['ene0']
 if options['walker_type'] == 'rhf':
   ham_data['h1'] = h1
   if options['symmetry']:
@@ -72,11 +76,28 @@ elif options['walker_type'] == 'uhf':
     ham_data['mask'] = jnp.where(jnp.abs(ham_data['h1']) > 1.e-10, 1., 0.)
   else:
     ham_data['mask'] = jnp.ones(ham_data['h1'].shape)
-  ham = hamiltonian.hamiltonian_uhf(nmo, nelec_sp, nchol)
-  prop = propagation.propagator_uhf(options['dt'], options['n_prop_steps'], options['n_ene_blocks'],
-                                options['n_sr_blocks'], options['n_blocks'], ad_q, options['n_walkers'])
-  trial = wavefunctions.uhf(norb, nelec_sp)
-  wave_data = jnp.array(np.load('uhf.npz')['mo_coeff'])
+  if options['trial'] == 'noci':
+    ham = hamiltonian.hamiltonian_noci(nmo, nelec_sp, nchol)
+    if options['free_projection']:
+      prop = propagation.propagator_uhf(options['dt'], options['n_prop_steps'], options['n_ene_blocks'],
+                                        options['n_sr_blocks'], options['n_blocks'], True, options['n_walkers'], 10)
+    else:
+      prop = propagation.propagator_uhf(options['dt'], options['n_prop_steps'], options['n_ene_blocks'],
+                                        options['n_sr_blocks'], options['n_blocks'], ad_q, options['n_walkers'])
+    with open('dets.pkl', 'rb') as f:
+      wave_data = pickle.load(f)
+    wave_data = [ jnp.array(wave_data[0]), [ jnp.array(wave_data[1][0]), jnp.array(wave_data[1][1]) ] ] 
+    trial = wavefunctions.noci(norb, nelec_sp, wave_data[0].size)
+  else:
+    ham = hamiltonian.hamiltonian_uhf(nmo, nelec_sp, nchol)
+    if options['free_projection']:
+      prop = propagation.propagator_uhf(options['dt'], options['n_prop_steps'], options['n_ene_blocks'],
+                                  options['n_sr_blocks'], options['n_blocks'], True, options['n_walkers'], 10)
+    else:
+      prop = propagation.propagator_uhf(options['dt'], options['n_prop_steps'], options['n_ene_blocks'],
+                                  options['n_sr_blocks'], options['n_blocks'], ad_q, options['n_walkers'])
+    trial = wavefunctions.uhf(norb, nelec_sp)
+    wave_data = jnp.array(np.load('uhf.npz')['mo_coeff'])
 
 if rank == 0:
   print(f'# norb: {norb}')
@@ -89,7 +110,11 @@ if rank == 0:
 import time
 init = time.time()
 comm.Barrier()
-e_afqmc, err_afqmc = driver.afqmc(ham_data, ham, prop, trial, wave_data, observable, options)
+e_afqmc, err_afqmc = 0., 0.
+if options['free_projection']:
+  driver.fp_afqmc(ham_data, ham, prop, trial, wave_data, observable, options)
+else:
+  e_afqmc, err_afqmc = driver.afqmc(ham_data, ham, prop, trial, wave_data, observable, options)
 comm.Barrier()
 end = time.time()
 if rank == 0:

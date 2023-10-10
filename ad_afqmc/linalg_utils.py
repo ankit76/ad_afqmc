@@ -55,14 +55,17 @@ def _eigh_jvp_jitted_nob(v, Fmat, at):
 
 @jit
 def qr_vmap(walkers):
-  walkers, _ = vmap(jnp.linalg.qr)(walkers)
-  return walkers
+  walkers, r = vmap(jnp.linalg.qr)(walkers)
+  norm_factors = vmap(lambda x: jnp.prod(jnp.diag(x)))(r)
+  return walkers, norm_factors
 
 @jit
 def qr_vmap_uhf(walkers):
-  walkers[0], _ = vmap(jnp.linalg.qr)(walkers[0])
-  walkers[1], _ = vmap(jnp.linalg.qr)(walkers[1])
-  return walkers
+  walkers[0], r_0 = vmap(jnp.linalg.qr)(walkers[0])
+  walkers[1], r_1 = vmap(jnp.linalg.qr)(walkers[1])
+  norm_factors_0 = vmap(lambda x: jnp.prod(jnp.diag(x)))(r_0)
+  norm_factors_1 = vmap(lambda x: jnp.prod(jnp.diag(x)))(r_1)
+  return walkers, jnp.array([norm_factors_0, norm_factors_1])
 
 # modified cholesky for a given matrix
 @partial(jit, static_argnums=(1,))
