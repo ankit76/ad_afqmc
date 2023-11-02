@@ -423,7 +423,12 @@ def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
     os.system(
         f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script}"
     )
-    ene_err = np.loadtxt("ene_err.txt")
+    try:
+        ene_err = np.loadtxt("ene_err.txt")
+    except:
+        if rank == 0:
+            print("AFQMC did not execute correctly.")
+        ene_err = 0.0, 0.0
     return ene_err[0], ene_err[1]
 
 

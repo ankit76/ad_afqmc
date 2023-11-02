@@ -62,6 +62,7 @@ def _block_scan(prop_data, _x, ham_data, propagator, trial, wave_data):
     prop_data["pop_control_ene_shift"] = (
         0.9 * prop_data["pop_control_ene_shift"] + 0.1 * block_energy
     )
+    return prop_data, (block_energy, block_weight)
 
 
 @partial(jit, static_argnums=(3, 4))

@@ -42,4 +42,7 @@ options = {
     "walker_type": "uhf",
     "ad_mode": "reverse",
 }
-driver.run_afqmc(options=options, nproc=4)
+# serial run
+driver.run_afqmc(options=options, mpi_prefix='')
+# mpi run
+# driver.run_afqmc(options=options, nproc=4)
