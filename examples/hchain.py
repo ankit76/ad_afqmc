@@ -3,7 +3,7 @@ from functools import partial
 import numpy as np
 from pyscf import fci, gto, scf
 
-from ad_afqmc import driver, pyscf_interface
+from ad_afqmc import pyscf_interface, run_afqmc
 
 print = partial(print, flush=True)
 
@@ -43,6 +43,6 @@ options = {
     "ad_mode": "reverse",
 }
 # serial run
-driver.run_afqmc(options=options, mpi_prefix='')
+#driver.run_afqmc(options=options, mpi_prefix='')
 # mpi run
-# driver.run_afqmc(options=options, nproc=4)
+run_afqmc.run_afqmc(options=options, nproc=4)

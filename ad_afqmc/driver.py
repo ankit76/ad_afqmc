@@ -204,6 +204,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
             block_energy_n, prop_data = sampler.propagate_phaseless(
                 ham, ham_data, propagator, prop_data, trial, wave_data
             )
+            block_observable_n = 0.0
 
         block_energy_n = np.array([block_energy_n], dtype="float32")
         block_observable_n = np.array(
@@ -245,8 +246,12 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         prop_data = propagator.orthonormalize_walkers(prop_data)
 
         if options["save_walkers"] == True:
-            with open(f"prop_data_{rank}.bin", "ab") as f:
-                pickle.dump(prop_data, f)
+            if n > 0:
+                with open(f"prop_data_{rank}.bin", "ab") as f:
+                    pickle.dump(prop_data, f)
+            else:
+                with open(f"prop_data_{rank}.bin", "wb") as f:
+                    pickle.dump(prop_data, f)
 
         prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
@@ -407,31 +412,6 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     return e_afqmc, e_err_afqmc
 
 
-def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
-    if options is None:
-        options = {}
-    with open("options.bin", "wb") as f:
-        pickle.dump(options, f)
-    if script is None:
-        path = os.path.abspath(__file__)
-        dir_path = os.path.dirname(path)
-        script = f"{dir_path}/mpi_jax.py"
-    if mpi_prefix is None:
-        mpi_prefix = "mpirun "
-        if nproc is not None:
-            mpi_prefix += f"-np {nproc} "
-    os.system(
-        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script}"
-    )
-    try:
-        ene_err = np.loadtxt("ene_err.txt")
-    except:
-        if rank == 0:
-            print("AFQMC did not execute correctly.")
-        ene_err = 0.0, 0.0
-    return ene_err[0], ene_err[1]
-
-
 def fp_afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     init = time.time()
     seed = options["seed"]
@@ -484,23 +464,3 @@ def fp_afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         np.savetxt(
             "samples_raw.dat", np.stack((global_block_weights, global_block_energies)).T
         )
-
-
-def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None):
-    if options is None:
-        options = {}
-    with open("options.bin", "wb") as f:
-        pickle.dump(options, f)
-    if script is None:
-        path = os.path.abspath(__file__)
-        dir_path = os.path.dirname(path)
-        script = f"{dir_path}/mpi_jax.py"
-    if mpi_prefix is None:
-        mpi_prefix = "mpirun "
-        if nproc is not None:
-            mpi_prefix += f"-np {nproc} "
-    os.system(
-        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script}"
-    )
-    # ene_err = np.loadtxt('ene_err.txt')
-    # return ene_err[0], ene_err[1]

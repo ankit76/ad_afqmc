@@ -4,7 +4,7 @@ import h5py
 import numpy as np
 from pyscf import gto, scf
 
-from ad_afqmc import driver, pyscf_interface
+from ad_afqmc import pyscf_interface, run_afqmc
 
 print = partial(print, flush=True)
 
@@ -33,9 +33,9 @@ for i in range(mol.natm):
 dip_ints_ao = -mol.intor_symmetric("int1e_r", comp=3)
 
 # orbital relaxed hf, mp2, ccsd, ccsd(t) properties
-pyscf_interface.finite_difference_properties(
-    mol, dip_ints_ao[2], observable_constant=nuc_dipmom[2], norb_frozen=norb_frozen
-)
+#pyscf_interface.finite_difference_properties(
+#    mol, dip_ints_ao[2], observable_constant=nuc_dipmom[2], norb_frozen=norb_frozen
+#)
 
 # ad afqmc
 pyscf_interface.prep_afqmc(mf, norb_frozen=norb_frozen)
@@ -63,4 +63,4 @@ options = {
     "orbital_rotation": True,
     "ad_mode": "forward",
 }
-driver.run_afqmc(options=options, nproc=4)
+run_afqmc.run_afqmc(options=options, nproc=4)

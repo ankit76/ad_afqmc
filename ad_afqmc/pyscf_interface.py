@@ -5,7 +5,7 @@ from functools import partial
 
 import h5py
 import numpy as np
-from pyscf import __config__, ao2mo, cc, fci, gto, mcscf, scf
+from pyscf import __config__, ao2mo, fci, gto, mcscf, scf
 
 print = partial(print, flush=True)
 
@@ -352,6 +352,8 @@ def finite_difference_properties(
     relaxed=True,
     dm=None,
 ):
+    from pyscf import cc
+
     print(
         f'#\n# Orbital {"" if relaxed else "un"}relaxed finite difference properties using {hf_type} reference'
     )
