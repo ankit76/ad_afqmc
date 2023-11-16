@@ -31,7 +31,7 @@ def _prep_afqmc(options=None):
         h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
         chol = jnp.array(fh5.get("chol")).reshape(-1, nmo, nmo)
 
-    nelec_sp = (nelec // 2 + abs(ms) // 2, nelec - nelec // 2 - abs(ms) // 2)
+    nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
 
     norb = nmo
 
