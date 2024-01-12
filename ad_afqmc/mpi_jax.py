@@ -61,6 +61,15 @@ def _prep_afqmc(options=None):
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
 
+    if abs(ms) != 0:
+        try:
+            assert options["walker_type"] != "rhf"
+            assert options["trial"] != "rhf"
+        except:
+            raise ValueError(
+                "Open shell systems have to use UHF walkers and non-RHF trials."
+            )
+
     try:
         with h5py.File("observable.h5", "r") as fh5:
             [observable_constant] = fh5["constant"]
