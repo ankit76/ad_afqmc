@@ -460,7 +460,7 @@ def fp_afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         if n % (max(propagator.n_ene_blocks // 10, 1)) == 0:
             comm.Barrier()
             if rank == 0:
-                print(f"{n}: {total_energy}")
+                print(f"{n:5d}: {total_energy}")
         np.savetxt(
             "samples_raw.dat", np.stack((global_block_weights, global_block_energies)).T
         )
