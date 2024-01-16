@@ -180,13 +180,13 @@ class propagator_uhf(propagator):
         if hasattr(trial, "ndets"):
             walkers_up = jnp.stack(
                 [
-                    wave_data[1][0][0][:, : ham.nelec[0]] + 0.1j
+                    wave_data[1][0][0][:, : ham.nelec[0]] + 1.0e-10j
                     for _ in range(self.n_walkers)
                 ]
             )
             walkers_dn = jnp.stack(
                 [
-                    wave_data[1][1][0][:, : ham.nelec[1]] + 0.1j
+                    wave_data[1][1][0][:, : ham.nelec[1]] + 1.0e-10j
                     for _ in range(self.n_walkers)
                 ]
             )
@@ -205,6 +205,7 @@ class propagator_uhf(propagator):
         prop_data["e_estimate"] = e_estimate
         prop_data["pop_control_ene_shift"] = e_estimate
         prop_data["overlaps"] = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["normed_overlaps"] = prop_data["overlaps"]
         prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
         return prop_data
 
@@ -281,6 +282,8 @@ class propagator_uhf(propagator):
         prop["overlaps"] = (
             trial.calc_overlap_vmap(prop["walkers"], wave_data) * prop["norms"]
         )
+        normed_walkers, _ = linalg_utils.qr_vmap_uhf(prop["walkers"])
+        prop["normed_overlaps"] = trial.calc_overlap_vmap(normed_walkers, wave_data)
         return prop
 
     def __hash__(self):
