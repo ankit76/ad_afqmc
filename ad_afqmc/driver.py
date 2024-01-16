@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from jax import dtypes, jvp, random, vjp
 from mpi4py import MPI
 
-from ad_afqmc import propagation, sampler, stat_utils
+from ad_afqmc import linalg_utils, propagation, sampler, stat_utils
 
 print = partial(print, flush=True)
 
@@ -38,6 +38,32 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         observable_constant = 0.0
 
     rdm_op = 0.0 * jnp.array(ham_data["h1"])  # for reverse mode
+    rdm_2_op = None
+    if options["ad_mode"] == "2rdm":
+        nchol = ham.nchol
+        norb = ham.norb
+        eri_full = np.einsum(
+            "gj,gl->jl",
+            ham_data["chol"].reshape(nchol, -1),
+            ham_data["chol"].reshape(nchol, -1),
+        )
+        # # convert to symmetry 4
+        # # very slow, but only done once
+        # npair = norb * (norb + 1) // 2
+        # eri = np.zeros((npair, npair))
+        # for ij in range(npair):
+        #     i = int(np.floor(np.sqrt(2 * ij + 0.25) - 0.5))
+        #     j = ij - i * (i + 1) // 2
+        #     ij_full = i * norb + j
+        #     eri[ij, ij] = eri_full[ij_full, ij_full]
+        #     for kl in range(ij):
+        #         k = int(np.floor(np.sqrt(2 * kl + 0.25) - 0.5))
+        #         l = kl - k * (k + 1) // 2
+        #         kl_full = k * norb + l
+        #         eri[ij, kl] = eri_full[ij_full, kl_full]
+        #         eri[kl, ij] = eri[ij, kl]
+        # ham_data["chol"] = linalg_utils.modified_cholesky(eri, ham.norb, ham.nchol)
+        rdm_2_op = jnp.array(eri_full).reshape(norb, norb, norb, norb)
 
     # print(f'wave_data:\n{wave_data}')
     ham_data = ham.rot_ham(ham_data, wave_data)
@@ -135,6 +161,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     global_block_energies = None
     global_block_observables = None
     global_block_rdm1s = None
+    global_block_rdm2s = None
     if rank == 0:
         global_block_weights = np.zeros(size * propagator.n_blocks)
         global_block_energies = np.zeros(size * propagator.n_blocks)
@@ -142,6 +169,10 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         if options["ad_mode"] == "reverse":
             global_block_rdm1s = np.zeros(
                 (size * propagator.n_blocks, *(ham_data["h1"].shape))
+            )
+        elif options["ad_mode"] == "2rdm":
+            global_block_rdm2s = np.zeros(
+                (size * propagator.n_blocks, *(rdm_2_op.shape))
             )
 
     if options["orbital_rotation"] == False and options["do_sr"] == False:
@@ -166,6 +197,12 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad(
             ham, ham_data, x, y, propagator, z, trial, wave_data
         )
+
+    if options["ad_mode"] == "2rdm":
+        propagate_phaseless_wrapper = lambda x, y, z: sampler.propagate_phaseless_ad_1(
+            ham, ham_data, x, y, propagator, z, trial, wave_data
+        )
+
     prop_data_tangent = {}
     for x in prop_data:
         if isinstance(prop_data[x], list):
@@ -175,6 +212,9 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         else:
             prop_data_tangent[x] = np.zeros_like(prop_data[x])
     block_rdm1_n = np.zeros_like(ham_data["h1"])
+    block_rdm2_n = None
+    if options["ad_mode"] == "2rdm":
+        block_rdm2_n = np.zeros_like(rdm_2_op)
     block_observable_n = 0.0
 
     for n in range(propagator.n_blocks):
@@ -200,6 +240,17 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
                 block_observable_n = trial_observable
                 block_rdm1_n = trial_rdm1
                 local_large_deviations += 1
+        elif options["ad_mode"] == "2rdm":
+            coupling = 1.0
+            block_energy_n, block_vjp_fun, prop_data = vjp(
+                propagate_phaseless_wrapper, coupling, rdm_2_op, prop_data, has_aux=True
+            )
+            block_rdm2_n = block_vjp_fun(1.0)[1]
+            block_observable_n = trial_observable
+            if np.isnan(block_observable_n) or np.isinf(block_observable_n):
+                block_observable_n = trial_observable
+                block_rdm1_n = trial_rdm1
+                local_large_deviations += 1
         else:
             block_energy_n, prop_data = sampler.propagate_phaseless(
                 ham, ham_data, propagator, prop_data, trial, wave_data
@@ -212,11 +263,14 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         )
         block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
         block_rdm1_n = np.array(block_rdm1_n, dtype="float32")
+        if options["ad_mode"] == "2rdm":
+            block_rdm2_n = np.array(block_rdm2_n, dtype="float32")
 
         gather_weights = None
         gather_energies = None
         gather_observables = None
         gather_rdm1s = None
+        gather_rdm2s = None
         if rank == 0:
             gather_weights = np.zeros(size, dtype="float32")
             gather_energies = np.zeros(size, dtype="float32")
@@ -225,12 +279,16 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
                 gather_rdm1s = np.zeros(
                     (size, *(ham_data["h1"].shape)), dtype="float32"
                 )
+            elif options["ad_mode"] == "2rdm":
+                gather_rdm2s = np.zeros((size, *(rdm_2_op.shape)), dtype="float32")
 
         comm.Gather(block_weight_n, gather_weights, root=0)
         comm.Gather(block_energy_n, gather_energies, root=0)
         comm.Gather(block_observable_n, gather_observables, root=0)
         if options["ad_mode"] == "reverse":
             comm.Gather(block_rdm1_n, gather_rdm1s, root=0)
+        elif options["ad_mode"] == "2rdm":
+            comm.Gather(block_rdm2_n, gather_rdm2s, root=0)
         block_energy_n = 0.0
         if rank == 0:
             global_block_weights[n * size : (n + 1) * size] = gather_weights
@@ -238,6 +296,8 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
             global_block_observables[n * size : (n + 1) * size] = gather_observables
             if options["ad_mode"] == "reverse":
                 global_block_rdm1s[n * size : (n + 1) * size] = gather_rdm1s
+            elif options["ad_mode"] == "2rdm":
+                global_block_rdm2s[n * size : (n + 1) * size] = gather_rdm2s
             block_energy_n = np.sum(gather_weights * gather_energies) / np.sum(
                 gather_weights
             )
@@ -323,7 +383,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
                 (global_block_weights, global_block_energies, global_block_observables)
             ).T,
         )
-        if options["ad_mode"] is not None:
+        if options["ad_mode"] is not None and options["ad_mode"] != "2rdm":
             samples_clean, idx = stat_utils.reject_outliers(
                 np.stack(
                     (
@@ -335,7 +395,7 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
                 2,
             )
         else:
-            samples_clean, _ = stat_utils.reject_outliers(
+            samples_clean, idx = stat_utils.reject_outliers(
                 np.stack(
                     (
                         global_block_weights,
@@ -355,6 +415,8 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         global_block_observables = samples_clean[:, 2]
         if options["ad_mode"] == "reverse":
             global_block_rdm1s = global_block_rdm1s[idx]
+        elif options["ad_mode"] == "2rdm":
+            global_block_rdm2s = global_block_rdm2s[idx]
 
         e_afqmc, e_err_afqmc = stat_utils.blocking_analysis(
             global_block_weights, global_block_energies, neql=0, printQ=True
@@ -404,6 +466,27 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
                     global_block_weights, errors_rdm1, neql=0, printQ=True
                 )
                 np.savez("rdm1_afqmc.npz", rdm1=avg_rdm1)
+            elif options["ad_mode"] == "2rdm":
+                norms_rdm2 = np.array(list(map(np.linalg.norm, global_block_rdm2s)))
+                samples_clean, idx = stat_utils.reject_outliers(
+                    np.stack((global_block_weights, norms_rdm2)).T, 1
+                )
+                global_block_weights = samples_clean[:, 0]
+                global_block_rdm2s = global_block_rdm2s[idx]
+                avg_rdm2 = np.einsum(
+                    "i,i...->...", global_block_weights, global_block_rdm2s
+                ) / np.sum(global_block_weights)
+                errors_rdm2 = np.array(
+                    list(map(np.linalg.norm, global_block_rdm2s - avg_rdm2))
+                ) / np.linalg.norm(avg_rdm2)
+                print(f"# 2RDM noise:", flush=True)
+                obs_afqmc, err_afqmc = stat_utils.blocking_analysis(
+                    global_block_weights, errors_rdm2, neql=0, printQ=True
+                )
+                np.savez(
+                    "rdm2_afqmc.npz",
+                    rdm2=2 * avg_rdm2.reshape(ham.norb, ham.norb, ham.norb, ham.norb),
+                )
 
     comm.Barrier()
     e_afqmc = comm.bcast(e_afqmc, root=0)

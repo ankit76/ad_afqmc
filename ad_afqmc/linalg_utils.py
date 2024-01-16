@@ -79,12 +79,12 @@ def qr_vmap_uhf(walkers):
 
 
 # modified cholesky for a given matrix
-@partial(jit, static_argnums=(1,))
-def modified_cholesky(mat, norb):
+@partial(jit, static_argnums=(1, 2))
+def modified_cholesky(mat, norb, nchol_max):
     diag = mat.diagonal()
     size = mat.shape[0]
     # norb = (jnp.sqrt(1+8*size).astype('int8') - 1)//2
-    nchol_max = size
+    # nchol_max = size
     nu = jnp.argmax(diag)
     delta_max = diag[nu]
 
@@ -102,17 +102,18 @@ def modified_cholesky(mat, norb):
 
     carry = {}
     carry["Mapprox"] = jnp.zeros(size)
-    carry["chol_vecs"] = jnp.zeros((nchol_max, nchol_max))
+    carry["chol_vecs"] = jnp.zeros((size, size))
     carry["chol_vecs"] = carry["chol_vecs"].at[0].set(mat[nu] / delta_max**0.5)
     carry, x = lax.scan(scanned_fun, carry, jnp.arange(nchol_max - 1))
 
-    tril = jnp.tril_indices(norb)
+    # tril = jnp.tril_indices(norb)
 
-    def scanned_fun_1(carry, x):
-        chol_mat = jnp.zeros((norb, norb))
-        chol_mat = chol_mat.at[tril].set(x)
-        chol_mat = chol_mat.T.at[tril].set(x)
-        return carry, chol_mat.reshape(-1)
+    # def scanned_fun_1(carry, x):
+    #     chol_mat = jnp.zeros((norb, norb))
+    #     chol_mat = chol_mat.at[tril].set(x)
+    #     chol_mat = chol_mat.T.at[tril].set(x)
+    #     return carry, chol_mat.reshape(-1)
 
-    _, chol_vecs = lax.scan(scanned_fun_1, 1.0, carry["chol_vecs"])
-    return chol_vecs
+    # _, chol_vecs = lax.scan(scanned_fun_1, 1.0, carry["chol_vecs"][:nchol_max])
+    # return chol_vecs
+    return carry["chol_vecs"][:nchol_max]

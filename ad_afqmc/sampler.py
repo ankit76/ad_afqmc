@@ -12,6 +12,7 @@ import jax.numpy as jnp
 from jax import checkpoint, jit, lax, random
 
 # import stat_utils
+from ad_afqmc import linalg_utils
 
 print = partial(print, flush=True)
 
@@ -128,6 +129,33 @@ def propagate_phaseless_ad(
     ham, ham_data, coupling, observable_op, propagator, prop_data, trial, wave_data
 ):
     ham_data["h1"] = ham_data["h1"] + coupling * observable_op
+    wave_data = trial.optimize_orbs(ham_data, wave_data)
+    ham_data = ham.rot_orbs(ham_data, wave_data)
+    ham_data = ham.rot_ham(ham_data, wave_data)
+    ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
+
+    prop_data, (block_energy, block_weight) = _ad_block(
+        prop_data, ham_data, propagator, trial, wave_data
+    )
+    return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
+
+
+# for 2-rdm
+@partial(jit, static_argnums=(0, 4, 6))
+def propagate_phaseless_ad_1(
+    ham, ham_data, coupling, observable_op, propagator, prop_data, trial, wave_data
+):
+    # modify ham_data
+    observable_op = (
+        observable_op
+        + jnp.transpose(observable_op, (2, 3, 0, 1))
+        + jnp.transpose(observable_op, (1, 0, 3, 2))
+        + jnp.transpose(observable_op, (3, 2, 1, 0))
+    ) / 4.0
+    norb = ham.norb
+    ham_data["chol"] = linalg_utils.modified_cholesky(
+        observable_op.reshape(norb**2, norb**2), norb, ham.nchol
+    )
     wave_data = trial.optimize_orbs(ham_data, wave_data)
     ham_data = ham.rot_orbs(ham_data, wave_data)
     ham_data = ham.rot_ham(ham_data, wave_data)
