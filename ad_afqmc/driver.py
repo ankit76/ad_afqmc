@@ -74,6 +74,15 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     prop_data["key"] = random.PRNGKey(seed + rank)
     trial_rdm1 = trial.get_rdm1(wave_data)
     trial_observable = np.sum(trial_rdm1 * observable_op)
+    trial_rdm2 = None
+    if options["ad_mode"] == "2rdm":
+        trial_rdm1_spatial = trial_rdm1[0] + trial_rdm1[1]
+        trial_rdm2 = (
+            np.einsum("ij,kl->ijkl", trial_rdm1_spatial, trial_rdm1_spatial)
+            - np.einsum("ij,kl->iklj", trial_rdm1_spatial, trial_rdm1_spatial) / 2
+        )
+        trial_rdm2 = trial_rdm2.reshape(ham.norb**2, ham.norb**2)
+        trial_rdm2 = jnp.array(trial_rdm2)
 
     comm.Barrier()
     init_time = time.time() - init
@@ -247,9 +256,12 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
             )
             block_rdm2_n = block_vjp_fun(1.0)[1]
             block_observable_n = trial_observable
-            if np.isnan(block_observable_n) or np.isinf(block_observable_n):
+            # if np.isnan(block_observable_n) or np.isinf(block_observable_n) :
+            if np.isnan(np.linalg.norm(block_rdm2_n)) or np.isinf(
+                np.linalg.norm(block_rdm2_n)
+            ):
                 block_observable_n = trial_observable
-                block_rdm1_n = trial_rdm1
+                block_rdm2_n = trial_rdm2
                 local_large_deviations += 1
         else:
             block_energy_n, prop_data = sampler.propagate_phaseless(
