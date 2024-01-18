@@ -54,6 +54,6 @@ def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=Fal
 
 def reject_outliers(data, obs, m=10.0):
     d = np.abs(data[:, obs] - np.median(data[:, obs]))
-    mdev = np.median(d)
+    mdev = np.median(d) + 1.0e-10
     s = d / mdev if mdev else 0.0
     return data[s < m], s < m
