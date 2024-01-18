@@ -64,7 +64,7 @@ def _prep_afqmc(options=None):
     if abs(ms) != 0:
         try:
             assert options["walker_type"] != "rhf"
-            assert options["trial"] != "rhf"
+            # assert options["trial"] != "rhf"
         except:
             raise ValueError(
                 "Open shell systems have to use UHF walkers and non-RHF trials."
