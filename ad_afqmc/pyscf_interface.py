@@ -29,7 +29,7 @@ def modified_cholesky(mat, max_error=1e-6):
         nu = np.argmax(np.abs(delta))
         delta_max = np.abs(delta[nu])
         R = np.dot(chol_vecs[: nchol + 1, nu], chol_vecs[: nchol + 1, :])
-        chol_vecs[nchol + 1] = (mat[nu] - R) / (delta_max) ** 0.5
+        chol_vecs[nchol + 1] = (mat[nu] - R) / (delta_max + 1e-10) ** 0.5
         nchol += 1
 
     return chol_vecs[:nchol]

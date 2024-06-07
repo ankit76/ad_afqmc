@@ -2,9 +2,9 @@ import os
 
 import numpy as np
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 from dataclasses import dataclass
@@ -24,7 +24,9 @@ print = partial(print, flush=True)
 @dataclass
 class rhf:
     norb: int
-    nelec: int  # this is the number of electrons of each spin, so nelec = total_nelec // 2
+    nelec: (
+        int  # this is the number of electrons of each spin, so nelec = total_nelec // 2
+    )
     n_opt_iter: int = 30
 
     @partial(jit, static_argnums=0)
