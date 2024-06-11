@@ -7,6 +7,7 @@ os.environ["XLA_FLAGS"] = (
 )
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
 from typing import Tuple
@@ -20,9 +21,29 @@ from ad_afqmc import linalg_utils
 print = partial(print, flush=True)
 
 
+class wave_function(ABC):
+    """Abstract class for wave functions."""
+
+    @abstractmethod
+    def calc_overlap_vmap(self, walkers, wave_data):
+        pass
+
+    @abstractmethod
+    def calc_green_vmap(self, walkers, wave_data):
+        pass
+
+    @abstractmethod
+    def calc_force_bias_vmap(self, walkers, ham, wave_data):
+        pass
+
+    @abstractmethod
+    def calc_energy_vmap(self, ham, walkers, wave_data):
+        pass
+
+
 # we assume afqmc is performed in the rhf orbital basis
 @dataclass
-class rhf:
+class rhf(wave_function):
     norb: int
     nelec: (
         int  # this is the number of electrons of each spin, so nelec = total_nelec // 2
@@ -136,7 +157,7 @@ class rhf:
 
 
 @dataclass
-class uhf:
+class uhf(wave_function):
     norb: int
     nelec: Tuple[int, int]
     n_opt_iter: int = 30
@@ -292,6 +313,99 @@ class uhf:
         _, mo_coeff = lax.scan(scanned_fun, dm0, None, length=self.n_opt_iter)
 
         return mo_coeff[-1]
+
+    def __hash__(self):
+        return hash(
+            (
+                self.norb,
+                self.nelec,
+                self.n_opt_iter,
+            )
+        )
+
+
+@dataclass
+class ghf(wave_function):
+    norb: int
+    nelec: Tuple[int, int]
+    n_opt_iter: int = 30
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap(self, walker_up, walker_dn, wave_data):
+        return jnp.linalg.det(
+            jnp.hstack(
+                [
+                    wave_data[: self.norb].T @ walker_up,
+                    wave_data[self.norb :].T @ walker_dn,
+                ]
+            )
+        )
+
+    def calc_overlap_vmap(self, walkers, wave_data):
+        return vmap(self.calc_overlap, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_green(self, walker_up, walker_dn, wave_data):
+        overlap_mat = jnp.hstack(
+            [
+                wave_data[: self.norb].T @ walker_up,
+                wave_data[self.norb :].T @ walker_dn,
+            ]
+        )
+        inv = jnp.linalg.inv(overlap_mat)
+        green = (
+            jnp.vstack(
+                [walker_up @ inv[: self.nelec[0]], walker_dn @ inv[self.nelec[0] :]]
+            )
+        ).T
+        return green
+
+    def calc_green_vmap(self, walkers, wave_data):
+        return vmap(self.calc_green, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_force_bias(self, walker_up, walker_dn, rot_chol, wave_data):
+        green_walker = self.calc_green(walker_up, walker_dn, wave_data)
+        fb = jnp.einsum("gij,ij->g", rot_chol, green_walker, optimize="optimal")
+        return fb
+
+    def calc_force_bias_vmap(self, walkers, ham, wave_data):
+        return vmap(self.calc_force_bias, in_axes=(0, 0, None, None))(
+            walkers[0], walkers[1], ham["rot_chol"], wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_energy(self, h0, rot_h1, rot_chol, walker_up, walker_dn, wave_data):
+        ene0 = h0
+        green_walker = self.calc_green(walker_up, walker_dn, wave_data)
+        ene1 = jnp.sum(green_walker * rot_h1)
+        f = jnp.einsum("gij,jk->gik", rot_chol, green_walker.T, optimize="optimal")
+        coul = vmap(jnp.trace)(f)
+        exc = jnp.sum(vmap(lambda x: x * x.T)(f))
+        ene2 = (jnp.sum(coul * coul) - exc) / 2.0
+        return ene2 + ene1 + ene0
+
+    def calc_energy_vmap(self, ham, walkers, wave_data):
+        return vmap(self.calc_energy, in_axes=(None, None, None, 0, 0, None))(
+            ham["h0"], ham["rot_h1"], ham["rot_chol"], walkers[0], walkers[1], wave_data
+        )
+
+    def get_rdm1(self, wave_data):
+        dm = (
+            wave_data[:, : self.nelec[0] + self.nelec[1]]
+            @ wave_data[:, : self.nelec[0] + self.nelec[1]].T
+        )
+        dm_up = dm[: self.norb, : self.norb]
+        dm_dn = dm[self.norb :, self.norb :]
+        return jnp.array([dm_up, dm_dn])
+
+    @partial(jit, static_argnums=0)
+    def optimize_orbs(self, ham_data, wave_data):
+        raise NotImplementedError
 
     def __hash__(self):
         return hash(

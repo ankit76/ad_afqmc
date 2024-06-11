@@ -1,7 +1,6 @@
 import os
 
 import numpy as np
-import pytest
 
 os.environ["JAX_ENABLE_X64"] = "True"
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
@@ -69,6 +68,20 @@ ham_data_noci["rot_chol"] = [
     jnp.array(np.random.rand(ndets, nchol, nelec_sp[0], norb)),
     jnp.array(np.random.rand(ndets, nchol, nelec_sp[1], norb)),
 ]
+
+
+nelec_sp = (3, 2)
+ghf = wavefunctions.ghf(norb, nelec_sp)
+wave_data_g = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1]))
+ham_data_g = {}
+ham_data_g["h0"] = ham_data["h0"]
+ham_data_g["rot_h1"] = jnp.array(np.random.rand(nelec_sp[0] + nelec_sp[1], 2 * norb))
+ham_data_g["rot_chol"] = jnp.array(
+    np.random.rand(nchol, nelec_sp[0] + nelec_sp[1], 2 * norb)
+)
+ham_data_g["h1"] = jnp.array([ham_data["h1"], ham_data["h1"]])
+ham_data_g["chol"] = ham_data["chol"]
+ham_data_g["ene0"] = ham_data["ene0"]
 
 
 def test_rhf_overlap():
@@ -142,6 +155,37 @@ def test_uhf_optimize_orbs():
     assert np.allclose(jnp.sum(orbs[0]) + jnp.sum(orbs[1]), 7.402931219898609)
 
 
+def test_ghf_overlap():
+    overlap = ghf.calc_overlap(walker_up, walker_dn, wave_data_g)
+    print("overlap: ", overlap)
+    assert np.allclose(jnp.real(overlap), -0.7645032356687913)
+
+
+def test_ghf_green():
+    green = ghf.calc_green(walker_up, walker_dn, wave_data_g)
+    assert green.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
+
+
+def test_ghf_force_bias():
+    force_bias = ghf.calc_force_bias(
+        walker_up, walker_dn, ham_data_g["rot_chol"], wave_data_g
+    )
+    assert force_bias.shape == (nchol,)
+
+
+def test_ghf_energy():
+    energy = ghf.calc_energy(
+        ham_data_g["h0"],
+        ham_data_g["rot_h1"],
+        ham_data_g["rot_chol"],
+        walker_up,
+        walker_dn,
+        wave_data_g,
+    )
+    print("energy: ", energy)
+    assert np.allclose(jnp.real(energy), 47.91857449460195)
+
+
 def test_noci_overlap():
     overlap = noci.calc_overlap(walker_up, walker_dn, wave_data_noci)
     # print(overlap)
@@ -191,6 +235,10 @@ if __name__ == "__main__":
     test_uhf_force_bias()
     test_uhf_energy()
     test_uhf_optimize_orbs()
+    test_ghf_overlap()
+    test_ghf_green()
+    test_ghf_force_bias()
+    test_ghf_energy()
     test_noci_overlap()
     test_noci_green()
     test_noci_force_bias()

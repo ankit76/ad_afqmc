@@ -48,6 +48,18 @@ wave_data_noci = [ci_coeffs, dets]
 ham_handler_noci = hamiltonian.hamiltonian_noci(norb, nelec_sp, nchol)
 trial_noci = wavefunctions.noci(norb, nelec_sp, ndets)
 
+nelec_sp = 5, 4
+wave_data_g = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1]))
+ham_handler_g = hamiltonian.hamiltonian_ghf(norb, nelec_sp, nchol)
+trial_g = wavefunctions.ghf(norb, nelec_sp)
+ham_g = {}
+ham_g["h0"] = np.random.rand(
+    1,
+)[0]
+ham_g["h1"] = jnp.array(np.random.rand(2, norb, norb))
+ham_g["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
+ham_g["ene0"] = 0.0
+
 
 def test_rot_orbs():
     ham_rot = ham_handler.rot_orbs(ham, mo_coeff)
@@ -81,6 +93,18 @@ def test_prop_ham_u():
     assert prop_ham["exp_h1"].shape == (2, norb, norb)
 
 
+def test_rot_ham_g():
+    rot_ham = ham_handler_g.rot_ham(ham_g, wave_data_g)
+    assert rot_ham["rot_h1"].shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
+    assert rot_ham["rot_chol"].shape == (nchol, nelec_sp[0] + nelec_sp[1], 2 * norb)
+
+
+def test_prop_ham_g():
+    prop_ham = ham_handler_g.prop_ham(ham_g, 0.005, trial_g, wave_data_g)
+    assert prop_ham["mf_shifts"].shape == (nchol,)
+    assert prop_ham["exp_h1"].shape == (2, norb, norb)
+
+
 def test_rot_ham_noci():
     rot_ham = ham_handler_noci.rot_ham(ham_u, wave_data_noci)
     assert rot_ham["rot_h1"][0].shape == (ndets, nelec_sp[0], norb)
@@ -101,5 +125,7 @@ if __name__ == "__main__":
     test_prop_ham()
     test_rot_ham_u()
     test_prop_ham_u()
+    test_rot_ham_g()
+    test_prop_ham_g()
     test_rot_ham_noci()
     test_prop_ham_noci()

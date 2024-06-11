@@ -1,9 +1,9 @@
 import math
 import os
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import jit, lax, random, vmap
 
-from ad_afqmc import linalg_utils, sr
+from ad_afqmc import linalg_utils, sr, wavefunctions
 
 print = partial(print, flush=True)
 
@@ -177,7 +177,7 @@ class propagator_uhf(propagator):
     def init_prop_data(self, trial, wave_data, ham, ham_data):
         prop_data = {}
         prop_data["weights"] = jnp.ones(self.n_walkers)
-        if hasattr(trial, "ndets"):
+        if isinstance(trial, wavefunctions.noci):
             walkers_up = jnp.stack(
                 [
                     wave_data[1][0][0][:, : ham.nelec[0]] + 1.0e-10j
@@ -189,6 +189,16 @@ class propagator_uhf(propagator):
                     wave_data[1][1][0][:, : ham.nelec[1]] + 1.0e-10j
                     for _ in range(self.n_walkers)
                 ]
+            )
+        elif isinstance(trial, wavefunctions.ghf):
+            rdm = wave_data @ wave_data.conj().T
+            _, nat_up = jnp.linalg.eigh(rdm[: ham.norb, : ham.norb])
+            _, nat_dn = jnp.linalg.eigh(rdm[ham.norb :, ham.norb :])
+            walkers_up = jnp.stack(
+                [nat_up[:, -ham.nelec[0] :] + 0.0j for _ in range(self.n_walkers)]
+            )
+            walkers_dn = jnp.stack(
+                [nat_dn[:, -ham.nelec[1] :] + 0.0j for _ in range(self.n_walkers)]
             )
         else:
             walkers_up = jnp.stack(
