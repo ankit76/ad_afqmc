@@ -64,6 +64,9 @@ fields = random.normal(
     random.PRNGKey(seed), shape=(prop_handler.n_walkers, ham_data["chol"].shape[0])
 )
 
+prop_handler_cpmc = propagation.propagator_cpmc(n_walkers=7)
+ham_data_u["hs_constant"] = jnp.array([[0.4, 0.1], [0.1, 0.4]])
+
 
 def test_stochastic_reconfiguration_local():
     prop_data_new = prop_handler.stochastic_reconfiguration_local(prop_data)
@@ -107,9 +110,20 @@ def test_propagate_free_u():
     assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
 
 
+def test_propagate_cpmc():
+    prop_data_new = prop_handler_cpmc.propagate(
+        trial_u, ham_data_u, prop_data_u, fields, wave_data_u
+    )
+    assert prop_data_new["walkers"][0].shape == prop_data_u["walkers"][0].shape
+    assert prop_data_new["walkers"][1].shape == prop_data_u["walkers"][1].shape
+    assert prop_data_new["weights"].shape == prop_data_u["weights"].shape
+    assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
+
+
 if __name__ == "__main__":
     test_stochastic_reconfiguration_local()
     test_propagate()
     test_stochastic_reconfiguration_local_u()
     test_propagate_u()
     test_propagate_free_u()
+    test_propagate_cpmc()

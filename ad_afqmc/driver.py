@@ -3,9 +3,9 @@ import time
 
 import numpy as np
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 import pickle
@@ -93,7 +93,15 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
-    if options["walker_type"] == "rhf":
+    if isinstance(propagator, propagation.propagator_cpmc):
+        propagator_eq = propagation.propagator_cpmc(
+            propagator.dt,
+            n_prop_steps=50,
+            n_ene_blocks=5,
+            n_sr_blocks=10,
+            n_walkers=options["n_walkers"],
+        )
+    elif options["walker_type"] == "rhf":
         propagator_eq = propagation.propagator(
             propagator.dt,
             n_prop_steps=50,
