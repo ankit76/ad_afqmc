@@ -1,9 +1,10 @@
 import os
 
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
-from typing import Sequence
+from typing import Any, Sequence
 
 from jax import jit, lax
 from jax import numpy as jnp
@@ -80,9 +81,27 @@ def frobenius_0(n, coefficients, target):
     return solutions
 
 
+class lattice(ABC):
+    """Abstract base class for lattice objects."""
+
+    @abstractmethod
+    def get_site_num(self, pos: Sequence) -> int:
+        """Return the site number corresponding to a given position."""
+        pass
+
+    @abstractmethod
+    def get_nearest_neighbors(self, pos: Sequence) -> Sequence:
+        """Return the nearest neighbors of a site."""
+        pass
+
+    @abstractmethod
+    def __hash__(self):
+        pass
+
+
 @dataclass
 @register_pytree_node_class
-class one_dimensional_chain:
+class one_dimensional_chain(lattice):
     n_sites: int
     shape: tuple = None
     sites: Sequence = None
@@ -236,7 +255,7 @@ class one_dimensional_chain:
 
 @dataclass
 @register_pytree_node_class
-class two_dimensional_grid:
+class two_dimensional_grid(lattice):
     l_x: int
     l_y: int
     shape: tuple = None
@@ -489,7 +508,7 @@ class two_dimensional_grid:
 
 @dataclass
 @register_pytree_node_class
-class triangular_grid:
+class triangular_grid(lattice):
     l_x: int  # height
     l_y: int  # width
     shape: tuple = None
@@ -544,7 +563,7 @@ class triangular_grid:
 
 @dataclass
 @register_pytree_node_class
-class three_dimensional_grid:
+class three_dimensional_grid(lattice):
     l_x: int
     l_y: int
     l_z: int

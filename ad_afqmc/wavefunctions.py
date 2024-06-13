@@ -10,7 +10,7 @@ os.environ["JAX_ENABLE_X64"] = "True"
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
-from typing import Tuple
+from typing import Any, Sequence, Tuple
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
@@ -25,19 +25,73 @@ class wave_function(ABC):
     """Abstract class for wave functions."""
 
     @abstractmethod
-    def calc_overlap_vmap(self, walkers, wave_data):
+    def calc_overlap_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
+        """Calculate the overlap between the walkers and the wave function.
+
+        Args:
+            walkers :
+                The walkers.
+            wave_data : Any
+                The trial wave function data.
+
+        Returns:
+            jnp.array: The overlaps.
+        """
         pass
 
     @abstractmethod
-    def calc_green_vmap(self, walkers, wave_data):
+    def calc_green_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
+        """Calculate the greens function.
+
+        Args:
+            walkers :
+                The walkers.
+            wave_data : Any
+                The trial wave function data.
+
+        Returns:
+            jnp.array: The greens function (< psi_T | a_i^dagger a_j | walker > / < psi_T | walker >).
+            In case of some trials this returns only a part of the greens function.
+            The other parts are stored in rotated hamiltonian integrals to avoid recomputation.
+        """
         pass
 
     @abstractmethod
-    def calc_force_bias_vmap(self, walkers, ham, wave_data):
+    def calc_force_bias_vmap(
+        self, walkers: Sequence, ham_data: dict, wave_data: Any
+    ) -> jnp.array:
+        """Calculate the force bias.
+
+        Args:
+            walkers :
+                The walkers.
+            ham : Any
+                The hamiltonian data.
+            wave_data : Any
+                The trial wave function data.
+
+        Returns:
+            jnp.array: The force biases.
+        """
         pass
 
     @abstractmethod
-    def calc_energy_vmap(self, ham, walkers, wave_data):
+    def calc_energy_vmap(
+        self, ham_data: dict, walkers: Sequence, wave_data: Any
+    ) -> jnp.array:
+        """Calculate the energy.
+
+        Args:
+            ham : Any
+                The hamiltonian data.
+            walkers :
+                The walkers.
+            wave_data : Any
+                The trial wave function data.
+
+        Returns:
+            jnp.array: The walker energies.
+        """
         pass
 
 
@@ -84,9 +138,9 @@ class rhf(wave_function):
         return fb
 
     @partial(jit, static_argnums=0)
-    def calc_force_bias_vmap(self, walkers, ham, wave_data=None):
+    def calc_force_bias_vmap(self, walkers, ham_data, wave_data=None):
         return vmap(self.calc_force_bias, in_axes=(0, None, None))(
-            walkers, ham["rot_chol"], wave_data
+            walkers, ham_data["rot_chol"], wave_data
         )
 
     @partial(jit, static_argnums=0)
@@ -101,9 +155,9 @@ class rhf(wave_function):
         return ene2 + ene1 + ene0
 
     @partial(jit, static_argnums=0)
-    def calc_energy_vmap(self, ham, walkers, wave_data=None):
+    def calc_energy_vmap(self, ham_data, walkers, wave_data=None):
         return vmap(self.calc_energy, in_axes=(None, None, None, 0, None))(
-            ham["h0"], ham["rot_h1"], ham["rot_chol"], walkers, wave_data
+            ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"], walkers, wave_data
         )
 
     def get_rdm1(self, wave_data):
@@ -203,9 +257,9 @@ class uhf(wave_function):
         )
         return fb_up + fb_dn
 
-    def calc_force_bias_vmap(self, walkers, ham, wave_data):
+    def calc_force_bias_vmap(self, walkers, ham_data, wave_data):
         return vmap(self.calc_force_bias, in_axes=(0, 0, None, None))(
-            walkers[0], walkers[1], ham["rot_chol"], wave_data
+            walkers[0], walkers[1], ham_data["rot_chol"], wave_data
         )
 
     @partial(jit, static_argnums=0)
@@ -235,9 +289,14 @@ class uhf(wave_function):
 
         return ene2 + ene1 + ene0
 
-    def calc_energy_vmap(self, ham, walkers, wave_data):
+    def calc_energy_vmap(self, ham_data, walkers, wave_data):
         return vmap(self.calc_energy, in_axes=(None, None, None, 0, 0, None))(
-            ham["h0"], ham["rot_h1"], ham["rot_chol"], walkers[0], walkers[1], wave_data
+            ham_data["h0"],
+            ham_data["rot_h1"],
+            ham_data["rot_chol"],
+            walkers[0],
+            walkers[1],
+            wave_data,
         )
 
     def get_rdm1(self, wave_data):
@@ -373,9 +432,9 @@ class ghf(wave_function):
         fb = jnp.einsum("gij,ij->g", rot_chol, green_walker, optimize="optimal")
         return fb
 
-    def calc_force_bias_vmap(self, walkers, ham, wave_data):
+    def calc_force_bias_vmap(self, walkers, ham_data, wave_data):
         return vmap(self.calc_force_bias, in_axes=(0, 0, None, None))(
-            walkers[0], walkers[1], ham["rot_chol"], wave_data
+            walkers[0], walkers[1], ham_data["rot_chol"], wave_data
         )
 
     @partial(jit, static_argnums=0)
@@ -389,9 +448,14 @@ class ghf(wave_function):
         ene2 = (jnp.sum(coul * coul) - exc) / 2.0
         return ene2 + ene1 + ene0
 
-    def calc_energy_vmap(self, ham, walkers, wave_data):
+    def calc_energy_vmap(self, ham_data, walkers, wave_data):
         return vmap(self.calc_energy, in_axes=(None, None, None, 0, 0, None))(
-            ham["h0"], ham["rot_h1"], ham["rot_chol"], walkers[0], walkers[1], wave_data
+            ham_data["h0"],
+            ham_data["rot_h1"],
+            ham_data["rot_chol"],
+            walkers[0],
+            walkers[1],
+            wave_data,
         )
 
     def get_rdm1(self, wave_data):
@@ -403,9 +467,10 @@ class ghf(wave_function):
         dm_dn = dm[self.norb :, self.norb :]
         return jnp.array([dm_up, dm_dn])
 
+    # not implemented
     @partial(jit, static_argnums=0)
     def optimize_orbs(self, ham_data, wave_data):
-        raise NotImplementedError
+        return wave_data
 
     def __hash__(self):
         return hash(
@@ -418,7 +483,7 @@ class ghf(wave_function):
 
 
 @dataclass
-class noci:
+class noci(wave_function):
     norb: int
     nelec: Tuple[int, int]
     ndets: int
@@ -498,9 +563,9 @@ class noci:
         return fb_up + fb_dn
 
     @partial(jit, static_argnums=0)
-    def calc_force_bias_vmap(self, walkers, ham, wave_data):
+    def calc_force_bias_vmap(self, walkers, ham_data, wave_data):
         return vmap(self.calc_force_bias, in_axes=(0, 0, None, None))(
-            walkers[0], walkers[1], ham["rot_chol"], wave_data
+            walkers[0], walkers[1], ham_data["rot_chol"], wave_data
         )
 
     @partial(jit, static_argnums=0)
@@ -568,9 +633,14 @@ class noci:
         return ene
 
     @partial(jit, static_argnums=0)
-    def calc_energy_vmap(self, ham, walkers, wave_data):
+    def calc_energy_vmap(self, ham_data, walkers, wave_data):
         return vmap(self.calc_energy, in_axes=(None, None, None, 0, 0, None))(
-            ham["h0"], ham["rot_h1"], ham["rot_chol"], walkers[0], walkers[1], wave_data
+            ham_data["h0"],
+            ham_data["rot_h1"],
+            ham_data["rot_chol"],
+            walkers[0],
+            walkers[1],
+            wave_data,
         )
 
     @partial(jit, static_argnums=0)

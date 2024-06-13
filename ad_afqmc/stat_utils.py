@@ -57,3 +57,34 @@ def reject_outliers(data, obs, m=10.0):
     mdev = np.median(d) + 1.0e-10
     s = d / mdev if mdev else 0.0
     return data[s < m], s < m
+
+
+def jackknife_ratios(num: np.ndarray, denom: np.ndarray):
+    r"""Jackknife estimation of standard deviation of the ratio of means.
+
+    Parameters
+    ----------
+    num : :class:`np.ndarray
+        Numerator samples.
+    denom : :class:`np.ndarray`
+        Denominator samples.
+
+    Returns
+    -------
+    mean : :class:`np.ndarray`
+        Ratio of means.
+    sigma : :class:`np.ndarray`
+        Standard deviation of the ratio of means.
+    """
+    n_samples = num.size
+    num_mean = np.mean(num)
+    denom_mean = np.mean(denom)
+    mean = num_mean / denom_mean
+    jackknife_estimates = np.zeros(n_samples, dtype=num.dtype)
+    for i in range(n_samples):
+        mean_num_i = (num_mean * n_samples - num[i]) / (n_samples - 1)
+        mean_denom_i = (denom_mean * n_samples - denom[i]) / (n_samples - 1)
+        jackknife_estimates[i] = (mean_num_i / mean_denom_i).real
+    mean = np.mean(jackknife_estimates)
+    sigma = np.sqrt((n_samples - 1) * np.var(jackknife_estimates))
+    return mean, sigma
