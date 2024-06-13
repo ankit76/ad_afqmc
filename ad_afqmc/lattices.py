@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Sequence
 
+import numpy as np
 from jax import jit, lax
 from jax import numpy as jnp
 from jax.tree_util import register_pytree_node_class
@@ -296,7 +297,7 @@ class two_dimensional_grid(lattice):
         elif self.l_x == 2:
             self.bonds = tuple(
                 [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-                + [(1, i, 0) for i in self.l_y]
+                + [(1, i, 0) for i in range(self.l_y)]
             )
         elif self.l_y == 2:
             self.bonds = tuple(
@@ -475,6 +476,22 @@ class two_dimensional_grid(lattice):
         lr = lr_bond * (bond[0] == mode[0]) + lr_site * (bond[0] != mode[0])
         return jnp.min(jnp.array([dist_1, dist_2])), lr
 
+    def create_adjacency_matrix(self):
+        width, height = self.l_x, self.l_y
+        size = width * height
+        h = np.zeros((size, size), dtype=int)
+
+        for r in range(width):
+            for q in range(height):
+                i = q * width + r
+                neighbors = self.get_nearest_neighbors((q, r))
+                for nq, nr in neighbors:
+                    if 0 <= nq < height and 0 <= nr < width:  # Check bounds
+                        j = nq * width + nr
+                        h[i, j] = 1
+                        h[j, i] = 1
+        return h
+
     def __hash__(self):
         return hash(
             (
@@ -532,9 +549,25 @@ class triangular_grid(lattice):
         n2 = ((pos[0] + 1) % self.l_x, pos[1])
         n3 = (pos[0], (pos[1] - 1) % self.l_y)
         n4 = ((pos[0] - 1) % self.l_x, pos[1])
-        n5 = ((pos[0] + 1) % self.l_x, (pos[1] - (-1) ** pos[0]) % self.l_y)
-        n6 = ((pos[0] - 1) % self.l_x, (pos[1] - (-1) ** pos[0]) % self.l_y)
+        n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
+        n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1) % self.l_y)
         return jnp.array([n1, n2, n3, n4, n5, n6])
+
+    def create_adjacency_matrix(self):
+        width, height = self.l_y, self.l_x
+        size = width * height
+        h = np.zeros((size, size), dtype=int)
+
+        for r in range(width):
+            for q in range(height):
+                i = q * width + r
+                neighbors = self.get_nearest_neighbors((q, r))
+                for nq, nr in neighbors:
+                    if 0 <= nq < height and 0 <= nr < width:  # Check bounds
+                        j = nq * width + nr
+                        h[i, j] = 1
+                        h[j, i] = 1
+        return h
 
     def __hash__(self):
         return hash(
