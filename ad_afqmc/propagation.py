@@ -35,12 +35,15 @@ class propagator:
             self.n_ene_blocks = 5
             self.n_sr_blocks = 10
 
-    def init_prop_data(self, trial, wave_data, ham, ham_data):
+    def init_prop_data(self, trial, wave_data, ham, ham_data, init_walkers=None):
         prop_data = {}
         prop_data["weights"] = jnp.ones(self.n_walkers)
-        prop_data["walkers"] = jnp.stack(
-            [jnp.eye(ham.norb, ham.nelec) + 0.0j for _ in range(self.n_walkers)]
-        )
+        if init_walkers is not None:
+            prop_data["walkers"] = init_walkers
+        else:
+            prop_data["walkers"] = jnp.stack(
+                [jnp.eye(ham.norb, ham.nelec) + 0.0j for _ in range(self.n_walkers)]
+            )
         energy_samples = jnp.real(
             trial.calc_energy_vmap(ham_data, prop_data["walkers"], wave_data)
         )
@@ -174,40 +177,49 @@ class propagator:
 
 @dataclass
 class propagator_uhf(propagator):
-    def init_prop_data(self, trial, wave_data, ham, ham_data):
+    def init_prop_data(self, trial, wave_data, ham, ham_data, init_walkers=None):
         prop_data = {}
         prop_data["weights"] = jnp.ones(self.n_walkers)
-        if isinstance(trial, wavefunctions.noci):
-            walkers_up = jnp.stack(
-                [
-                    wave_data[1][0][0][:, : ham.nelec[0]] + 1.0e-10j
-                    for _ in range(self.n_walkers)
-                ]
-            )
-            walkers_dn = jnp.stack(
-                [
-                    wave_data[1][1][0][:, : ham.nelec[1]] + 1.0e-10j
-                    for _ in range(self.n_walkers)
-                ]
-            )
-        elif isinstance(trial, wavefunctions.ghf):
-            rdm = wave_data @ wave_data.conj().T
-            _, nat_up = jnp.linalg.eigh(rdm[: ham.norb, : ham.norb])
-            _, nat_dn = jnp.linalg.eigh(rdm[ham.norb :, ham.norb :])
-            walkers_up = jnp.stack(
-                [nat_up[:, -ham.nelec[0] :] + 0.0j for _ in range(self.n_walkers)]
-            )
-            walkers_dn = jnp.stack(
-                [nat_dn[:, -ham.nelec[1] :] + 0.0j for _ in range(self.n_walkers)]
-            )
+        if init_walkers is not None:
+            prop_data["walkers"] = init_walkers
         else:
-            walkers_up = jnp.stack(
-                [wave_data[0][:, : ham.nelec[0]] + 0.0j for _ in range(self.n_walkers)]
-            )
-            walkers_dn = jnp.stack(
-                [wave_data[1][:, : ham.nelec[1]] + 0.0j for _ in range(self.n_walkers)]
-            )
-        prop_data["walkers"] = [walkers_up, walkers_dn]
+            if isinstance(trial, wavefunctions.noci):
+                walkers_up = jnp.stack(
+                    [
+                        wave_data[1][0][0][:, : ham.nelec[0]] + 1.0e-10j
+                        for _ in range(self.n_walkers)
+                    ]
+                )
+                walkers_dn = jnp.stack(
+                    [
+                        wave_data[1][1][0][:, : ham.nelec[1]] + 1.0e-10j
+                        for _ in range(self.n_walkers)
+                    ]
+                )
+            elif isinstance(trial, wavefunctions.ghf):
+                rdm = wave_data @ wave_data.conj().T
+                _, nat_up = jnp.linalg.eigh(rdm[: ham.norb, : ham.norb])
+                _, nat_dn = jnp.linalg.eigh(rdm[ham.norb :, ham.norb :])
+                walkers_up = jnp.stack(
+                    [nat_up[:, -ham.nelec[0] :] + 0.0j for _ in range(self.n_walkers)]
+                )
+                walkers_dn = jnp.stack(
+                    [nat_dn[:, -ham.nelec[1] :] + 0.0j for _ in range(self.n_walkers)]
+                )
+            else:
+                walkers_up = jnp.stack(
+                    [
+                        wave_data[0][:, : ham.nelec[0]] + 0.0j
+                        for _ in range(self.n_walkers)
+                    ]
+                )
+                walkers_dn = jnp.stack(
+                    [
+                        wave_data[1][:, : ham.nelec[1]] + 0.0j
+                        for _ in range(self.n_walkers)
+                    ]
+                )
+            prop_data["walkers"] = [walkers_up, walkers_dn]
         energy_samples = jnp.real(
             trial.calc_energy_vmap(ham_data, prop_data["walkers"], wave_data)
         )

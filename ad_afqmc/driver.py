@@ -25,7 +25,9 @@ size = comm.Get_size()
 rank = comm.Get_rank()
 
 
-def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
+def afqmc(
+    ham_data, ham, propagator, trial, wave_data, observable, options, init_walkers=None
+):
     init = time.time()
     seed = options["seed"]
     neql = options["n_eql"]
@@ -65,12 +67,13 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         # ham_data["chol"] = linalg_utils.modified_cholesky(eri, ham.norb, ham.nchol)
         rdm_2_op = jnp.array(eri_full).reshape(norb, norb, norb, norb)
 
-    # print(f'wave_data:\n{wave_data}')
     ham_data = ham.rot_ham(ham_data, wave_data)
     ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
-    # print(f'ham_data:\n{ham_data}')
-    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data)
-    # print(f'prop_data:\n{prop_data}')
+    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data, init_walkers)
+    if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
+        raise ValueError(
+            "Initial overlaps are zero. Pass walkers with non-zero overlap."
+        )
     prop_data["key"] = random.PRNGKey(seed + rank)
     trial_rdm1 = trial.get_rdm1(wave_data)
     trial_observable = np.sum(trial_rdm1 * observable_op)
@@ -515,13 +518,15 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     return e_afqmc, e_err_afqmc
 
 
-def fp_afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
+def fp_afqmc(
+    ham_data, ham, propagator, trial, wave_data, observable, options, init_walkers=None
+):
     init = time.time()
     seed = options["seed"]
 
     ham_data = ham.rot_ham(ham_data, wave_data)
     ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
-    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data)
+    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data, init_walkers)
     prop_data["key"] = random.PRNGKey(seed + rank)
 
     comm.Barrier()
@@ -547,7 +552,6 @@ def fp_afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         ) = sampler.propagate_free(
             ham, ham_data, propagator, prop_data, trial, wave_data
         )
-        # print(prop_data_tr)
         global_block_weights[n] = weights[0]
         global_block_energies[n] = energy_samples[0]
         total_weight += weights
