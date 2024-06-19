@@ -243,6 +243,17 @@ class one_dimensional_chain(lattice):
             )
         )
 
+    def create_adjacency_matrix(self):
+        n_sites = self.n_sites
+        h = np.zeros((n_sites, n_sites), dtype=int)
+
+        for r in range(n_sites):
+            neighbors = self.get_nearest_neighbors((r,))
+            for nr in neighbors:
+                h[r, nr] = 1
+                h[nr, r] = 1
+        return h
+
     def __hash__(self):
         return hash((self.n_sites, self.shape, self.sites, self.bonds))
 

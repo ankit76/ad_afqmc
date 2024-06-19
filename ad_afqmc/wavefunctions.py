@@ -14,6 +14,7 @@ from typing import Any, Sequence, Tuple
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
+import jax.scipy as jsp
 from jax import jit, lax, vmap
 
 from ad_afqmc import linalg_utils
@@ -246,6 +247,24 @@ class uhf(wave_function):
             walkers[0], walkers[1], wave_data
         )
 
+    def calc_green_diagonal(self, walker_up, walker_dn, wave_data):
+        green_up = (
+            walker_up
+            @ jnp.linalg.inv(wave_data[0][:, : self.nelec[0]].T.dot(walker_up))
+            @ wave_data[0][:, : self.nelec[0]].T
+        ).diagonal()
+        green_dn = (
+            walker_dn
+            @ jnp.linalg.inv(wave_data[1][:, : self.nelec[1]].T.dot(walker_dn))
+            @ wave_data[1][:, : self.nelec[1]].T
+        ).diagonal()
+        return [green_up, green_dn]
+
+    def calc_green_diagonal_vmap(self, walkers, wave_data):
+        return vmap(self.calc_green_diagonal, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+
     @partial(jit, static_argnums=0)
     def calc_force_bias(self, walker_up, walker_dn, rot_chol, wave_data):
         green_walker = self.calc_green(walker_up, walker_dn, wave_data)
@@ -426,6 +445,20 @@ class ghf(wave_function):
             walkers[0], walkers[1], wave_data
         )
 
+    def calc_green_diagonal(self, walker_up, walker_dn, wave_data):
+        walker_ghf = jsp.linalg.block_diag(walker_up, walker_dn)
+        overlap_mat = wave_data[:, : self.nelec[0] + self.nelec[1]].T @ walker_ghf
+        inv = jnp.linalg.inv(overlap_mat)
+        green = (
+            walker_ghf @ inv @ wave_data[:, : self.nelec[0] + self.nelec[1]].T
+        ).diagonal()
+        return [green[: self.norb], green[self.norb :]]
+
+    def calc_green_diagonal_vmap(self, walkers, wave_data):
+        return vmap(self.calc_green_diagonal, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+
     @partial(jit, static_argnums=0)
     def calc_force_bias(self, walker_up, walker_dn, rot_chol, wave_data):
         green_walker = self.calc_green(walker_up, walker_dn, wave_data)
@@ -531,6 +564,12 @@ class noci(wave_function):
             self.calc_green_single_det, in_axes=(None, None, 0, 0)
         )(walker_up, walker_dn, dets[0], dets[1])
         return up_greens, dn_greens, overlaps
+
+    @partial(jit, static_argnums=0)
+    def calc_green_vmap(self, walkers, wave_data):
+        return vmap(self.calc_green, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )[:2]
 
     @partial(jit, static_argnums=0)
     def calc_force_bias(self, walker_up, walker_dn, rot_chol, wave_data):
