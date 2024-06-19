@@ -110,8 +110,8 @@ def test_propagate_free_u():
     assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
 
 
-def test_propagate_cpmc():
-    prop_data_new = prop_handler_cpmc.propagate(
+def test_propagate_cpmc_slow():
+    prop_data_new = prop_handler_cpmc.propagate_slow(
         trial_u, ham_data_u, prop_data_u, fields, wave_data_u
     )
     assert prop_data_new["walkers"][0].shape == prop_data_u["walkers"][0].shape
@@ -119,6 +119,24 @@ def test_propagate_cpmc():
     assert prop_data_new["weights"].shape == prop_data_u["weights"].shape
     assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
 
+def test_propagate_cpmc():
+    prop_data_new = prop_handler_cpmc.propagate(
+            trial_u, ham_data_u, prop_data_u, fields, wave_data_u)
+    ref_prop_data_new = prop_handler_cpmc.propagate_slow(
+            trial_u, ham_data_u, prop_data_u, fields, wave_data_u)
+
+    # Check that the walkers before and after propagation are diffferent.
+    assert ~np.allclose(prop_data_new["weights"], prop_data_u["weights"])
+    assert ~np.allclose(prop_data_new["walkers"][0], prop_data_u["walkers"][0])
+    assert ~np.allclose(prop_data_new["walkers"][1], prop_data_u["walkers"][1])
+    assert ~np.allclose(prop_data_new["overlaps"], prop_data_u["overlaps"])
+
+    np.testing.assert_allclose(prop_data_new["weights"], ref_prop_data_new["weights"])
+    np.testing.assert_allclose(prop_data_new["walkers"][0], ref_prop_data_new["walkers"][0])
+    np.testing.assert_allclose(prop_data_new["walkers"][1], ref_prop_data_new["walkers"][1])
+    np.testing.assert_allclose(prop_data_new["overlaps"], ref_prop_data_new["overlaps"])
+    np.testing.assert_allclose(prop_data_new["e_estimate"], ref_prop_data_new["e_estimate"])
+    np.testing.assert_allclose(prop_data_new["pop_control_ene_shift"], ref_prop_data_new["pop_control_ene_shift"])
 
 if __name__ == "__main__":
     test_stochastic_reconfiguration_local()
@@ -126,4 +144,5 @@ if __name__ == "__main__":
     test_stochastic_reconfiguration_local_u()
     test_propagate_u()
     test_propagate_free_u()
+    test_propagate_cpmc_slow()
     test_propagate_cpmc()

@@ -118,6 +118,74 @@ def test_uhf_overlap():
     overlap = uhf.calc_overlap(walker_up, walker_dn, wave_data)
     assert np.allclose(jnp.real(overlap), -0.4029825074695857)
 
+def test_uhf_update_inv_overlap_mat():
+    # Update matrix.
+    site = np.random.randint(0, min(nelec_sp))
+    dB_diag = jnp.zeros(norb)
+    dB_diag = dB_diag.at[site].set(1)
+    dB = jnp.diag(dB_diag)
+    B = jnp.eye(norb) + dB
+    print(f'Updating site {site}')
+    
+    # Current inverse overlap matrix.
+    inv_overlap_mat = uhf.calc_inv_overlap_mat(walker_up, walker_dn, wave_data)
+
+    # Update.
+    walker_up_new = jnp.einsum("ij,jk->ik", B, walker_up)
+    walker_dn_new = jnp.einsum("ij,jk->ik", B, walker_dn)
+
+    dwalker_up = walker_up_new - walker_up
+    dwalker_dn = walker_dn_new - walker_dn
+
+    # Check that only 1 row is changed.
+    assert np.count_nonzero(np.linalg.norm(dwalker_up, axis=1)) == 1
+    assert np.count_nonzero(np.linalg.norm(dwalker_dn, axis=1)) == 1
+
+    # New inverse overlap matrix.
+    ref_inv_overlap_mat_new = uhf.calc_inv_overlap_mat(walker_up_new, walker_dn_new, wave_data)
+    
+    # Test.
+    inv_overlap_mat_new = uhf.update_inv_overlap_mat(walker_up, walker_dn, wave_data, inv_overlap_mat, (1, 1), site)
+
+    np.testing.assert_equal(inv_overlap_mat_new[0].shape, ref_inv_overlap_mat_new[0].shape)
+    np.testing.assert_equal(inv_overlap_mat_new[1].shape, ref_inv_overlap_mat_new[1].shape)
+    np.testing.assert_allclose(inv_overlap_mat_new[0], ref_inv_overlap_mat_new[0], atol=1e-15)
+    np.testing.assert_allclose(inv_overlap_mat_new[1], ref_inv_overlap_mat_new[1], atol=1e-15)
+
+def test_uhf_update_overlap():
+    # Update matrix.
+    site = np.random.randint(0, min(nelec_sp))
+    dB_diag = jnp.zeros(norb)
+    dB_diag = dB_diag.at[site].set(1)
+    dB = jnp.diag(dB_diag)
+    B = jnp.eye(norb) + dB
+    print(f'Updating site {site}')
+    
+    # Current overlap.
+    overlap = uhf.calc_overlap(walker_up, walker_dn, wave_data)
+
+    # Current inverse overlap matrix.
+    inv_overlap_mat = uhf.calc_inv_overlap_mat(walker_up, walker_dn, wave_data)
+
+    # Update.
+    walker_up_new = jnp.einsum("ij,jk->ik", B, walker_up)
+    walker_dn_new = jnp.einsum("ij,jk->ik", B, walker_dn)
+
+    dwalker_up = walker_up_new - walker_up
+    dwalker_dn = walker_dn_new - walker_dn
+
+    # Check that only 1 row is changed.
+    assert np.count_nonzero(np.linalg.norm(dwalker_up, axis=1)) == 1
+    assert np.count_nonzero(np.linalg.norm(dwalker_dn, axis=1)) == 1
+
+    # New overlap.
+    ref_overlap_new = uhf.calc_overlap(walker_up_new, walker_dn_new, wave_data)
+    
+    # Test.
+    overlap_new = uhf.update_overlap(walker_up, walker_dn, wave_data, inv_overlap_mat, overlap, (1, 1), site)
+
+    np.testing.assert_allclose(overlap_new, ref_overlap_new, atol=1e-15)
+
 
 def test_uhf_green():
     green = uhf.calc_green(walker_up, walker_dn, wave_data)
@@ -231,6 +299,8 @@ if __name__ == "__main__":
     test_rhf_energy()
     test_rhf_optimize_orbs()
     test_uhf_overlap()
+    test_uhf_update_inv_overlap_mat()
+    test_uhf_update_overlap()
     test_uhf_green()
     test_uhf_force_bias()
     test_uhf_energy()
