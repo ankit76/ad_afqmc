@@ -480,8 +480,7 @@ class ghf(wave_function):
         v = walker[i] * delta
 
         # Sherman-Morrison formula.
-        inv_overlap_mat = linalg_utils.sherman_morrison(
-            inv_overlap_mat, wave_data[i].conj(), v)
+        inv_overlap_mat = linalg_utils.sherman_morrison(inv_overlap_mat, wave_data[i].conj(), v)
         return inv_overlap_mat
     
     def update_inv_overlap_mat_vmap(self, walkers, wave_data, inv_overlap_mats, delta, i):
