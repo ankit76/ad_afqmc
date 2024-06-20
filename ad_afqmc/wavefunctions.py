@@ -25,6 +25,8 @@ print = partial(print, flush=True)
 class wave_function(ABC):
     """Abstract class for wave functions."""
 
+    norb: int
+
     @abstractmethod
     def calc_overlap_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
         """Calculate the overlap between the walkers and the wave function.

@@ -551,6 +551,462 @@ class propagator_cpmc(propagator_uhf):
         return prop_data
 
 
+@dataclass
+class propagator_cpmc_nn(propagator_uhf):
+    neighbors: tuple = None
+
+    @partial(jit, static_argnums=(0, 1))
+    def propagate(
+        self,
+        trial: wavefunctions.wave_function,
+        ham_data: dict,
+        prop_data: dict,
+        gaussian_rns: jnp.array,
+        wave_data: dict,
+    ) -> dict:
+        """
+        Propagate the walkers using the CPMC algorithm.
+
+        Args:
+            trial: trial wave function handler
+            ham_data: dictionary containing the Hamiltonian data
+            prop_data: dictionary containing the propagation data
+            gaussian_rns: Gaussian random numbers (these are converted to uniform)
+            wave_data: dictionary containing the wave function data
+
+        Returns:
+            prop_data: dictionary containing the updated propagation data
+        """
+        # one body
+        prop_data["walkers"][0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        )
+        prop_data["walkers"][1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        )
+        overlaps_new = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
+        prop_data["weights"] = jnp.where(
+            prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
+        )
+        prop_data["overlaps"] = overlaps_new
+
+        # two body
+        # on site
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        uniform_rns = random.uniform(subkey, shape=(self.n_walkers, trial.norb))
+        # uniform_rns = (jsp.special.erf(gaussian_rns / 2**0.5) + 1) / 2
+
+        # iterate over sites
+        # TODO: fast update
+        def scanned_fun(carry, x):
+            # field 1
+            new_walkers_0_up = (
+                carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][0, 0])
+            )
+            new_walkers_0_dn = (
+                carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][0, 1])
+            )
+            overlaps_new_0 = trial.calc_overlap_vmap(
+                [new_walkers_0_up, new_walkers_0_dn], wave_data
+            )
+            ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
+            ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+
+            # field 2
+            new_walkers_1_up = (
+                carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][1, 0])
+            )
+            new_walkers_1_dn = (
+                carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][1, 1])
+            )
+            overlaps_new_1 = trial.calc_overlap_vmap(
+                [new_walkers_1_up, new_walkers_1_dn], wave_data
+            )
+            ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
+            ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
+
+            # normalize
+            norm = ratio_0 + ratio_1
+            ratio_0 /= norm
+
+            # update
+            rns = uniform_rns[:, x]
+            mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
+            new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
+            new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
+            new_walkers = [new_walkers_up, new_walkers_dn]
+            mask_0 = mask_0.reshape(-1)
+            overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
+            carry["walkers"] = new_walkers
+            carry["weights"] *= norm
+            carry["overlaps"] = overlaps_new
+            return carry, x
+
+        prop_data, _ = lax.scan(scanned_fun, prop_data, jnp.arange(trial.norb))
+
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        uniform_rns_1 = random.uniform(
+            subkey, shape=(self.n_walkers, 4, jnp.array(self.neighbors).shape[0])
+        )
+
+        # neighbors
+        def scanned_fun_1(carry, x):
+            site_i = jnp.array(self.neighbors)[x][0]
+            site_j = jnp.array(self.neighbors)[x][1]
+            # up up
+            # field 1
+            new_walkers_0_up = (
+                carry["walkers"][0]
+                .at[:, site_i, :]
+                .mul(ham_data["hs_constant_1"][0, 0])
+            )
+            new_walkers_0_up = new_walkers_0_up.at[:, site_j, :].mul(
+                ham_data["hs_constant_1"][0, 1]
+            )
+            overlaps_new_0 = trial.calc_overlap_vmap(
+                [new_walkers_0_up, carry["walkers"][1]], wave_data
+            )
+            ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
+            ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+
+            # field 2
+            new_walkers_1_up = (
+                carry["walkers"][0]
+                .at[:, site_i, :]
+                .mul(ham_data["hs_constant_1"][1, 0])
+            )
+            new_walkers_1_up = new_walkers_1_up.at[:, site_j, :].mul(
+                ham_data["hs_constant_1"][1, 1]
+            )
+            overlaps_new_1 = trial.calc_overlap_vmap(
+                [new_walkers_1_up, carry["walkers"][1]], wave_data
+            )
+            ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
+            ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
+
+            # normalize
+            norm = ratio_0 + ratio_1
+            ratio_0 /= norm
+
+            # update
+            rns = uniform_rns_1[:, 0, x]
+            mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
+            new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
+            new_walkers = [new_walkers_up, carry["walkers"][1]]
+            mask_0 = mask_0.reshape(-1)
+            overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
+            carry["walkers"] = new_walkers
+            carry["weights"] *= norm
+            carry["overlaps"] = overlaps_new
+
+            # up dn
+            # field 1
+            new_walkers_0_up = (
+                carry["walkers"][0]
+                .at[:, site_i, :]
+                .mul(ham_data["hs_constant_1"][0, 0])
+            )
+            new_walkers_0_dn = (
+                carry["walkers"][1]
+                .at[:, site_j, :]
+                .mul(ham_data["hs_constant_1"][0, 1])
+            )
+            overlaps_new_0 = trial.calc_overlap_vmap(
+                [new_walkers_0_up, new_walkers_0_dn], wave_data
+            )
+            ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
+            ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+
+            # field 2
+            new_walkers_1_up = (
+                carry["walkers"][0]
+                .at[:, site_i, :]
+                .mul(ham_data["hs_constant_1"][1, 0])
+            )
+            new_walkers_1_dn = (
+                carry["walkers"][1]
+                .at[:, site_j, :]
+                .mul(ham_data["hs_constant_1"][1, 1])
+            )
+            overlaps_new_1 = trial.calc_overlap_vmap(
+                [new_walkers_1_up, new_walkers_1_dn], wave_data
+            )
+            ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
+            ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
+
+            # normalize
+            norm = ratio_0 + ratio_1
+            ratio_0 /= norm
+
+            # update
+            rns = uniform_rns_1[:, 1, x]
+            mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
+            new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
+            new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
+            new_walkers = [new_walkers_up, new_walkers_dn]
+            mask_0 = mask_0.reshape(-1)
+            overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
+            carry["walkers"] = new_walkers
+            carry["weights"] *= norm
+            carry["overlaps"] = overlaps_new
+
+            # dn up
+            # field 1
+            new_walkers_0_dn = (
+                carry["walkers"][1]
+                .at[:, site_i, :]
+                .mul(ham_data["hs_constant_1"][0, 0])
+            )
+            new_walkers_0_up = (
+                carry["walkers"][0]
+                .at[:, site_j, :]
+                .mul(ham_data["hs_constant_1"][0, 1])
+            )
+            overlaps_new_0 = trial.calc_overlap_vmap(
+                [new_walkers_0_up, new_walkers_0_dn], wave_data
+            )
+            ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
+            ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+
+            # field 2
+            new_walkers_1_dn = (
+                carry["walkers"][1]
+                .at[:, site_i, :]
+                .mul(ham_data["hs_constant_1"][1, 0])
+            )
+            new_walkers_1_up = (
+                carry["walkers"][0]
+                .at[:, site_j, :]
+                .mul(ham_data["hs_constant_1"][1, 1])
+            )
+            overlaps_new_1 = trial.calc_overlap_vmap(
+                [new_walkers_1_up, new_walkers_1_dn], wave_data
+            )
+            ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
+            ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
+
+            # normalize
+            norm = ratio_0 + ratio_1
+            ratio_0 /= norm
+
+            # update
+            rns = uniform_rns_1[:, 2, x]
+            mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
+            new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
+            new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
+            new_walkers = [new_walkers_up, new_walkers_dn]
+            mask_0 = mask_0.reshape(-1)
+            overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
+            carry["walkers"] = new_walkers
+            carry["weights"] *= norm
+            carry["overlaps"] = overlaps_new
+
+            # dn dn
+            # field 1
+            new_walkers_0_dn = (
+                carry["walkers"][1]
+                .at[:, site_i, :]
+                .mul(ham_data["hs_constant_1"][0, 0])
+            )
+            new_walkers_0_dn = new_walkers_0_dn.at[:, site_j, :].mul(
+                ham_data["hs_constant_1"][0, 1]
+            )
+            overlaps_new_0 = trial.calc_overlap_vmap(
+                [carry["walkers"][0], new_walkers_0_dn], wave_data
+            )
+            ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
+            ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+
+            # field 2
+            new_walkers_1_dn = (
+                carry["walkers"][1]
+                .at[:, site_i, :]
+                .mul(ham_data["hs_constant_1"][1, 0])
+            )
+            new_walkers_1_dn = new_walkers_1_dn.at[:, site_j, :].mul(
+                ham_data["hs_constant_1"][1, 1]
+            )
+            overlaps_new_1 = trial.calc_overlap_vmap(
+                [carry["walkers"][0], new_walkers_1_dn], wave_data
+            )
+            ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
+            ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
+
+            # normalize
+            norm = ratio_0 + ratio_1
+            ratio_0 /= norm
+
+            # update
+            rns = uniform_rns_1[:, 3, x]
+            mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
+            new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
+            new_walkers = [carry["walkers"][0], new_walkers_dn]
+            mask_0 = mask_0.reshape(-1)
+            overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
+            carry["walkers"] = new_walkers
+            carry["weights"] *= norm
+            carry["overlaps"] = overlaps_new
+
+            return carry, x
+
+        prop_data, _ = lax.scan(
+            scanned_fun_1, prop_data, jnp.arange(jnp.array(self.neighbors).shape[0])
+        )
+
+        # one body
+        prop_data["walkers"][0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        )
+        prop_data["walkers"][1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        )
+        overlaps_new = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
+        prop_data["weights"] = jnp.where(
+            prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
+        )
+        prop_data["overlaps"] = overlaps_new
+
+        prop_data["weights"] *= jnp.exp(self.dt * (prop_data["pop_control_ene_shift"]))
+        prop_data["weights"] = jnp.where(
+            prop_data["weights"] > 100.0, 0.0, prop_data["weights"]
+        )
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"] - 0.1 * jnp.array(
+            jnp.log(jnp.sum(prop_data["weights"]) / self.n_walkers) / self.dt
+        )
+        return prop_data
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.dt,
+                self.n_prop_steps,
+                self.n_ene_blocks,
+                self.n_sr_blocks,
+                self.n_blocks,
+                self.n_walkers,
+                self.neighbors,
+            )
+        )
+
+
+class propagator_cpmc_continuous(propagator_uhf):
+
+    @partial(jit, static_argnums=(0, 1))
+    def propagate(
+        self,
+        trial: wavefunctions.wave_function,
+        ham_data: dict,
+        prop_data: dict,
+        gaussian_rns: jnp.array,
+        wave_data: dict,
+    ) -> dict:
+        """
+        Propagate the walkers using the CPMC algorithm.
+
+        Args:
+            trial: trial wave function handler
+            ham_data: dictionary containing the Hamiltonian data
+            prop_data: dictionary containing the propagation data
+            gaussian_rns: Gaussian random numbers
+            wave_data: dictionary containing the wave function data
+
+        Returns:
+            prop_data: dictionary containing the updated propagation data
+        """
+        # one body
+        prop_data["walkers"][0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        )
+        prop_data["walkers"][1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        )
+        overlaps_new = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
+        prop_data["weights"] = jnp.where(
+            prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
+        )
+        prop_data["overlaps"] = overlaps_new
+
+        # two body
+        # TODO: define separate sampler that feeds uniform_rns instead of gaussian_rns
+        uniform_rns = (jsp.special.erf(gaussian_rns / 2**0.5) + 1) / 2
+
+        # iterate over sites
+        # TODO: fast update
+        def scanned_fun(carry, x):
+            # field 1
+            new_walkers_0_up = (
+                carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][0, 0])
+            )
+            new_walkers_0_dn = (
+                carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][0, 1])
+            )
+            overlaps_new_0 = trial.calc_overlap_vmap(
+                [new_walkers_0_up, new_walkers_0_dn], wave_data
+            )
+            ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
+            ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+
+            # field 2
+            new_walkers_1_up = (
+                carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][1, 0])
+            )
+            new_walkers_1_dn = (
+                carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][1, 1])
+            )
+            overlaps_new_1 = trial.calc_overlap_vmap(
+                [new_walkers_1_up, new_walkers_1_dn], wave_data
+            )
+            ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
+            ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
+
+            # normalize
+            norm = ratio_0 + ratio_1
+            ratio_0 /= norm
+
+            # update
+            rns = uniform_rns[:, x]
+            mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
+            new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
+            new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
+            new_walkers = [new_walkers_up, new_walkers_dn]
+            mask_0 = mask_0.reshape(-1)
+            overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
+            carry["walkers"] = new_walkers
+            carry["weights"] *= norm
+            carry["overlaps"] = overlaps_new
+            return carry, x
+
+        prop_data, _ = lax.scan(
+            scanned_fun, prop_data, jnp.arange(ham_data["chol"].shape[0])
+        )  # TODO: chol will be removed from ham_data for hubbard
+
+        # one body
+        prop_data["walkers"][0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        )
+        prop_data["walkers"][1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        )
+        overlaps_new = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
+        prop_data["weights"] = jnp.where(
+            prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
+        )
+        prop_data["overlaps"] = overlaps_new
+
+        prop_data["weights"] *= jnp.exp(self.dt * (prop_data["pop_control_ene_shift"]))
+        prop_data["weights"] = jnp.where(
+            prop_data["weights"] > 100.0, 0.0, prop_data["weights"]
+        )
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"] - 0.1 * jnp.array(
+            jnp.log(jnp.sum(prop_data["weights"]) / self.n_walkers) / self.dt
+        )
+        return prop_data
+
+
 if __name__ == "__main__":
     prop = propagator()
     nelec = 3

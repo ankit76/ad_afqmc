@@ -104,6 +104,15 @@ def afqmc(
             n_sr_blocks=10,
             n_walkers=options["n_walkers"],
         )
+    elif isinstance(propagator, propagation.propagator_cpmc_nn):
+        propagator_eq = propagation.propagator_cpmc_nn(
+            propagator.dt,
+            n_prop_steps=50,
+            n_ene_blocks=5,
+            n_sr_blocks=10,
+            n_walkers=options["n_walkers"],
+            neighbors=propagator.neighbors,
+        )
     elif options["walker_type"] == "rhf":
         propagator_eq = propagation.propagator(
             propagator.dt,
