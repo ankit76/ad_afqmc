@@ -455,6 +455,58 @@ class ghf(wave_function):
         )
 
     @partial(jit, static_argnums=0)
+    def calc_inv_overlap_mat(self, walker_up, walker_dn, wave_data):
+        return jnp.linalg.inv(
+            jnp.hstack(
+                [
+                    wave_data[: self.norb].T.conj() @ walker_up,
+                    wave_data[self.norb : ].T.conj() @ walker_dn,
+                ]
+            )
+        )
+    
+    def calc_inv_overlap_mat_vmap(self, walkers, wave_data):
+        return vmap(self.calc_inv_overlap_mat, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+    
+    @partial(jit, static_argnums=0)
+    def update_inv_overlap_mat(self, walker_up, walker_dn, wave_data, inv_overlap_mat, delta, i):
+        # Reshape UHF walker wavefunction to GHF form.
+        walker = jnp.block([
+                    [walker_up, jnp.zeros((self.norb, self.nelec[1]))],
+                    [jnp.zeros((self.norb, self.nelec[0])), walker_dn]
+                ])
+        v = walker[i] * delta
+
+        # Sherman-Morrison formula.
+        inv_overlap_mat = linalg_utils.sherman_morrison(
+            inv_overlap_mat, wave_data[i].conj(), v)
+        return inv_overlap_mat
+    
+    def update_inv_overlap_mat_vmap(self, walkers, wave_data, inv_overlap_mats, delta, i):
+        return vmap(self.update_inv_overlap_mat, in_axes=(0, 0, None, 0, None, None))(
+            walkers[0], walkers[1], wave_data, inv_overlap_mats, delta, i
+        )
+
+    @partial(jit, static_argnums=0)
+    def update_overlap(self, walker_up, walker_dn, wave_data, inv_overlap_mat, overlap, delta, i):
+        walker = jnp.block([
+                    [walker_up, jnp.zeros((self.norb, self.nelec[1]))],
+                    [jnp.zeros((self.norb, self.nelec[0])), walker_dn]
+                ])
+        v = walker[i] * delta
+
+        # Matrix determinant lemma.
+        overlap = linalg_utils.mat_det_lemma(overlap, inv_overlap_mat, wave_data[i].conj(), v)
+        return overlap
+
+    def update_overlap_vmap(self, walkers, wave_data, inv_overlap_mats, overlaps, delta, i):
+        return vmap(self.update_overlap, in_axes=(0, 0, None, 0, 0, None, None))(
+            walkers[0], walkers[1], wave_data, inv_overlap_mats, overlaps, delta, i
+        )
+
+    @partial(jit, static_argnums=0)
     def calc_green(self, walker_up, walker_dn, wave_data):
         overlap_mat = jnp.hstack(
             [

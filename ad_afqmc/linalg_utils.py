@@ -118,11 +118,11 @@ def modified_cholesky(mat, norb, nchol_max):
     # return chol_vecs
     return carry["chol_vecs"][:nchol_max]
 
-
+@jit
 def sherman_morrison(Ainv, u, v):
-    return Ainv - Ainv @ jnp.outer(u, v) @ Ainv / (1. + v.T @ Ainv @ u)
+    return Ainv - jnp.outer((Ainv @ u), (v.T @ Ainv)) / (1. + v.T @ Ainv @ u)
 
-
+@jit
 def mat_det_lemma(detA, Ainv, u, v):
     return (1 + v.T @ Ainv @ u) * detA
 

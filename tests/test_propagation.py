@@ -51,6 +51,7 @@ ham_data_u["h0"] = np.random.rand(
 ham_data_u["h1"] = jnp.array(np.random.rand(2, norb, norb))
 ham_data_u["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
 ham_data_u["ene0"] = 0.0
+ham_data_u["hs_constant"] = jnp.array(np.random.rand(2, 2))
 ham_data_u = ham_handler_u.prop_ham(ham_data_u, prop_handler_u.dt, trial_u, wave_data_u)
 ham_data_u = ham_handler_u.rot_ham(ham_data_u, wave_data_u)
 
@@ -60,12 +61,28 @@ prop_data_u = prop_handler_u.init_prop_data(
 prop_data_u["key"] = random.PRNGKey(seed)
 prop_data_u["overlaps"] = trial_u.calc_overlap_vmap(prop_data_u["walkers"], wave_data_u)
 
+prop_handler_cpmc = propagation.propagator_cpmc(n_walkers=7)
+
+ham_handler_g = hamiltonian.hamiltonian_ghf(norb, nelec_sp, nchol)
+trial_g = wavefunctions.ghf(norb, nelec_sp)
+wave_data_g = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1]))
+
+ham_data_g = {}
+ham_data_g["h0"] = np.random.rand(1,)[0]
+ham_data_g["h1"] = jnp.array(np.random.rand(2, norb, norb))
+ham_data_g["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
+ham_data_g["ene0"] = 0.0
+ham_data_g["hs_constant"] = jnp.array(np.random.rand(2, 2))
+ham_data_g = ham_handler_g.prop_ham(ham_data_g, prop_handler_cpmc.dt, trial_g, wave_data_g)
+ham_data_g = ham_handler_g.rot_ham(ham_data_g, wave_data_g)
+
+prop_data_g = prop_handler_cpmc.init_prop_data(trial_g, wave_data_g, ham_handler_g, ham_data_g)
+prop_data_g["key"] = random.PRNGKey(seed)
+prop_data_g["overlaps"] = trial_g.calc_overlap_vmap(prop_data_g["walkers"], wave_data_g)
+
 fields = random.normal(
     random.PRNGKey(seed), shape=(prop_handler.n_walkers, ham_data["chol"].shape[0])
 )
-
-prop_handler_cpmc = propagation.propagator_cpmc(n_walkers=7)
-ham_data_u["hs_constant"] = jnp.array([[0.4, 0.1], [0.1, 0.4]])
 
 
 def test_stochastic_reconfiguration_local():
@@ -110,7 +127,7 @@ def test_propagate_free_u():
     assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
 
 
-def test_propagate_cpmc_slow():
+def test_propagate_cpmc_uhf_trial_slow():
     prop_data_new = prop_handler_cpmc.propagate_slow(
         trial_u, ham_data_u, prop_data_u, fields, wave_data_u
     )
@@ -119,7 +136,7 @@ def test_propagate_cpmc_slow():
     assert prop_data_new["weights"].shape == prop_data_u["weights"].shape
     assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
 
-def test_propagate_cpmc():
+def test_propagate_cpmc_uhf_trial():
     prop_data_new = prop_handler_cpmc.propagate(
             trial_u, ham_data_u, prop_data_u, fields, wave_data_u)
     ref_prop_data_new = prop_handler_cpmc.propagate_slow(
@@ -138,11 +155,30 @@ def test_propagate_cpmc():
     np.testing.assert_allclose(prop_data_new["e_estimate"], ref_prop_data_new["e_estimate"])
     np.testing.assert_allclose(prop_data_new["pop_control_ene_shift"], ref_prop_data_new["pop_control_ene_shift"])
 
+
+def test_propagate_cpmc_ghf_trial():
+    prop_data_new = prop_handler_cpmc.propagate(trial_g, ham_data_g, prop_data_g, fields, wave_data_g)
+    ref_prop_data_new = prop_handler_cpmc.propagate_slow(trial_g, ham_data_g, prop_data_g, fields, wave_data_g)
+
+    # Check that the walkers before and after propagation are diffferent.
+    assert ~np.allclose(prop_data_new["weights"], prop_data_g["weights"])
+    assert ~np.allclose(prop_data_new["walkers"][0], prop_data_g["walkers"][0])
+    assert ~np.allclose(prop_data_new["walkers"][1], prop_data_g["walkers"][1])
+    assert ~np.allclose(prop_data_new["overlaps"], prop_data_g["overlaps"])
+    
+    np.testing.assert_allclose(prop_data_new["weights"], ref_prop_data_new["weights"])
+    np.testing.assert_allclose(prop_data_new["walkers"][0], ref_prop_data_new["walkers"][0])
+    np.testing.assert_allclose(prop_data_new["walkers"][1], ref_prop_data_new["walkers"][1])
+    np.testing.assert_allclose(prop_data_new["overlaps"], ref_prop_data_new["overlaps"])
+    np.testing.assert_allclose(prop_data_new["e_estimate"], ref_prop_data_new["e_estimate"])
+    np.testing.assert_allclose(prop_data_new["pop_control_ene_shift"], ref_prop_data_new["pop_control_ene_shift"])
+
 if __name__ == "__main__":
     test_stochastic_reconfiguration_local()
     test_propagate()
     test_stochastic_reconfiguration_local_u()
     test_propagate_u()
     test_propagate_free_u()
-    test_propagate_cpmc_slow()
-    test_propagate_cpmc()
+    test_propagate_cpmc_uhf_trial_slow()
+    test_propagate_cpmc_uhf_trial()
+    test_propagate_cpmc_ghf_trial()

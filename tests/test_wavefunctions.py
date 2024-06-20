@@ -118,6 +118,7 @@ def test_uhf_overlap():
     overlap = uhf.calc_overlap(walker_up, walker_dn, wave_data)
     assert np.allclose(jnp.real(overlap), -0.4029825074695857)
 
+
 def test_uhf_update_inv_overlap_mat():
     # Update matrix.
     site = np.random.randint(0, min(nelec_sp))
@@ -151,6 +152,7 @@ def test_uhf_update_inv_overlap_mat():
     np.testing.assert_equal(inv_overlap_mat_new[1].shape, ref_inv_overlap_mat_new[1].shape)
     np.testing.assert_allclose(inv_overlap_mat_new[0], ref_inv_overlap_mat_new[0], atol=1e-15)
     np.testing.assert_allclose(inv_overlap_mat_new[1], ref_inv_overlap_mat_new[1], atol=1e-15)
+
 
 def test_uhf_update_overlap():
     # Update matrix.
@@ -229,6 +231,79 @@ def test_ghf_overlap():
     assert np.allclose(jnp.real(overlap), -0.7645032356687913)
 
 
+def test_ghf_update_inv_overlap_mat():
+    # Update matrix.
+    site = np.random.randint(0, min(nelec_sp))
+    dB_diag = jnp.zeros(norb)
+    dB_diag = dB_diag.at[site].set(1)
+    dB = jnp.diag(dB_diag)
+    B = jnp.eye(norb) + dB
+    print(f'Updating site {site}')
+    
+    # Current inverse overlap matrix.
+    inv_overlap_mat = ghf.calc_inv_overlap_mat(walker_up, walker_dn, wave_data_g)
+
+    # Update.
+    walker_up_new = jnp.einsum("ij,jk->ik", B, walker_up)
+    inv_overlap_mat_new = ghf.update_inv_overlap_mat(walker_up, walker_dn, wave_data_g, inv_overlap_mat, 1, site)
+    
+    walker_dn_new = jnp.einsum("ij,jk->ik", B, walker_dn)
+    inv_overlap_mat_new = ghf.update_inv_overlap_mat(walker_up_new, walker_dn, wave_data_g, inv_overlap_mat_new, 1, ghf.norb + site)
+    
+    dwalker_up = walker_up_new - walker_up
+    dwalker_dn = walker_dn_new - walker_dn
+
+    # Check that only 1 row is changed.
+    assert np.count_nonzero(np.linalg.norm(dwalker_up, axis=1)) == 1
+    assert np.count_nonzero(np.linalg.norm(dwalker_dn, axis=1)) == 1
+
+    # New inverse overlap matrix.
+    ref_inv_overlap_mat_new = ghf.calc_inv_overlap_mat(walker_up_new, walker_dn_new, wave_data_g)
+    
+    # Test.
+    np.testing.assert_equal(inv_overlap_mat_new[0].shape, ref_inv_overlap_mat_new[0].shape)
+    np.testing.assert_equal(inv_overlap_mat_new[1].shape, ref_inv_overlap_mat_new[1].shape)
+    np.testing.assert_allclose(inv_overlap_mat_new[0], ref_inv_overlap_mat_new[0], atol=1e-15)
+    np.testing.assert_allclose(inv_overlap_mat_new[1], ref_inv_overlap_mat_new[1], atol=1e-15)
+
+
+def test_ghf_update_overlap():
+    # Update matrix.
+    site = np.random.randint(0, min(nelec_sp))
+    dB_diag = jnp.zeros(norb)
+    dB_diag = dB_diag.at[site].set(1)
+    dB = jnp.diag(dB_diag)
+    B = jnp.eye(norb) + dB
+    print(f'Updating site {site}')
+    
+    # Current overlap.
+    overlap = ghf.calc_overlap(walker_up, walker_dn, wave_data_g)
+
+    # Current inverse overlap matrix.
+    inv_overlap_mat = ghf.calc_inv_overlap_mat(walker_up, walker_dn, wave_data_g)
+
+    # Update.
+    walker_up_new = jnp.einsum("ij,jk->ik", B, walker_up)
+    overlap_new = ghf.update_overlap(walker_up, walker_dn, wave_data_g, inv_overlap_mat, overlap, 1, site)
+    inv_overlap_mat_new = ghf.update_inv_overlap_mat(walker_up, walker_dn, wave_data_g, inv_overlap_mat, 1, site)
+    
+    walker_dn_new = jnp.einsum("ij,jk->ik", B, walker_dn)
+    overlap_new = ghf.update_overlap(walker_up_new, walker_dn, wave_data_g, inv_overlap_mat_new, overlap_new, 1, ghf.norb + site)
+    inv_overlap_mat_new = ghf.update_inv_overlap_mat(walker_up_new, walker_dn, wave_data_g, inv_overlap_mat_new, 1, ghf.norb + site)
+
+    dwalker_up = walker_up_new - walker_up
+    dwalker_dn = walker_dn_new - walker_dn
+
+    # Check that only 1 row is changed.
+    assert np.count_nonzero(np.linalg.norm(dwalker_up, axis=1)) == 1
+    assert np.count_nonzero(np.linalg.norm(dwalker_dn, axis=1)) == 1
+
+    # New overlap.
+    ref_overlap_new = ghf.calc_overlap(walker_up_new, walker_dn_new, wave_data_g)
+    
+    # Test.
+    np.testing.assert_allclose(overlap_new, ref_overlap_new, atol=1e-15)
+
 def test_ghf_green():
     green = ghf.calc_green(walker_up, walker_dn, wave_data_g)
     assert green.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
@@ -306,6 +381,8 @@ if __name__ == "__main__":
     test_uhf_energy()
     test_uhf_optimize_orbs()
     test_ghf_overlap()
+    test_ghf_update_inv_overlap_mat()
+    test_ghf_update_overlap()
     test_ghf_green()
     test_ghf_force_bias()
     test_ghf_energy()

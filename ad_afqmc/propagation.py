@@ -334,9 +334,6 @@ class propagator_cpmc(propagator_uhf):
         Returns:
             prop_data: dictionary containing the updated propagation data
         """
-        if isinstance(trial, wavefunctions.ghf):
-            wave_data = [wave_data[: self.norb], wave_data[self.norb :]]
-
         # one body
         prop_data["walkers"][0] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
@@ -356,81 +353,23 @@ class propagator_cpmc(propagator_uhf):
         # two body
         # TODO: define separate sampler that feeds uniform_rns instead of gaussian_rns
         uniform_rns = (jsp.special.erf(gaussian_rns / 2**0.5) + 1) / 2
-
-        # iterate over sites
-        # TODO: fast update
-        def scanned_fun(carry, x):
-            # Constant for updating overlap matrix.
-            delta = ham_data["hs_constant"] - 1
-
-            # field 1
-            new_walkers_0_up = (
-                carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][0, 0])
-            )
-            new_walkers_0_dn = (
-                carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][0, 1])
-            )
-
-            new_inv_overlap_mats_0 = trial.update_inv_overlap_mat_vmap( 
-                carry["walkers"], wave_data, carry["inv_overlap_mats"], delta[0], x
-            )
-
-            new_overlaps_0 = trial.update_overlap_vmap(
-                carry["walkers"], wave_data, carry["inv_overlap_mats"], carry["overlaps"], delta[0], x
-            )
-
-            ratio_0 = (new_overlaps_0 / carry["overlaps"]).real / 2.0
-            ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
-
-            # field 2
-            new_walkers_1_up = (
-                carry["walkers"][0].at[:, x].mul(ham_data["hs_constant"][1, 0])
-            )
-            new_walkers_1_dn = (
-                carry["walkers"][1].at[:, x].mul(ham_data["hs_constant"][1, 1])
-            )
-            
-            new_inv_overlap_mats_1 = trial.update_inv_overlap_mat_vmap( 
-                carry["walkers"], wave_data, carry["inv_overlap_mats"], delta[1], x
-            )
-
-            new_overlaps_1 = trial.update_overlap_vmap(
-                carry["walkers"], wave_data, carry["inv_overlap_mats"], carry["overlaps"], delta[1], x
-            )
-            
-            ratio_1 = (new_overlaps_1 / carry["overlaps"]).real / 2.0
-            ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
-
-            # normalize
-            norm = ratio_0 + ratio_1
-            ratio_0 /= norm
-
-            # update
-            rns = uniform_rns[:, x]
-            mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
-            new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
-            new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
-            new_walkers = [new_walkers_up, new_walkers_dn]
-
-            new_inv_overlap_mats_up = jnp.where(
-                    mask_0, new_inv_overlap_mats_0[0], new_inv_overlap_mats_1[0])
-            new_inv_overlap_mats_dn = jnp.where(
-                    mask_0, new_inv_overlap_mats_0[1], new_inv_overlap_mats_1[1])
-            new_inv_overlap_mats = [new_inv_overlap_mats_up, new_inv_overlap_mats_dn]
-
-            mask_0 = mask_0.reshape(-1)
-            overlaps_new = jnp.where(mask_0, new_overlaps_0, new_overlaps_1)
-            
-            carry["walkers"] = new_walkers
-            carry["weights"] *= norm # NOTE why this update?
-            carry["overlaps"] = overlaps_new
-            carry["inv_overlap_mats"] = new_inv_overlap_mats
-            return carry, x
         
-        # Scan over lattice sites.
+        # Wrapper functions.
+        uhf_trial_update_scan_wrapper = lambda carry, x: uhf_trial_update_scan(
+                carry, x, ham_data, trial, wave_data, uniform_rns)
+        ghf_trial_update_scan_wrapper = lambda carry, x: ghf_trial_update_scan(
+                carry, x, ham_data, trial, wave_data, uniform_rns)
+
+        # scan over lattice sites
+        if isinstance(trial, wavefunctions.uhf):
+            update_scan = uhf_trial_update_scan_wrapper
+            
+        elif isinstance(trial, wavefunctions.ghf):
+            update_scan = ghf_trial_update_scan_wrapper
+
         prop_data, _ = lax.scan(
-            scanned_fun, prop_data, jnp.arange(ham_data["chol"].shape[0])
-        )  # TODO: chol will be removed from ham_data for hubbard
+            update_scan, prop_data, jnp.arange(ham_data["chol"].shape[0])
+        ) # TODO: chol will be removed from ham_data for hubbard
 
         # one body
         prop_data["walkers"][0] = jnp.einsum(
@@ -463,6 +402,8 @@ class propagator_cpmc(propagator_uhf):
         gaussian_rns: jnp.array,
         wave_data: dict,
     ) -> dict:
+        print('PROPAGATE_SLOW')
+
         """
         Propagate the walkers using the CPMC algorithm.
 
@@ -681,6 +622,152 @@ class propagator_cpmc(propagator_uhf):
         )
         return prop_data
 
+
+def uhf_trial_update_scan(carry, x, ham_data, trial, wave_data, rns_arr):
+    # constant for updating overlap matrix
+    delta = ham_data["hs_constant"] - 1
+
+    # field 1
+    new_walkers_0_up = (
+        carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][0, 0])
+    )
+    new_walkers_0_dn = (
+        carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][0, 1])
+    )
+
+    new_inv_overlap_mats_0 = trial.update_inv_overlap_mat_vmap( 
+        carry["walkers"], wave_data, carry["inv_overlap_mats"], delta[0], x
+    )
+
+    new_overlaps_0 = trial.update_overlap_vmap(
+        carry["walkers"], wave_data, carry["inv_overlap_mats"], carry["overlaps"], delta[0], x
+    )
+
+    ratio_0 = (new_overlaps_0 / carry["overlaps"]).real / 2.0
+    ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+
+    # field 2
+    new_walkers_1_up = (
+        carry["walkers"][0].at[:, x].mul(ham_data["hs_constant"][1, 0])
+    )
+    new_walkers_1_dn = (
+        carry["walkers"][1].at[:, x].mul(ham_data["hs_constant"][1, 1])
+    )
+    
+    new_inv_overlap_mats_1 = trial.update_inv_overlap_mat_vmap( 
+        carry["walkers"], wave_data, carry["inv_overlap_mats"], delta[1], x
+    )
+
+    new_overlaps_1 = trial.update_overlap_vmap(
+        carry["walkers"], wave_data, carry["inv_overlap_mats"], carry["overlaps"], delta[1], x
+    )
+    
+    ratio_1 = (new_overlaps_1 / carry["overlaps"]).real / 2.0
+    ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
+
+    # normalize
+    norm = ratio_0 + ratio_1
+    ratio_0 /= norm
+
+    # update
+    rns = rns_arr[:, x]
+    mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
+    new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
+    new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
+    new_walkers = [new_walkers_up, new_walkers_dn]
+
+    new_inv_overlap_mats_up = jnp.where(
+            mask_0, new_inv_overlap_mats_0[0], new_inv_overlap_mats_1[0])
+    new_inv_overlap_mats_dn = jnp.where(
+            mask_0, new_inv_overlap_mats_0[1], new_inv_overlap_mats_1[1])
+    new_inv_overlap_mats = [new_inv_overlap_mats_up, new_inv_overlap_mats_dn]
+
+    mask_0 = mask_0.reshape(-1)
+    overlaps_new = jnp.where(mask_0, new_overlaps_0, new_overlaps_1)
+    
+    carry["walkers"] = new_walkers
+    carry["weights"] *= norm # NOTE why this update?
+    carry["overlaps"] = overlaps_new
+    carry["inv_overlap_mats"] = new_inv_overlap_mats
+    return carry, x
+        
+def ghf_trial_update_scan(carry, x, ham_data, trial, wave_data, rns_arr):
+    # constant for updating overlap matrix
+    delta = ham_data["hs_constant"] - 1
+
+    # field 1
+    new_walkers_0_up = (
+        carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][0, 0])
+    )
+    new_overlaps_0 = trial.update_overlap_vmap(
+        carry["walkers"], wave_data, carry["inv_overlap_mats"], carry["overlaps"], delta[0, 0], x
+    )
+    new_inv_overlap_mats_0 = trial.update_inv_overlap_mat_vmap( 
+        carry["walkers"], wave_data, carry["inv_overlap_mats"], delta[0, 0], x
+    )
+    walkers = [new_walkers_0_up, carry["walkers"][1]]
+
+    new_walkers_0_dn = (
+        carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][0, 1])
+    )
+    new_overlaps_0 = trial.update_overlap_vmap(
+        walkers, wave_data, new_inv_overlap_mats_0, new_overlaps_0, delta[0, 1], trial.norb + x
+    )
+    new_inv_overlap_mats_0 = trial.update_inv_overlap_mat_vmap( 
+        walkers, wave_data, new_inv_overlap_mats_0, delta[0, 1], trial.norb + x
+    )
+
+    ratio_0 = (new_overlaps_0 / carry["overlaps"]).real / 2.0
+    ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+
+    # field 2
+    new_walkers_1_up = (
+        carry["walkers"][0].at[:, x].mul(ham_data["hs_constant"][1, 0])
+    )
+    new_overlaps_1 = trial.update_overlap_vmap(
+        carry["walkers"], wave_data, carry["inv_overlap_mats"], carry["overlaps"], delta[1, 0], x
+    )
+    new_inv_overlap_mats_1 = trial.update_inv_overlap_mat_vmap( 
+        carry["walkers"], wave_data, carry["inv_overlap_mats"], delta[1, 0], x
+    )
+    walkers = [new_walkers_1_up, carry["walkers"][1]]
+
+    new_walkers_1_dn = (
+        carry["walkers"][1].at[:, x].mul(ham_data["hs_constant"][1, 1])
+    )
+    new_overlaps_1 = trial.update_overlap_vmap(
+        walkers, wave_data, new_inv_overlap_mats_1, new_overlaps_1, delta[1, 1], trial.norb + x
+    )
+    new_inv_overlap_mats_1 = trial.update_inv_overlap_mat_vmap( 
+        walkers, wave_data, new_inv_overlap_mats_1, delta[1, 1], trial.norb + x
+    )
+    
+    ratio_1 = (new_overlaps_1 / carry["overlaps"]).real / 2.0
+    ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
+
+    # normalize
+    norm = ratio_0 + ratio_1
+    ratio_0 /= norm
+
+    # update
+    rns = rns_arr[:, x]
+    mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
+    new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
+    new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
+    new_walkers = [new_walkers_up, new_walkers_dn]
+
+    new_inv_overlap_mats = jnp.where(
+            mask_0, new_inv_overlap_mats_0, new_inv_overlap_mats_1)
+
+    mask_0 = mask_0.reshape(-1)
+    overlaps_new = jnp.where(mask_0, new_overlaps_0, new_overlaps_1)
+    
+    carry["walkers"] = new_walkers
+    carry["weights"] *= norm # NOTE why this update?
+    carry["overlaps"] = overlaps_new
+    carry["inv_overlap_mats"] = new_inv_overlap_mats
+    return carry, x
+        
 
 if __name__ == "__main__":
     prop = propagator()
