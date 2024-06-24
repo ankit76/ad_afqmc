@@ -10,7 +10,7 @@ os.environ["JAX_ENABLE_X64"] = "True"
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Sequence, Tuple
+from typing import Any, Sequence, Tuple, Union
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
@@ -25,7 +25,10 @@ print = partial(print, flush=True)
 class wave_function(ABC):
     """Abstract class for wave functions."""
 
+    # TODO: wave_function should not have mapped wrapper functions, the caller should use vmap
+
     norb: int
+    nelec: Union[int, Tuple[int, int]]
 
     @abstractmethod
     def calc_overlap_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
@@ -44,11 +47,11 @@ class wave_function(ABC):
 
     @abstractmethod
     def calc_green_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
-        """Calculate the greens function.
+        """Calculate the (half) greens function.
 
         Args:
             walkers :
-                The walkers.
+                The walkers. (mapped over)
             wave_data : Any
                 The trial wave function data.
 
@@ -67,7 +70,7 @@ class wave_function(ABC):
 
         Args:
             walkers :
-                The walkers.
+                The walkers. (mapped over)
             ham : Any
                 The hamiltonian data.
             wave_data : Any
@@ -88,12 +91,89 @@ class wave_function(ABC):
             ham : Any
                 The hamiltonian data.
             walkers :
-                The walkers.
+                The walkers. (mapped over)
             wave_data : Any
                 The trial wave function data.
 
         Returns:
             jnp.array: The walker energies.
+        """
+        pass
+
+
+class wave_function_cpmc(wave_function):
+
+    @abstractmethod
+    def calc_green_diagonal_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
+        """Calculate the diagonal elements of the greens function.
+
+        Args:
+            walkers :
+                The walkers. (mapped over)
+            wave_data : Any
+                The trial wave function data.
+
+        Returns:
+            jnp.array: The diagonal elements of the greens function.
+        """
+        pass
+
+    @abstractmethod
+    def calc_full_green_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
+        """Calculate the greens function.
+
+        Args:
+            walkers :
+                The walkers. (mapped over)
+            wave_data : Any
+                The trial wave function data.
+
+        Returns:
+            jnp.array: The greens function.
+        """
+        pass
+
+    @abstractmethod
+    def calc_overlap_ratio_vmap(
+        self, greens: Sequence, update_indices: Sequence, update_constants: jnp.array
+    ) -> jnp.array:
+        """Calculate the overlap ratio.
+
+        Args:
+            greens :
+                The greens functions. (mapped over)
+            update_indices :
+                Proposed update indices.
+            constants :
+                Proposed update constants.
+
+        Returns:
+            jnp.array: The overlap ratios.
+        """
+        pass
+
+    @abstractmethod
+    def update_greens_function_vmap(
+        self,
+        greens: Sequence,
+        ratios: Sequence,
+        update_indices: Sequence,
+        update_constants: jnp.array,
+    ) -> jnp.array:
+        """Update the greens function.
+
+        Args:
+            greens :
+                The old greens functions. (mapped over)
+            ratios :
+                The overlap ratios. (mapped over)
+            indices :
+                Where to update.
+            constants :
+                What to update with. (mapped over)
+
+        Returns:
+            jnp.array: The updated greens functions.
         """
         pass
 
@@ -249,24 +329,6 @@ class uhf(wave_function):
             walkers[0], walkers[1], wave_data
         )
 
-    def calc_green_diagonal(self, walker_up, walker_dn, wave_data):
-        green_up = (
-            walker_up
-            @ jnp.linalg.inv(wave_data[0][:, : self.nelec[0]].T.dot(walker_up))
-            @ wave_data[0][:, : self.nelec[0]].T
-        ).diagonal()
-        green_dn = (
-            walker_dn
-            @ jnp.linalg.inv(wave_data[1][:, : self.nelec[1]].T.dot(walker_dn))
-            @ wave_data[1][:, : self.nelec[1]].T
-        ).diagonal()
-        return [green_up, green_dn]
-
-    def calc_green_diagonal_vmap(self, walkers, wave_data):
-        return vmap(self.calc_green_diagonal, in_axes=(0, 0, None))(
-            walkers[0], walkers[1], wave_data
-        )
-
     @partial(jit, static_argnums=0)
     def calc_force_bias(self, walker_up, walker_dn, rot_chol, wave_data):
         green_walker = self.calc_green(walker_up, walker_dn, wave_data)
@@ -405,6 +467,126 @@ class uhf(wave_function):
 
 
 @dataclass
+class uhf_cpmc(uhf, wave_function_cpmc):
+
+    @partial(jit, static_argnums=0)
+    def calc_green_diagonal(
+        self, walker_up: jnp.array, walker_dn: jnp.array, wave_data: Sequence
+    ) -> jnp.array:
+        green_up = (
+            walker_up
+            @ jnp.linalg.inv(wave_data[0][:, : self.nelec[0]].T.dot(walker_up))
+            @ wave_data[0][:, : self.nelec[0]].T
+        ).diagonal()
+        green_dn = (
+            walker_dn
+            @ jnp.linalg.inv(wave_data[1][:, : self.nelec[1]].T.dot(walker_dn))
+            @ wave_data[1][:, : self.nelec[1]].T
+        ).diagonal()
+        return jnp.array([green_up, green_dn])
+
+    @partial(jit, static_argnums=0)
+    def calc_green_diagonal_vmap(
+        self, walkers: Sequence, wave_data: Sequence
+    ) -> jnp.array:
+        return vmap(self.calc_green_diagonal, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap_ratio(
+        self, green: jnp.array, update_indices: jnp.array, update_constants: jnp.array
+    ) -> float:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+        ratio = (1 + update_constants[0] * green[spin_i, i, i]) * (
+            1 + update_constants[1] * green[spin_j, j, j]
+        ) - (spin_i == spin_j) * update_constants[0] * update_constants[1] * (
+            green[spin_i, i, j] * green[spin_j, j, i]
+        )
+        return ratio
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap_ratio_vmap(
+        self, greens: jnp.array, update_indices: jnp.array, update_constants: jnp.array
+    ) -> jnp.array:
+        return vmap(self.calc_overlap_ratio, in_axes=(0, None, None))(
+            greens, update_indices, update_constants
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_full_green(
+        self, walker_up: jnp.array, walker_dn: jnp.array, wave_data: Sequence
+    ) -> jnp.array:
+        green_up = (
+            walker_up
+            @ jnp.linalg.inv(wave_data[0][:, : self.nelec[0]].T.dot(walker_up))
+            @ wave_data[0][:, : self.nelec[0]].T
+        ).T
+        green_dn = (
+            walker_dn
+            @ jnp.linalg.inv(wave_data[1][:, : self.nelec[1]].T.dot(walker_dn))
+            @ wave_data[1][:, : self.nelec[1]].T
+        ).T
+        return jnp.array([green_up, green_dn])
+
+    @partial(jit, static_argnums=0)
+    def calc_full_green_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
+        return vmap(self.calc_full_green, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def update_greens_function(
+        self,
+        green: jnp.array,
+        ratio: float,
+        update_indices: jnp.array,
+        update_constants: jnp.array,
+    ) -> jnp.array:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+        sg_i = green[spin_i, i].at[i].add(-1)
+        sg_j = green[spin_j, j].at[j].add(-1)
+        g_ii = green[spin_i, i, i]
+        g_jj = green[spin_j, j, j]
+        g_ij = (spin_i == spin_j) * green[spin_i, i, j]
+        g_ji = (spin_i == spin_j) * green[spin_j, j, i]
+        green = green.at[spin_i, :, :].add(
+            (update_constants[0] / ratio)
+            * jnp.outer(
+                green[spin_i, :, i],
+                update_constants[1] * (g_ij * sg_j - g_jj * sg_i) - sg_i,
+            )
+        )
+        green = green.at[spin_j, :, :].add(
+            (update_constants[1] / ratio)
+            * jnp.outer(
+                green[spin_j, :, j],
+                update_constants[0] * (g_ji * sg_i - g_ii * sg_j) - sg_j,
+            )
+        )
+        return green
+
+    @partial(jit, static_argnums=0)
+    def update_greens_function_vmap(
+        self, greens, ratios, update_indices, update_constants
+    ):
+        return vmap(self.update_greens_function, in_axes=(0, 0, None, 0))(
+            greens, ratios, update_indices, update_constants
+        )
+
+    def __hash__(self):
+        return hash(
+            (
+                self.norb,
+                self.nelec,
+                self.n_opt_iter,
+            )
+        )
+
+
+@dataclass
 class ghf(wave_function):
     norb: int
     nelec: Tuple[int, int]
@@ -444,20 +626,6 @@ class ghf(wave_function):
 
     def calc_green_vmap(self, walkers, wave_data):
         return vmap(self.calc_green, in_axes=(0, 0, None))(
-            walkers[0], walkers[1], wave_data
-        )
-
-    def calc_green_diagonal(self, walker_up, walker_dn, wave_data):
-        walker_ghf = jsp.linalg.block_diag(walker_up, walker_dn)
-        overlap_mat = wave_data[:, : self.nelec[0] + self.nelec[1]].T @ walker_ghf
-        inv = jnp.linalg.inv(overlap_mat)
-        green = (
-            walker_ghf @ inv @ wave_data[:, : self.nelec[0] + self.nelec[1]].T
-        ).diagonal()
-        return [green[: self.norb], green[self.norb :]]
-
-    def calc_green_diagonal_vmap(self, walkers, wave_data):
-        return vmap(self.calc_green_diagonal, in_axes=(0, 0, None))(
             walkers[0], walkers[1], wave_data
         )
 
@@ -506,6 +674,111 @@ class ghf(wave_function):
     @partial(jit, static_argnums=0)
     def optimize_orbs(self, ham_data, wave_data):
         return wave_data
+
+    def __hash__(self):
+        return hash(
+            (
+                self.norb,
+                self.nelec,
+                self.n_opt_iter,
+            )
+        )
+
+
+@dataclass
+class ghf_cpmc(ghf, wave_function_cpmc):
+
+    @partial(jit, static_argnums=0)
+    def calc_green_diagonal(
+        self, walker_up: jnp.array, walker_dn: jnp.array, wave_data: jnp.array
+    ) -> jnp.array:
+        walker_ghf = jsp.linalg.block_diag(walker_up, walker_dn)
+        overlap_mat = wave_data[:, : self.nelec[0] + self.nelec[1]].T @ walker_ghf
+        inv = jnp.linalg.inv(overlap_mat)
+        green = (
+            walker_ghf @ inv @ wave_data[:, : self.nelec[0] + self.nelec[1]].T
+        ).diagonal()
+        return jnp.array([green[: self.norb], green[self.norb :]])
+
+    @partial(jit, static_argnums=0)
+    def calc_green_diagonal_vmap(
+        self, walkers: Sequence, wave_data: jnp.array
+    ) -> jnp.array:
+        return vmap(self.calc_green_diagonal, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap_ratio(
+        self, green: jnp.array, update_indices: jnp.array, update_constants: jnp.array
+    ) -> float:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+        i = i + (spin_i == 1) * self.norb
+        j = j + (spin_j == 1) * self.norb
+        ratio = (1 + update_constants[0] * green[i, i]) * (
+            1 + update_constants[1] * green[j, j]
+        ) - update_constants[0] * update_constants[1] * (green[i, j] * green[j, i])
+        return ratio
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap_ratio_vmap(
+        self, greens: jnp.array, update_indices: jnp.array, update_constants: jnp.array
+    ) -> jnp.array:
+        return vmap(self.calc_overlap_ratio, in_axes=(0, None, None))(
+            greens, update_indices, update_constants
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_full_green(
+        self, walker_up: jnp.array, walker_dn: jnp.array, wave_data: Sequence
+    ) -> jnp.array:
+        walker_ghf = jsp.linalg.block_diag(walker_up, walker_dn)
+        green = (
+            walker_ghf
+            @ jnp.linalg.inv(
+                wave_data[:, : self.nelec[0] + self.nelec[1]].T @ walker_ghf
+            )
+            @ wave_data[:, : self.nelec[0] + self.nelec[1]].T
+        ).T
+        return green
+
+    @partial(jit, static_argnums=0)
+    def calc_full_green_vmap(self, walkers: Sequence, wave_data: Any) -> jnp.array:
+        return vmap(self.calc_full_green, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def update_greens_function(
+        self,
+        green: jnp.array,
+        ratio: float,
+        update_indices: jnp.array,
+        update_constants: jnp.array,
+    ) -> jnp.array:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+        i = i + (spin_i == 1) * self.norb
+        j = j + (spin_j == 1) * self.norb
+        sg_i = green[i].at[i].add(-1)
+        sg_j = green[j].at[j].add(-1)
+        green += (update_constants[0] / ratio) * jnp.outer(
+            green[:, i],
+            update_constants[1] * (green[i, j] * sg_j - green[j, j] * sg_i) - sg_i,
+        ) + (update_constants[1] / ratio) * jnp.outer(
+            green[:, j],
+            update_constants[0] * (green[j, i] * sg_i - green[i, i] * sg_j) - sg_j,
+        )
+        return green
+
+    @partial(jit, static_argnums=0)
+    def update_greens_function_vmap(
+        self, greens, ratios, update_indices, update_constants
+    ):
+        return vmap(self.update_greens_function, in_axes=(0, 0, None, 0))(
+            greens, ratios, update_indices, update_constants
+        )
 
     def __hash__(self):
         return hash(

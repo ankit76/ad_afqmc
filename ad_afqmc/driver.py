@@ -9,6 +9,7 @@ os.environ["XLA_FLAGS"] = (
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 import pickle
+from copy import deepcopy
 from functools import partial
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
@@ -96,39 +97,43 @@ def afqmc(
         print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
-    if isinstance(propagator, propagation.propagator_cpmc):
-        propagator_eq = propagation.propagator_cpmc(
-            propagator.dt,
-            n_prop_steps=50,
-            n_ene_blocks=5,
-            n_sr_blocks=10,
-            n_walkers=options["n_walkers"],
-        )
-    elif isinstance(propagator, propagation.propagator_cpmc_nn):
-        propagator_eq = propagation.propagator_cpmc_nn(
-            propagator.dt,
-            n_prop_steps=50,
-            n_ene_blocks=5,
-            n_sr_blocks=10,
-            n_walkers=options["n_walkers"],
-            neighbors=propagator.neighbors,
-        )
-    elif options["walker_type"] == "rhf":
-        propagator_eq = propagation.propagator(
-            propagator.dt,
-            n_prop_steps=50,
-            n_ene_blocks=5,
-            n_sr_blocks=10,
-            n_walkers=options["n_walkers"],
-        )
-    elif options["walker_type"] == "uhf":
-        propagator_eq = propagation.propagator_uhf(
-            propagator.dt,
-            n_prop_steps=50,
-            n_ene_blocks=5,
-            n_sr_blocks=10,
-            n_walkers=options["n_walkers"],
-        )
+    # if isinstance(propagator, propagation.propagator_cpmc):
+    #     propagator_eq = propagation.propagator_cpmc(
+    #         propagator.dt,
+    #         n_prop_steps=50,
+    #         n_ene_blocks=5,
+    #         n_sr_blocks=10,
+    #         n_walkers=options["n_walkers"],
+    #     )
+    # elif isinstance(propagator, propagation.propagator_cpmc_continuous):
+    #     propagator_eq = propagation.propagator_cpmc_continuous(
+    #         propagator.dt,
+    #         n_prop_steps=50,
+    #         n_ene_blocks=5,
+    #         n_sr_blocks=10,
+    #         n_walkers=options["n_walkers"],
+    #     )
+    # elif options["walker_type"] == "rhf":
+    #     propagator_eq = propagation.propagator(
+    #         propagator.dt,
+    #         n_prop_steps=50,
+    #         n_ene_blocks=5,
+    #         n_sr_blocks=10,
+    #         n_walkers=options["n_walkers"],
+    #     )
+    # elif options["walker_type"] == "uhf":
+    #     propagator_eq = propagation.propagator_uhf(
+    #         propagator.dt,
+    #         n_prop_steps=50,
+    #         n_ene_blocks=5,
+    #         n_sr_blocks=10,
+    #         n_walkers=options["n_walkers"],
+    #     )
+    propagator_eq = deepcopy(propagator)
+    propagator_eq.n_prop_steps = 50
+    propagator_eq.n_ene_blocks = 5
+    propagator_eq.n_sr_blocks = 10
+    propagator_eq.n_walkers = options["n_walkers"]
 
     for n in range(1, neql + 1):
         block_energy_n, prop_data = sampler.propagate_phaseless(
