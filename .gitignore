@@ -4,5 +4,8 @@
 *.npz
 *.bin
 *FCIDUMP*
+*.sh
+
 *__pycache__/
 *.ipynb_checkpoints/
+data/

@@ -36,7 +36,8 @@ def modified_cholesky(mat, max_error=1e-6):
 
 
 # prepare phaseless afqmc with mf trial
-def prep_afqmc(mf, mo_coeff=None, norb_frozen=0, chol_cut=1e-5, integrals=None):
+def prep_afqmc(mf, mo_coeff=None, norb_frozen=0, chol_cut=1e-5, integrals=None, 
+               filename="FCIDUMP_chol"):
     print("#\n# Preparing AFQMC calculation")
 
     mol = mf.mol
@@ -150,7 +151,7 @@ def prep_afqmc(mf, mo_coeff=None, norb_frozen=0, chol_cut=1e-5, integrals=None):
         nbasis,
         enuc,
         ms=mol.spin,
-        filename="FCIDUMP_chol",
+        filename=filename,
         mo_coeffs=trial_coeffs,
     )
 

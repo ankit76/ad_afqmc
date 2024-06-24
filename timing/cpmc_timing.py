@@ -6,9 +6,10 @@ import argparse
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 import numpy as np
+import scipy as sp
 from jax import numpy as jnp
 
-module_path = os.path.abspath(os.path.join("/burg/home/su2254/libs/ad_afqmc"))
+module_path = os.path.abspath(os.path.join("/projects/bcdd/shufay/ad_afqmc"))
 if module_path not in sys.path:
     sys.path.append(module_path)
 
@@ -30,7 +31,8 @@ from functools import partial
 
 np.set_printoptions(precision=5, suppress=True)
 
-def run_square(filling, nsitex, seed=0):
+def run_square(filling, nsitex, seed=0, jobid=None):
+    if jobid is None: jobid = ""
     np.random.seed(seed)
     
     lattice = lattices.two_dimensional_grid(nsitex, nsitex)
@@ -74,7 +76,9 @@ def run_square(filling, nsitex, seed=0):
     umf.stability()
 
     # ad afqmc
-    pyscf_interface.prep_afqmc(umf, mo_coeff=np.eye(n_sites), integrals=integrals)
+    fcidump_filename = "FCIDUMP_chol." + jobid
+    pyscf_interface.prep_afqmc(umf, mo_coeff=np.eye(n_sites), integrals=integrals,
+                               filename=fcidump_filename)
     options = {
         "dt": 0.005,
         "n_eql": 5,
@@ -87,6 +91,7 @@ def run_square(filling, nsitex, seed=0):
         "walker_type": "uhf",
         "trial": "uhf",
         "save_walkers": False,
+        "fcidump_filename": fcidump_filename
     }
 
     ham_data, ham, prop, trial, wave_data, observable, options = mpi_jax._prep_afqmc(
@@ -114,7 +119,8 @@ def run_square(filling, nsitex, seed=0):
     print(f'# time elapsed [m]: {elapsed/60}')
     print(f'# time elapsed [h]: {elapsed/3600}')
 
-def run_tri(filling, nsitex, seed=0):
+def run_tri(filling, nsitex, seed=0, jobid=None):
+    if jobid is None: jobid = ""
     np.random.seed(seed)
     
     lattice = lattices.triangular_grid(nsitex, nsitex)
@@ -181,7 +187,9 @@ def run_tri(filling, nsitex, seed=0):
         print(f"fci energy: {e}")
 
     # ad afqmc
-    pyscf_interface.prep_afqmc(umf, mo_coeff=np.eye(n_sites), integrals=integrals)
+    fcidump_filename = "FCIDUMP_chol." + jobid
+    pyscf_interface.prep_afqmc(umf, mo_coeff=np.eye(n_sites), integrals=integrals, 
+                               filename=fcidump_filename)
     options = {
         "dt": 0.005,
         "n_eql": 5,
@@ -194,6 +202,7 @@ def run_tri(filling, nsitex, seed=0):
         "walker_type": "uhf",
         "trial": "uhf",
         "save_walkers": False,
+        "fcidump_filename": fcidump_filename
     }
 
     ham_data, ham, prop, trial, wave_data, observable, options = mpi_jax._prep_afqmc(
@@ -249,11 +258,10 @@ if __name__ == '__main__':
     np.random.seed(seed)
     print(f'\n# numpy seed = {seed}')
 
-    nsitex = 4
-    filling = 0.25
-    
+    jobid = os.environ["SLURM_JOB_ID"] 
+
     if lattice_type == 'sq':
-        run_square(filling, nsitex, seed=seed)
+        run_square(filling, nsitex, seed=seed, jobid=jobid)
 
     elif lattice_type == 'tri':
-        run_tri(filling, nsitex, seed=seed)
+        run_tri(filling, nsitex, seed=seed, jobid=jobid)

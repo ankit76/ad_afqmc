@@ -22,10 +22,12 @@ rank = comm.Get_rank()
 
 
 def _prep_afqmc(options=None):
+    filename = options.get("fcidump_filename", "FCIDUMP_chol")
+
     if rank == 0:
         print(f"# Number of MPI ranks: {size}\n#")
 
-    with h5py.File("FCIDUMP_chol", "r") as fh5:
+    with h5py.File(filename, "r") as fh5:
         [nelec, nmo, ms, nchol] = fh5["header"]
         h0 = jnp.array(fh5.get("energy_core"))
         h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
