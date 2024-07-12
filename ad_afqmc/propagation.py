@@ -629,10 +629,10 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_uhf):
         def scanned_fun(carry, x):
             # field 1
             new_walkers_0_up = (
-                carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][0, 0])
+                carry["walkers"][0].at[:, x, :].mul(prop_data["hs_constant"][0, 0])
             )
             new_walkers_0_dn = (
-                carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][0, 1])
+                carry["walkers"][1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap_vmap(
                 [new_walkers_0_up, new_walkers_0_dn], wave_data
@@ -642,10 +642,10 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_uhf):
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"][0].at[:, x, :].mul(ham_data["hs_constant"][1, 0])
+                carry["walkers"][0].at[:, x, :].mul(prop_data["hs_constant"][1, 0])
             )
             new_walkers_1_dn = (
-                carry["walkers"][1].at[:, x, :].mul(ham_data["hs_constant"][1, 1])
+                carry["walkers"][1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap_vmap(
                 [new_walkers_1_up, new_walkers_1_dn], wave_data
@@ -1463,9 +1463,11 @@ class propagator_cpmc_continuous(propagator_uhf):
 
         # two body
         green_diag = trial.calc_green_diagonal_vmap(prop_data["walkers"], wave_data)
-        force_bias = ham_data["hs_constant"] * (green_diag[0] - green_diag[1])
+        force_bias = (
+            0.0 * ham_data["hs_constant"] * (green_diag[:, 0] - green_diag[:, 1])
+        )
         shifted_fields = gaussian_rns - force_bias
-        fb_term = jnp.sum(
+        fb_term = 0.0 * jnp.sum(
             gaussian_rns * force_bias - force_bias * force_bias / 2.0, axis=1
         )
         prop_data["walkers"][0] = jnp.einsum(
@@ -1503,6 +1505,7 @@ class propagator_cpmc_continuous(propagator_uhf):
         prop_data["weights"] = jnp.where(
             prop_data["weights"] > 100.0, 0.0, prop_data["weights"]
         )
+        # prop_data["weights"] = overlaps_new.real
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"] - 0.1 * jnp.array(
             jnp.log(jnp.sum(prop_data["weights"]) / self.n_walkers) / self.dt
         )
