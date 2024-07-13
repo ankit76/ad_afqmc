@@ -64,6 +64,15 @@ fields = random.normal(
     random.PRNGKey(seed), shape=(prop_handler.n_walkers, ham_data["chol"].shape[0])
 )
 
+prop_handler_cpmc = propagation.propagator_cpmc(n_walkers=7)
+prop_handler_cpmc_slow = propagation.propagator_cpmc_slow(n_walkers=7)
+
+neighbors = tuple((i, (i + 1) % norb) for i in range(norb))
+prop_handler_cpmc_nn = propagation.propagator_cpmc_nn(n_walkers=7, neighbors=neighbors)
+prop_handler_cpmc_nn_slow = propagation.propagator_cpmc_nn_slow(
+    n_walkers=7, neighbors=neighbors
+)
+
 
 def test_stochastic_reconfiguration_local():
     prop_data_new = prop_handler.stochastic_reconfiguration_local(prop_data)
@@ -107,9 +116,58 @@ def test_propagate_free_u():
     assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
 
 
+def test_propagate_cpmc():
+    trial_cpmc_u = wavefunctions.uhf_cpmc(norb, nelec_sp)
+    ham_data_u["u"] = 4.0
+    prop_data_cpmc = prop_handler_cpmc.init_prop_data(
+        trial_cpmc_u, wave_data_u, ham_handler_u, ham_data_u
+    )
+    prop_data_new = prop_handler_cpmc.propagate(
+        trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
+    )
+    assert prop_data_new["walkers"][0].shape == prop_data_u["walkers"][0].shape
+    assert prop_data_new["walkers"][1].shape == prop_data_u["walkers"][1].shape
+    assert prop_data_new["weights"].shape == prop_data_u["weights"].shape
+    assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
+    prop_data_new_slow = prop_handler_cpmc_slow.propagate(
+        trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
+    )
+    assert np.allclose(prop_data_new_slow["walkers"][0], prop_data_new["walkers"][0])
+    assert np.allclose(prop_data_new_slow["walkers"][1], prop_data_new["walkers"][1])
+    assert np.allclose(prop_data_new_slow["weights"], prop_data_new["weights"])
+    assert np.allclose(prop_data_new_slow["overlaps"], prop_data_new["overlaps"])
+
+
+def test_propagate_cpmc_nn():
+    trial_cpmc_u = wavefunctions.uhf_cpmc(norb, nelec_sp)
+    ham_data_u["u"] = 4.0
+    ham_data_u["u_1"] = 1.0
+    prop_data_cpmc = prop_handler_cpmc_nn.init_prop_data(
+        trial_cpmc_u, wave_data_u, ham_handler_u, ham_data_u
+    )
+    prop_data_cpmc["key"] = random.PRNGKey(seed)
+    prop_data_new = prop_handler_cpmc_nn.propagate(
+        trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
+    )
+    assert prop_data_new["walkers"][0].shape == prop_data_u["walkers"][0].shape
+    assert prop_data_new["walkers"][1].shape == prop_data_u["walkers"][1].shape
+    assert prop_data_new["weights"].shape == prop_data_u["weights"].shape
+    assert prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
+    prop_data_cpmc["key"] = random.PRNGKey(seed)
+    prop_data_new_slow = prop_handler_cpmc_nn_slow.propagate(
+        trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
+    )
+    assert np.allclose(prop_data_new_slow["walkers"][0], prop_data_new["walkers"][0])
+    assert np.allclose(prop_data_new_slow["walkers"][1], prop_data_new["walkers"][1])
+    assert np.allclose(prop_data_new_slow["weights"], prop_data_new["weights"])
+    assert np.allclose(prop_data_new_slow["overlaps"], prop_data_new["overlaps"])
+
+
 if __name__ == "__main__":
     test_stochastic_reconfiguration_local()
     test_propagate()
     test_stochastic_reconfiguration_local_u()
     test_propagate_u()
     test_propagate_free_u()
+    test_propagate_cpmc()
+    test_propagate_cpmc_nn()

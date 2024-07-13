@@ -83,6 +83,8 @@ ham_data_g["h1"] = jnp.array([ham_data["h1"], ham_data["h1"]])
 ham_data_g["chol"] = ham_data["chol"]
 ham_data_g["ene0"] = ham_data["ene0"]
 
+uhf_cpmc = wavefunctions.uhf_cpmc(norb, nelec_sp)
+
 
 def test_rhf_overlap():
     overlap = rhf.calc_overlap(walker)
@@ -157,7 +159,6 @@ def test_uhf_optimize_orbs():
 
 def test_ghf_overlap():
     overlap = ghf.calc_overlap(walker_up, walker_dn, wave_data_g)
-    print("overlap: ", overlap)
     assert np.allclose(jnp.real(overlap), -0.7645032356687913)
 
 
@@ -182,7 +183,6 @@ def test_ghf_energy():
         walker_dn,
         wave_data_g,
     )
-    print("energy: ", energy)
     assert np.allclose(jnp.real(energy), 47.91857449460195)
 
 
@@ -224,6 +224,38 @@ def test_noci_get_rdm1():
     assert rdm1.shape == (norb, norb)
 
 
+def test_uhf_cpmc():
+    u = 4.0
+    dt = 0.005
+    gamma = jnp.arccosh(jnp.exp(dt * u / 2))
+    const = jnp.exp(-dt * u / 2)
+    hs_constant = const * jnp.array(
+        [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
+    )
+    green = uhf_cpmc.calc_full_green(walker_up, walker_dn, wave_data)
+    assert green[0].shape == (norb, norb)
+    assert green[1].shape == (norb, norb)
+    wick_ratio = uhf_cpmc.calc_overlap_ratio(
+        green,
+        jnp.array([[0, 3], [1, 3]]),
+        hs_constant[0] - 1,
+    )
+    overlap_0 = uhf_cpmc.calc_overlap(walker_up, walker_dn, wave_data)
+    new_walker_0 = walker_up.at[3, :].mul(hs_constant[0, 0])
+    new_walker_1 = walker_dn.at[3, :].mul(hs_constant[0, 1])
+    ratio = uhf_cpmc.calc_overlap(new_walker_0, new_walker_1, wave_data) / overlap_0
+    assert np.allclose(ratio, wick_ratio)
+
+    new_green = uhf_cpmc.calc_full_green(new_walker_0, new_walker_1, wave_data)
+    new_green_wick = uhf_cpmc.update_greens_function(
+        green,
+        ratio,
+        jnp.array([[0, 3], [1, 3]]),
+        hs_constant[0] - 1,
+    )
+    assert np.allclose(new_green, new_green_wick)
+
+
 if __name__ == "__main__":
     test_rhf_overlap()
     test_rhf_green()
@@ -244,3 +276,4 @@ if __name__ == "__main__":
     test_noci_force_bias()
     test_noci_energy()
     test_noci_get_rdm1()
+    test_uhf_cpmc()

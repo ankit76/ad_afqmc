@@ -3,12 +3,13 @@ import time
 
 import numpy as np
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 import pickle
+from copy import deepcopy
 from functools import partial
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
@@ -25,7 +26,9 @@ size = comm.Get_size()
 rank = comm.Get_rank()
 
 
-def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
+def afqmc(
+    ham_data, ham, propagator, trial, wave_data, observable, options, init_walkers=None
+):
     init = time.time()
     seed = options["seed"]
     neql = options["n_eql"]
@@ -65,12 +68,13 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         # ham_data["chol"] = linalg_utils.modified_cholesky(eri, ham.norb, ham.nchol)
         rdm_2_op = jnp.array(eri_full).reshape(norb, norb, norb, norb)
 
-    # print(f'wave_data:\n{wave_data}')
     ham_data = ham.rot_ham(ham_data, wave_data)
     ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
-    # print(f'ham_data:\n{ham_data}')
-    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data)
-    # print(f'prop_data:\n{prop_data}')
+    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data, init_walkers)
+    if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
+        raise ValueError(
+            "Initial overlaps are zero. Pass walkers with non-zero overlap."
+        )
     prop_data["key"] = random.PRNGKey(seed + rank)
     trial_rdm1 = trial.get_rdm1(wave_data)
     trial_observable = np.sum(trial_rdm1 * observable_op)
@@ -93,22 +97,43 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
-    if options["walker_type"] == "rhf":
-        propagator_eq = propagation.propagator(
-            propagator.dt,
-            n_prop_steps=50,
-            n_ene_blocks=5,
-            n_sr_blocks=10,
-            n_walkers=options["n_walkers"],
-        )
-    elif options["walker_type"] == "uhf":
-        propagator_eq = propagation.propagator_uhf(
-            propagator.dt,
-            n_prop_steps=50,
-            n_ene_blocks=5,
-            n_sr_blocks=10,
-            n_walkers=options["n_walkers"],
-        )
+    # if isinstance(propagator, propagation.propagator_cpmc):
+    #     propagator_eq = propagation.propagator_cpmc(
+    #         propagator.dt,
+    #         n_prop_steps=50,
+    #         n_ene_blocks=5,
+    #         n_sr_blocks=10,
+    #         n_walkers=options["n_walkers"],
+    #     )
+    # elif isinstance(propagator, propagation.propagator_cpmc_continuous):
+    #     propagator_eq = propagation.propagator_cpmc_continuous(
+    #         propagator.dt,
+    #         n_prop_steps=50,
+    #         n_ene_blocks=5,
+    #         n_sr_blocks=10,
+    #         n_walkers=options["n_walkers"],
+    #     )
+    # elif options["walker_type"] == "rhf":
+    #     propagator_eq = propagation.propagator(
+    #         propagator.dt,
+    #         n_prop_steps=50,
+    #         n_ene_blocks=5,
+    #         n_sr_blocks=10,
+    #         n_walkers=options["n_walkers"],
+    #     )
+    # elif options["walker_type"] == "uhf":
+    #     propagator_eq = propagation.propagator_uhf(
+    #         propagator.dt,
+    #         n_prop_steps=50,
+    #         n_ene_blocks=5,
+    #         n_sr_blocks=10,
+    #         n_walkers=options["n_walkers"],
+    #     )
+    propagator_eq = deepcopy(propagator)
+    propagator_eq.n_prop_steps = 50
+    propagator_eq.n_ene_blocks = 5
+    propagator_eq.n_sr_blocks = 10
+    propagator_eq.n_walkers = options["n_walkers"]
 
     for n in range(1, neql + 1):
         block_energy_n, prop_data = sampler.propagate_phaseless(
@@ -507,13 +532,15 @@ def afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
     return e_afqmc, e_err_afqmc
 
 
-def fp_afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
+def fp_afqmc(
+    ham_data, ham, propagator, trial, wave_data, observable, options, init_walkers=None
+):
     init = time.time()
     seed = options["seed"]
 
     ham_data = ham.rot_ham(ham_data, wave_data)
     ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
-    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data)
+    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data, init_walkers)
     prop_data["key"] = random.PRNGKey(seed + rank)
 
     comm.Barrier()
@@ -539,7 +566,6 @@ def fp_afqmc(ham_data, ham, propagator, trial, wave_data, observable, options):
         ) = sampler.propagate_free(
             ham, ham_data, propagator, prop_data, trial, wave_data
         )
-        # print(prop_data_tr)
         global_block_weights[n] = weights[0]
         global_block_energies[n] = energy_samples[0]
         total_weight += weights
