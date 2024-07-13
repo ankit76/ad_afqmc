@@ -30,11 +30,6 @@ class propagator:
     n_walkers: int = 50
     n_exp_terms: int = 6
 
-    def __post_init__(self):
-        if not self.ad_q:
-            self.n_ene_blocks = 5
-            self.n_sr_blocks = 10
-
     def init_prop_data(self, trial, wave_data, ham, ham_data):
         prop_data = {}
         prop_data["weights"] = jnp.ones(self.n_walkers)

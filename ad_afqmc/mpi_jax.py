@@ -1,8 +1,8 @@
 import os
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 
@@ -57,7 +57,7 @@ def _prep_afqmc(options=None):
     options["walker_type"] = options.get("walker_type", "rhf")
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
-    options["trial"] = options.get("trial", "rhf")
+    options["trial"] = options.get("trial", None)
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
 
@@ -170,7 +170,8 @@ def _prep_afqmc(options=None):
         print(f"# nelec: {nelec_sp}")
         print("#")
         for op in options:
-            print(f"# {op}: {options[op]}")
+            if options[op] is not None:
+                print(f"# {op}: {options[op]}")
         print("#")
 
     return ham_data, ham, prop, trial, wave_data, observable, options

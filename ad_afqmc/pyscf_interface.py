@@ -2,6 +2,7 @@ import pickle
 import struct
 import time
 from functools import partial
+from typing import Optional, Union
 
 import h5py
 import numpy as np
@@ -36,23 +37,38 @@ def modified_cholesky(mat, max_error=1e-6):
 
 
 # prepare phaseless afqmc with mf trial
-def prep_afqmc(mf, mo_coeff=None, norb_frozen=0, chol_cut=1e-5, integrals=None):
+def prep_afqmc(
+    mf: Union[scf.uhf.UHF, scf.rhf.RHF],
+    basis_coeff: Optional[np.ndarray] = None,
+    norb_frozen: int = 0,
+    chol_cut: float = 1e-5,
+    integrals: Optional[dict] = None,
+):
+    """Prepare AFQMC calculation with mean field trial wavefunction. Writes integrals and mo coefficients to disk.
+
+    Args:
+        mf (Union[scf.uhf.UHF, scf.rhf.RHF]): pyscf mean field object. Used for generating integrals (if not provided) and trial.
+        basis_coeff (np.ndarray, optional): Orthonormal basis used for afqmc, given in the basis of ao's. If not provided mo_coeff of mf is used as the basis.
+        norb_frozen (int, optional): Number of frozen orbitals. Not supported for custom integrals.
+        chol_cut (float, optional): Cholesky decomposition cutoff.
+        integrals (dict, optional): Dictionary of integrals in an orthonormal basis, {"h0": enuc, "h1": h1e, "h2": eri}.
+    """
+
     print("#\n# Preparing AFQMC calculation")
 
     mol = mf.mol
     # choose the orbital basis
-    if mo_coeff is None:
+    if basis_coeff is None:
         if isinstance(mf, scf.uhf.UHF):
-            mo_coeff = mf.mo_coeff[0]
-        elif isinstance(mf, scf.rhf.RHF):
-            mo_coeff = mf.mo_coeff
+            basis_coeff = mf.mo_coeff[0]
         else:
-            raise Exception("# Invalid mean field object!")
+            basis_coeff = mf.mo_coeff
 
     # calculate cholesky integrals
     print("# Calculating Cholesky integrals")
     h1e, chol, nelec, enuc, nbasis, nchol = [None] * 6
     if integrals is not None:
+        assert norb_frozen == 0, "Frozen orbitals not supported for custom integrals"
         enuc = integrals["h0"]
         h1e = integrals["h1"]
         eri = integrals["h2"]
@@ -70,58 +86,64 @@ def prep_afqmc(mf, mo_coeff=None, norb_frozen=0, chol_cut=1e-5, integrals=None):
                     chol[i, m, n] = chol0[i, triind]
                     chol[i, n, m] = chol0[i, triind]
 
+        # basis transformation
+        h1e = basis_coeff.T @ h1e @ basis_coeff
+        for gamma in range(nchol):
+            chol[gamma] = basis_coeff.T @ chol[gamma] @ basis_coeff
+
     else:
         h1e, chol, nelec, enuc = generate_integrals(
-            mol, mf.get_hcore(), mo_coeff, chol_cut
+            mol, mf.get_hcore(), basis_coeff, chol_cut
         )
         nbasis = h1e.shape[-1]
         nelec = mol.nelec
 
         if norb_frozen > 0:
-            assert norb_frozen * 2 < sum(nelec)
+            assert norb_frozen * 2 < sum(
+                nelec
+            ), "Frozen orbitals exceed number of electrons"
             mc = mcscf.CASSCF(
                 mf, mol.nao - norb_frozen, mol.nelectron - 2 * norb_frozen
             )
             nelec = mc.nelecas
-            mc.mo_coeff = mo_coeff
+            mc.mo_coeff = basis_coeff
             h1e, enuc = mc.get_h1eff()
             chol = chol.reshape((-1, nbasis, nbasis))
             chol = chol[:, mc.ncore : mc.ncore + mc.ncas, mc.ncore : mc.ncore + mc.ncas]
 
-    print("# Finished calculating Cholesky integrals\n")
+    print("# Finished calculating Cholesky integrals\n#")
 
     nbasis = h1e.shape[-1]
     print("# Size of the correlation space:")
     print(f"# Number of electrons: {nelec}")
     print(f"# Number of basis functions: {nbasis}")
-    print(f"# Number of Cholesky vectors: {chol.shape[0]}\n")
+    print(f"# Number of Cholesky vectors: {chol.shape[0]}\n#")
     chol = chol.reshape((-1, nbasis, nbasis))
     v0 = 0.5 * np.einsum("nik,njk->ij", chol, chol, optimize="optimal")
     h1e_mod = h1e - v0
     chol = chol.reshape((chol.shape[0], -1))
 
-    # write mo coefficients
+    # write trial mo coefficients
     trial_coeffs = np.empty((2, nbasis, nbasis))
     overlap = mf.get_ovlp(mol)
     if isinstance(mf, (scf.uhf.UHF, scf.rohf.ROHF)):
-        hf_type = "uhf"
         uhfCoeffs = np.empty((nbasis, 2 * nbasis))
         if isinstance(mf, scf.uhf.UHF):
-            q, r = np.linalg.qr(
-                mo_coeff[:, norb_frozen:]
+            q, _ = np.linalg.qr(
+                basis_coeff[:, norb_frozen:]
                 .T.dot(overlap)
                 .dot(mf.mo_coeff[0][:, norb_frozen:])
             )
             uhfCoeffs[:, :nbasis] = q
-            q, r = np.linalg.qr(
-                mo_coeff[:, norb_frozen:]
+            q, _ = np.linalg.qr(
+                basis_coeff[:, norb_frozen:]
                 .T.dot(overlap)
                 .dot(mf.mo_coeff[1][:, norb_frozen:])
             )
             uhfCoeffs[:, nbasis:] = q
         else:
-            q, r = np.linalg.qr(
-                mo_coeff[:, norb_frozen:]
+            q, _ = np.linalg.qr(
+                basis_coeff[:, norb_frozen:]
                 .T.dot(overlap)
                 .dot(mf.mo_coeff[:, norb_frozen:])
             )
@@ -134,9 +156,10 @@ def prep_afqmc(mf, mo_coeff=None, norb_frozen=0, chol_cut=1e-5, integrals=None):
         np.savez("uhf.npz", mo_coeff=trial_coeffs)
 
     elif isinstance(mf, scf.rhf.RHF):
-        hf_type = "rhf"
-        q, r = np.linalg.qr(
-            mo_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[:, norb_frozen:])
+        q, _ = np.linalg.qr(
+            basis_coeff[:, norb_frozen:]
+            .T.dot(overlap)
+            .dot(mf.mo_coeff[:, norb_frozen:])
         )
         trial_coeffs[0] = q
         trial_coeffs[1] = q
