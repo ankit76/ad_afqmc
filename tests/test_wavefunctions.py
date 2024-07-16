@@ -98,15 +98,13 @@ def test_rhf_green():
 
 
 def test_rhf_force_bias():
-    force_bias = rhf.calc_force_bias(walker, ham_data["rot_chol"])
+    force_bias = rhf.calc_force_bias(walker, ham_data)
     assert force_bias.shape == (nchol,)
     assert np.allclose(jnp.real(jnp.sum(force_bias)), 66.13455680423321)
 
 
 def test_rhf_energy():
-    energy = rhf.calc_energy(
-        ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"], walker
-    )
+    energy = rhf.calc_energy(walker, ham_data)
     assert np.allclose(jnp.real(energy), 217.79874063608622)
 
 
@@ -131,20 +129,16 @@ def test_uhf_green():
 
 
 def test_uhf_force_bias():
-    force_bias = uhf.calc_force_bias(
-        walker_up, walker_dn, ham_data_u["rot_chol"], wave_data
-    )
+    force_bias = uhf.calc_force_bias(walker_up, walker_dn, ham_data_u, wave_data)
     assert force_bias.shape == (nchol,)
     assert np.allclose(jnp.real(jnp.sum(force_bias)), 10.441272099672341)
 
 
 def test_uhf_energy():
     energy = uhf.calc_energy(
-        ham_data_u["h0"],
-        ham_data_u["rot_h1"],
-        ham_data_u["rot_chol"],
         walker_up,
         walker_dn,
+        ham_data_u,
         wave_data,
     )
     assert np.allclose(jnp.real(energy), -1.7203463308366032)
@@ -168,19 +162,15 @@ def test_ghf_green():
 
 
 def test_ghf_force_bias():
-    force_bias = ghf.calc_force_bias(
-        walker_up, walker_dn, ham_data_g["rot_chol"], wave_data_g
-    )
+    force_bias = ghf.calc_force_bias(walker_up, walker_dn, ham_data_g, wave_data_g)
     assert force_bias.shape == (nchol,)
 
 
 def test_ghf_energy():
     energy = ghf.calc_energy(
-        ham_data_g["h0"],
-        ham_data_g["rot_h1"],
-        ham_data_g["rot_chol"],
         walker_up,
         walker_dn,
+        ham_data_g,
         wave_data_g,
     )
     assert np.allclose(jnp.real(energy), 47.91857449460195)
@@ -201,7 +191,7 @@ def test_noci_green():
 
 def test_noci_force_bias():
     force_bias = noci.calc_force_bias(
-        walker_up, walker_dn, ham_data_noci["rot_chol"], wave_data_noci
+        walker_up, walker_dn, ham_data_noci, wave_data_noci
     )
     assert force_bias.shape == (nchol,)
     # assert np.allclose(jnp.real(jnp.sum(force_bias)), 10.441272099672341)
@@ -209,11 +199,9 @@ def test_noci_force_bias():
 
 def test_noci_energy():
     energy = noci.calc_energy(
-        ham_data_noci["h0"],
-        ham_data_noci["rot_h1"],
-        ham_data_noci["rot_chol"],
         walker_up,
         walker_dn,
+        ham_data_noci,
         wave_data_noci,
     )
     # assert np.allclose(jnp.real(energy), -1.7203463308366032)

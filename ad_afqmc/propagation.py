@@ -41,7 +41,7 @@ class propagator:
                 [jnp.eye(ham.norb, ham.nelec) + 0.0j for _ in range(self.n_walkers)]
             )
         energy_samples = jnp.real(
-            trial.calc_energy_vmap(ham_data, prop_data["walkers"], wave_data)
+            trial.calc_energy_vmap(prop_data["walkers"], ham_data, wave_data)
         )
         e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
         prop_data["e_estimate"] = e_estimate
@@ -217,7 +217,7 @@ class propagator_uhf(propagator):
                 )
             prop_data["walkers"] = [walkers_up, walkers_dn]
         energy_samples = jnp.real(
-            trial.calc_energy_vmap(ham_data, prop_data["walkers"], wave_data)
+            trial.calc_energy_vmap(prop_data["walkers"], ham_data, wave_data)
         )
         e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
         prop_data["e_estimate"] = e_estimate

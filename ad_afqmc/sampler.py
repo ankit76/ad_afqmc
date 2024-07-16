@@ -1,8 +1,8 @@
 import os
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 from functools import partial
@@ -50,7 +50,7 @@ def _block_scan(prop_data, _x, ham_data, propagator, trial, wave_data):
     prop_data = propagator.orthonormalize_walkers(prop_data)
     prop_data["overlaps"] = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
     energy_samples = jnp.real(
-        trial.calc_energy_vmap(ham_data, prop_data["walkers"], wave_data)
+        trial.calc_energy_vmap(prop_data["walkers"], ham_data, wave_data)
     )
     energy_samples = jnp.where(
         jnp.abs(energy_samples - prop_data["pop_control_ene_shift"])
@@ -81,7 +81,7 @@ def _block_scan_free(prop_data, _x, ham_data, propagator, trial, wave_data):
         x, y, ham_data, propagator, trial, wave_data
     )
     prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
-    energy_samples = trial.calc_energy_vmap(ham_data, prop_data["walkers"], wave_data)
+    energy_samples = trial.calc_energy_vmap(prop_data["walkers"], ham_data, wave_data)
     # energy_samples = jnp.where(jnp.abs(energy_samples - ham_data['ene0']) > jnp.sqrt(2./propagator.dt), ham_data['ene0'], energy_samples)
     block_energy = jnp.sum(energy_samples * prop_data["overlaps"]) / jnp.sum(
         prop_data["overlaps"]
