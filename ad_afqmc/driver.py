@@ -80,7 +80,10 @@ def afqmc(
     trial_observable = np.sum(trial_rdm1 * observable_op)
     trial_rdm2 = None
     if options["ad_mode"] == "2rdm":
-        trial_rdm1_spatial = trial_rdm1[0] + trial_rdm1[1]
+        if isinstance(trial_rdm1, np.ndarray) and len(trial_rdm1.shape) == 2:
+            trial_rdm1_spatial = 1.0 * trial_rdm1
+        else:
+            trial_rdm1_spatial = trial_rdm1[0] + trial_rdm1[1]
         trial_rdm2 = (
             np.einsum("ij,kl->ijkl", trial_rdm1_spatial, trial_rdm1_spatial)
             - np.einsum("ij,kl->iklj", trial_rdm1_spatial, trial_rdm1_spatial) / 2
