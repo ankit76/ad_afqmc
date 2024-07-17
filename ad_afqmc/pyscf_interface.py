@@ -5,8 +5,7 @@ from typing import Any, Optional, Sequence, Tuple, Union
 
 import h5py
 import numpy as np
-from jax import numpy as jnp
-from pyscf import __config__, ao2mo, mcscf, scf
+from pyscf import __config__, ao2mo, df, lib, mcscf, scf
 
 print = partial(print, flush=True)
 
@@ -101,8 +100,11 @@ def prep_afqmc(
             chol[gamma] = basis_coeff.T @ chol[gamma] @ basis_coeff
 
     else:
+        DFbas = None
+        if getattr(mf, "with_df", None) is not None:
+            DFbas = mf.with_df.auxmol.basis
         h1e, chol, nelec, enuc = generate_integrals(
-            mol, mf.get_hcore(), basis_coeff, chol_cut
+            mol, mf.get_hcore(), basis_coeff, chol_cut, DFbas=DFbas
         )
         nbasis = h1e.shape[-1]
         nelec = mol.nelec
@@ -188,7 +190,7 @@ def prep_afqmc(
 
 
 # cholesky generation functions are from pauxy
-def generate_integrals(mol, hcore, X, chol_cut=1e-5, verbose=False):
+def generate_integrals(mol, hcore, X, chol_cut=1e-5, verbose=False, DFbas=None):
     # Unpack SCF data.
     # Step 1. Rotate core Hamiltonian to orthogonal basis.
     if verbose:
@@ -198,14 +200,20 @@ def generate_integrals(mol, hcore, X, chol_cut=1e-5, verbose=False):
     elif len(X.shape) == 3:
         h1e = np.dot(X[0].T, np.dot(hcore, X[0]))
 
-    # nbasis = h1e.shape[-1]
-    # Step 2. Genrate Cholesky decomposed ERIs in non-orthogonal AO basis.
-    if verbose:
-        print(" # Performing modified Cholesky decomposition on ERI tensor.")
-    chol_vecs = chunked_cholesky(mol, max_error=chol_cut, verbose=verbose)
+    if DFbas is not None:
+        chol_vecs = df.incore.cholesky_eri(mol, auxbasis=DFbas)
+        chol_vecs = lib.unpack_tril(chol_vecs).reshape(chol_vecs.shape[0], -1)
+    else:  # do cholesky
+        # nbasis = h1e.shape[-1]
+        # Step 2. Genrate Cholesky decomposed ERIs in non-orthogonal AO basis.
+        if verbose:
+            print(" # Performing modified Cholesky decomposition on ERI tensor.")
+        chol_vecs = chunked_cholesky(mol, max_error=chol_cut, verbose=verbose)
+
     if verbose:
         print(" # Orthogonalising Cholesky vectors.")
     start = time.time()
+
     # Step 2.a Orthogonalise Cholesky vectors.
     if len(X.shape) == 2 and X.shape[0] != X.shape[1]:
         chol_vecs = ao2mo_chol_copy(chol_vecs, X)
