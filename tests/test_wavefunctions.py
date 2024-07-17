@@ -34,8 +34,9 @@ ham_data["normal_ordering_term"] = -0.5 * jnp.einsum(
 )
 
 multislater = wavefunctions.multislater_rhf(norb, nelec, max_excitation=6)
+path = os.path.dirname(os.path.abspath(__file__))
 Acre, Ades, Bcre, Bdes, coeff = pyscf_interface.get_excitations(
-    fname="dets.bin", max_excitation=6, ndets=10
+    fname=path + "/dets.bin", max_excitation=6, ndets=10
 )  # readds dets.bin
 wave_data_multislater = {
     "Acre": Acre,
