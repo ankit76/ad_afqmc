@@ -3,3 +3,4 @@ scipy
 jax
 jaxlib
 mpi4py
+h5py
