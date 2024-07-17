@@ -6,7 +6,7 @@ os.environ["JAX_ENABLE_X64"] = "True"
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 from jax import numpy as jnp
 
-from ad_afqmc import wavefunctions
+from ad_afqmc import pyscf_interface, wavefunctions
 
 seed = 102
 np.random.seed(seed)
@@ -24,6 +24,26 @@ ham_data["rot_chol"] = jnp.array(np.random.rand(nchol, nelec, norb))
 ham_data["h1"] = jnp.array(np.random.rand(norb, norb))
 ham_data["chol"] = jnp.array(np.random.rand(nchol, norb, norb))
 ham_data["ene0"] = 0.0
+
+
+ham_data["normal_ordering_term"] = -0.5 * jnp.einsum(
+    "gik,gjk->ij",
+    ham_data["chol"].reshape(-1, norb, norb),
+    ham_data["chol"].reshape(-1, norb, norb),
+    optimize="optimal",
+)
+
+multislater = wavefunctions.multislater_rhf(norb, nelec, max_excitation=6)
+Acre, Ades, Bcre, Bdes, coeff = pyscf_interface.get_excitations(
+    fname="dets.bin", max_excitation=6, ndets=10
+)  # readds dets.bin
+wave_data_multislater = {
+    "Acre": Acre,
+    "Ades": Ades,
+    "Bcre": Bcre,
+    "Bdes": Bdes,
+    "coeff": coeff,
+}
 
 nelec_sp = (3, 2)
 uhf = wavefunctions.uhf(norb, nelec_sp)
@@ -244,6 +264,23 @@ def test_uhf_cpmc():
     assert np.allclose(new_green, new_green_wick)
 
 
+def test_multislater():
+    # slow test due to compilation time for fb and energy
+    overlap = multislater.calc_overlap(walker, wave_data_multislater)
+    assert np.allclose(jnp.real(overlap), -0.10468995287669804)
+
+    green = multislater.calc_green(walker, wave_data_multislater)
+    assert green.shape == (nelec, norb)
+    assert np.allclose(jnp.real(jnp.sum(green)), 12.181348093111438)
+
+    force_bias = multislater.calc_force_bias(walker, ham_data, wave_data_multislater)
+    assert force_bias.shape == (nchol,)
+    assert np.allclose(jnp.real(jnp.sum(force_bias)), 63.76752581694084)
+
+    energy = multislater.calc_energy(walker, ham_data, wave_data_multislater)
+    assert np.allclose(jnp.real(energy), 204.41045113133066)
+
+
 if __name__ == "__main__":
     test_rhf_overlap()
     test_rhf_green()
@@ -265,3 +302,4 @@ if __name__ == "__main__":
     test_noci_energy()
     test_noci_get_rdm1()
     test_uhf_cpmc()
+    test_multislater()

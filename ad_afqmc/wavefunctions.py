@@ -14,7 +14,7 @@ from typing import Any, Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import jit, lax, vmap
+from jax import jit, jvp, lax, vjp, vmap
 
 from ad_afqmc import linalg_utils
 
@@ -1109,3 +1109,170 @@ class noci(wave_function_unrestricted):
                 self.ndets,
             )
         )
+
+
+class wave_function_auto_restricted(wave_function_restricted):
+    """This wave function only requires the definition of overlap functions. It evaluates force bias and local energy by differentiating various overlaps (single derivatives with AD and double with FD)."""
+
+    def __init__(self, eps: float = 1.0e-4):
+        """eps is the finite difference step size in local energy calculations."""
+        self.eps = eps
+
+    @partial(jit, static_argnums=0)
+    def overlap_with_rot_sd(
+        self,
+        x_gamma: jnp.ndarray,
+        walker: jnp.ndarray,
+        chol: jnp.ndarray,
+        wave_data: dict,
+    ) -> complex:
+        """Helper function for calculating force bias using AD, evaluates < psi_T | exp(x_gamma * chol) | walker > to linear order"""
+        x_chol = jnp.einsum(
+            "gij,g->ij", chol.reshape(-1, self.norb, self.norb), x_gamma
+        )
+        walker_1 = walker + x_chol.dot(walker)
+        return self.calc_overlap(walker_1, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def calc_force_bias(
+        self, walker: jnp.ndarray, ham_data: dict, wave_data: dict
+    ) -> jnp.ndarray:
+        """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker > by differentiating  < psi_T | exp(x_gamma * chol) | walker > / < psi_T | walker >"""
+        val, grad = vjp(
+            self.overlap_with_rot_sd,
+            jnp.zeros((ham_data["chol"].shape[0],)) + 0.0j,
+            walker,
+            ham_data["chol"],
+            wave_data,
+        )
+        return grad(1.0 + 0.0j)[0] / val
+
+    @partial(jit, static_argnums=0)
+    def overlap_with_single_rot(
+        self, x: float, h1: jnp.ndarray, walker: jnp.ndarray, wave_data: dict
+    ) -> complex:
+        """Helper function for calculating local energy using AD, evaluates < psi_T | exp(x * h1) | walker > to linear order"""
+        walker2 = walker + x * h1.dot(walker)
+        return self.calc_overlap(walker2, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def overlap_with_double_rot(
+        self, x: float, chol_i: jnp.ndarray, walker: jnp.ndarray, wave_data: dict
+    ) -> complex:
+        """Helper function for calculating local energy using AD, evaluates < psi_T | exp(x * chol_i) | walker > to quadratic order"""
+        walker2 = (
+            walker
+            + x * chol_i.dot(walker)
+            + x**2 / 2.0 * chol_i.dot(chol_i.dot(walker))
+        )
+        return self.calc_overlap(walker2, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def calc_energy(
+        self,
+        walker: jnp.ndarray,
+        ham_data: dict,
+        wave_data: dict,
+    ) -> complex:
+        """Calculates local energy using AD and finite difference for the two body term"""
+
+        h0, h1, chol, v0 = (
+            ham_data["h0"],
+            ham_data["h1"],
+            ham_data["chol"].reshape(-1, self.norb, self.norb),
+            ham_data["normal_ordering_term"],
+        )
+
+        x = 0.0
+        # one body
+        f1 = lambda a: self.overlap_with_single_rot(a, h1 + v0, walker, wave_data)
+        val1, dx1 = jvp(f1, [x], [1.0])
+
+        # two body
+        vmap_fun = vmap(self.overlap_with_double_rot, in_axes=(None, 0, None, None))
+        eps, zero = self.eps, 0.0
+        dx2 = (
+            (
+                vmap_fun(eps, chol, walker, wave_data)
+                - 2.0 * vmap_fun(zero, chol, walker, wave_data)
+                + vmap_fun(-1.0 * eps, chol, walker, wave_data)
+            )
+            / eps
+            / eps
+        )
+
+        return (dx1 + jnp.sum(dx2) / 2.0) / val1 + h0
+
+
+@dataclass
+class multislater_rhf(wave_function_auto_restricted):
+    """Multislater wave function
+
+    We work in the orbital basis of the wave function. Associated wave_data consists of excitation indices and ci coefficients.
+    """
+
+    norb: int
+    nelec: int
+    max_excitation: int  # maximum of sum of alpha and beta excitation ranks
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+
+    @partial(jit, static_argnums=0)
+    def det_overlap(
+        self, green: jnp.ndarray, cre: jnp.ndarray, des: jnp.ndarray
+    ) -> complex:
+        return jnp.linalg.det(green[jnp.ix_(cre, des)])
+
+    @partial(jit, static_argnums=0)
+    def calc_green(self, walker: jnp.ndarray, wave_data: dict) -> jnp.ndarray:
+        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap(self, walker: jnp.ndarray, wave_data: dict) -> complex:
+        """Calclulates < psi_T | walker > efficiently using Wick's theorem"""
+        Acre, Ades, Bcre, Bdes, coeff = (
+            wave_data["Acre"],
+            wave_data["Ades"],
+            wave_data["Bcre"],
+            wave_data["Bdes"],
+            wave_data["coeff"],
+        )
+        green = self.calc_green(walker, wave_data)
+
+        # overlap with the reference determinant
+        overlap_0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
+
+        # overlap / overlap_0
+        overlap = coeff[(0, 0)] + 0.0j
+
+        for i in range(1, self.max_excitation + 1):
+            overlap += vmap(self.det_overlap, in_axes=(None, 0, 0))(
+                green, Acre[(i, 0)], Ades[(i, 0)]
+            ).dot(coeff[(i, 0)])
+            overlap += vmap(self.det_overlap, in_axes=(None, 0, 0))(
+                green, Bcre[(0, i)], Bdes[(0, i)]
+            ).dot(coeff[(0, i)])
+
+            for j in range(1, self.max_excitation - i + 1):
+                overlap_a = vmap(self.det_overlap, in_axes=(None, 0, 0))(
+                    green, Acre[(i, j)], Ades[(i, j)]
+                )
+                overlap_b = vmap(self.det_overlap, in_axes=(None, 0, 0))(
+                    green, Bcre[(i, j)], Bdes[(i, j)]
+                )
+                overlap += (overlap_a * overlap_b) @ coeff[(i, j)]
+
+        return (overlap * overlap_0)[0]
+
+    @partial(jit, static_argnums=0)
+    def get_rdm1(self, wave_data: dict) -> jnp.ndarray:
+        """Spatial 1RDM of the reference det"""
+        rdm1 = 2 * np.eye(self.norb, self.nelec).dot(np.eye(self.norb, self.nelec).T)
+        return rdm1
+
+    # not implemented
+    @partial(jit, static_argnums=0)
+    def optimize_orbs(self, ham_data: dict, wave_data: dict) -> dict:
+        return wave_data
+
+    def __hash__(self):
+        return hash((self.norb, self.nelec, self.max_excitation, self.eps))

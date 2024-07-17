@@ -1,18 +1,27 @@
-import pickle
 import struct
 import time
 from functools import partial
-from typing import Optional, Union
+from typing import Any, Optional, Sequence, Tuple, Union
 
 import h5py
 import numpy as np
-from pyscf import __config__, ao2mo, fci, gto, mcscf, scf
+from jax import numpy as jnp
+from pyscf import __config__, ao2mo, mcscf, scf
 
 print = partial(print, flush=True)
 
 
 # modified cholesky for a given matrix
-def modified_cholesky(mat, max_error=1e-6):
+def modified_cholesky(mat: np.ndarray, max_error: float = 1e-6) -> np.ndarray:
+    """Modified cholesky decomposition for a given matrix.
+
+    Args:
+        mat (np.ndarray): Matrix to decompose.
+        max_error (float, optional): Maximum error allowed. Defaults to 1e-6.
+
+    Returns:
+        np.ndarray: Cholesky vectors.
+    """
     diag = mat.diagonal()
     size = mat.shape[0]
     nchol_max = size
@@ -47,7 +56,7 @@ def prep_afqmc(
     """Prepare AFQMC calculation with mean field trial wavefunction. Writes integrals and mo coefficients to disk.
 
     Args:
-        mf (Union[scf.uhf.UHF, scf.rhf.RHF]): pyscf mean field object. Used for generating integrals (if not provided) and trial.
+        mf (Union[scf.uhf.UHF, scf.rhf.RHF, mcscf.mc1step.CASSCF]): pyscf mean field object. Used for generating integrals (if not provided) and trial.
         basis_coeff (np.ndarray, optional): Orthonormal basis used for afqmc, given in the basis of ao's. If not provided mo_coeff of mf is used as the basis.
         norb_frozen (int, optional): Number of frozen orbitals. Not supported for custom integrals.
         chol_cut (float, optional): Cholesky decomposition cutoff.
@@ -472,46 +481,17 @@ def finite_difference_properties(
     return obs_mf, obs_mp2, obs_ccsd, obs_ccsdpt
 
 
-# dice to noci
-# not tested
-def hci_to_noci(nelec_sp, fname="dets.bin", ndets=None):
-    state = {}
-    norbs = 0
-    with open(fname, "rb") as f:
-        ndetsAll = struct.unpack("i", f.read(4))[0]
-        norbs = struct.unpack("i", f.read(4))[0]
-        if ndets is None:
-            ndets = ndetsAll
-        dets_up = np.zeros((ndets, norbs, nelec_sp[0]))
-        dets_dn = np.zeros((ndets, norbs, nelec_sp[1]))
-        for i in range(ndets):
-            coeff = struct.unpack("d", f.read(8))[0]
-            det = [[0 for i in range(norbs)], [0 for i in range(norbs)]]
-            for j in range(norbs):
-                nelec_up_counter = 0
-                nelec_dn_counter = 0
-                occ = struct.unpack("c", f.read(1))[0]
-                if occ == b"a":
-                    det[0][j] = 1
-                    dets_up[i][j, nelec_up_counter] = 1.0
-                    nelec_up_counter += 1
-                elif occ == b"b":
-                    det[1][j] = 1
-                    dets_dn[i][j, nelec_dn_counter] = 1.0
-                    nelec_dn_counter += 1
-                elif occ == b"2":
-                    det[0][j] = 1
-                    det[1][j] = 1
-                    dets_up[i][j, nelec_up_counter] = 1.0
-                    dets_dn[i][j, nelec_dn_counter] = 1.0
-                    nelec_up_counter += 1
-                    nelec_dn_counter += 1
-            state[tuple(map(tuple, det))] = coeff
+def get_fci_state(fci: Any, ndets: Optional[int] = None, tol: float = 1.0e-4) -> dict:
+    """Get FCI state from a pyscf FCI object.
 
-    return norbs, state, ndetsAll
+    Args:
+        fci: FCI object.
+        ndets: Number of determinants to include (sorted by coeffs).
+        tol: Tolerance for including determinants.
 
-
-def fci_to_noci(fci, ndets=None, tol=1.0e-4):
+    Returns:
+        Dictionary with determinants as keys and coefficients as values.
+    """
     ci_coeffs = fci.ci
     norb = fci.norb
     nelec = fci.nelec
@@ -520,33 +500,195 @@ def fci_to_noci(fci, ndets=None, tol=1.0e-4):
     coeffs, occ_a, occ_b = zip(
         *fci.large_ci(ci_coeffs, norb, nelec, tol=tol, return_strs=False)
     )
-    dets_up = np.zeros((ndets, norb, nelec[0]))
-    dets_dn = np.zeros((ndets, norb, nelec[1]))
+    coeffs, occ_a, occ_b = zip(
+        *sorted(zip(coeffs, occ_a, occ_b), key=lambda x: -abs(x[0]))
+    )
+    state = {}
     for i in range(ndets):
+        det = [[0 for _ in range(norb)], [0 for _ in range(norb)]]
         for j in range(nelec[0]):
-            dets_up[i][occ_a[i][j], j] = 1.0
+            det[0][occ_a[i][j]] = 1
         for j in range(nelec[1]):
-            dets_dn[i][occ_b[i][j], j] = 1.0
-    with open("dets.pkl", "wb") as f:
-        pickle.dump([np.array(coeffs[:ndets]), [dets_up, dets_dn]], f)
-    return np.array(coeffs[:ndets]), [dets_up, dets_dn]
+            det[1][occ_b[i][j]] = 1
+        state[tuple(map(tuple, det))] = coeffs[i]
+    return state
 
 
-if __name__ == "__main__":
-    from pyscf import fci, gto, scf
+def get_excitations(
+    state: Optional[dict] = None,
+    num_core: int = 0,
+    fname: str = "dets.bin",
+    ndets: Optional[int] = None,
+    max_excitation: int = 10,
+) -> Tuple[dict, dict, dict, dict, dict]:
+    """Use given a state or read determinants from a binary file and return excitations.
 
-    from ad_afqmc import pyscf_interface
+    | psi_t > = sum_i coeff_i E_i | d_0 > (note that coeff_i differ from those in sum_i coeff_i_1 | d_i > by parity factors).
 
-    atomstring = f"""
-                     O 0.00000000 -0.13209669 0.00000000
-                     H 0.00000000 0.97970006  1.43152878
-                     H 0.00000000  0.97970006 -1.43152878
-                  """
-    mol = gto.M(atom=atomstring, basis="sto-6g", verbose=3, unit="bohr", symmetry=1)
-    mf = scf.RHF(mol)
-    mf.kernel()
+    Args:
+        state: Dictionary with determinants as keys and coefficients as values.
+        num_core: Number of core orbitals.
+        fname: Binary file containing determinants.
+        ndets: Number of determinants to read.
+        max_excitation: Maximum excitation level (alpha + beta) to consider.
 
-    ci = fci.FCI(mf)
-    ci.kernel()
+    Returns:
+        Acre: Alpha creation indices.
+        Ades: Alpha destruction indices.
+        Bcre: Beta creation indices.
+        Bdes: Beta destruction indices.
+        coeff: Coefficients of the determinants.
+    """
+    if state is None:
+        _, state, ndets_all = read_dets(fname, ndets)
+        if ndets is None:
+            ndets = ndets_all
+    else:
+        if ndets is None:
+            ndets = len(state)
 
-    ci_coeffs, dets = pyscf_interface.fci_to_noci(ci, ndets=5)
+    dets = list(state.keys())[:ndets]
+    Acre, Ades, Bcre, Bdes, coeff = {}, {}, {}, {}, {}
+    d0 = dets[0]
+    d0a, d0b = np.asarray(d0[0]), np.asarray(d0[1])
+    for d in dets:
+        dia, dib = np.asarray(d[0]), np.asarray(d[1])
+        nex = (np.sum(abs(dia - d0a)) // 2, np.sum(abs(dib - d0b)) // 2)
+        if nex[0] + nex[1] > max_excitation:
+            continue
+        coeff[nex] = coeff.get(nex, []) + [state[d]]
+        if nex[0] > 0 and nex[1] > 0:
+            Acre[nex], Ades[nex], Bcre[nex], Bdes[nex] = (
+                Acre.get(nex, []) + [np.nonzero((d0a - dia) > 0)],
+                Ades.get(nex, []) + [np.nonzero((d0a - dia) < 0)],
+                Bcre.get(nex, []) + [np.nonzero((d0b - dib) > 0)],
+                Bdes.get(nex, []) + [np.nonzero((d0b - dib) < 0)],
+            )
+            coeff[nex][-1] *= parity(d0a, Acre[nex][-1], Ades[nex][-1]) * parity(
+                d0b, Bcre[nex][-1], Bdes[nex][-1]
+            )
+
+        elif nex[0] > 0 and nex[1] == 0:
+            Acre[nex], Ades[nex] = Acre.get(nex, []) + [
+                np.nonzero((d0a - dia) > 0)
+            ], Ades.get(nex, []) + [np.nonzero((d0a - dia) < 0)]
+            coeff[nex][-1] *= parity(d0a, Acre[nex][-1], Ades[nex][-1])
+
+        elif nex[0] == 0 and nex[1] > 0:
+            Bcre[nex], Bdes[nex] = Bcre.get(nex, []) + [
+                np.nonzero((d0b - dib) > 0)
+            ], Bdes.get(nex, []) + [np.nonzero((d0b - dib) < 0)]
+            coeff[nex][-1] *= parity(d0b, Bcre[nex][-1], Bdes[nex][-1])
+
+    coeff[(0, 0)] = np.asarray(coeff[(0, 0)]).reshape(
+        -1,
+    )
+
+    # fill up the arrays up to max_excitation
+    for i in range(1, max_excitation + 1):
+        # singe alpha excitation
+        if (i, 0) in Ades:
+            Ades[(i, 0)] = np.asarray(Ades[(i, 0)]).reshape(-1, i) + num_core
+            Acre[(i, 0)] = np.asarray(Acre[(i, 0)]).reshape(-1, i) + num_core
+            coeff[(i, 0)] = np.asarray(coeff[(i, 0)]).reshape(
+                -1,
+            )
+        else:
+            Ades[(i, 0)] = np.zeros((1, i), dtype=int)
+            Acre[(i, 0)] = np.zeros((1, i), dtype=int)
+            coeff[(i, 0)] = np.zeros((1,))
+
+        # singe beta excitation
+        if (0, i) in Bdes:
+            Bdes[(0, i)] = np.asarray(Bdes[(0, i)]).reshape(-1, i) + num_core
+            Bcre[(0, i)] = np.asarray(Bcre[(0, i)]).reshape(-1, i) + num_core
+            coeff[(0, i)] = np.asarray(coeff[(0, i)]).reshape(
+                -1,
+            )
+        else:
+            Bdes[(0, i)] = np.zeros((1, i), dtype=int)
+            Bcre[(0, i)] = np.zeros((1, i), dtype=int)
+            coeff[(0, i)] = np.zeros((1,))
+
+        # alpha-beta
+        if i != 0:
+            for j in range(1, max_excitation + 1):
+                if (i, j) in Ades:
+                    Ades[(i, j)] = np.asarray(Ades[(i, j)]).reshape(-1, i) + num_core
+                    Acre[(i, j)] = np.asarray(Acre[(i, j)]).reshape(-1, i) + num_core
+                    Bdes[(i, j)] = np.asarray(Bdes[(i, j)]).reshape(-1, j) + num_core
+                    Bcre[(i, j)] = np.asarray(Bcre[(i, j)]).reshape(-1, j) + num_core
+                    coeff[(i, j)] = np.asarray(coeff[(i, j)]).reshape(
+                        -1,
+                    )
+                else:
+                    Ades[(i, j)] = np.zeros((1, j), dtype=int)
+                    Acre[(i, j)] = np.zeros((1, j), dtype=int)
+                    Bdes[(i, j)] = np.zeros((1, j), dtype=int)
+                    Bcre[(i, j)] = np.zeros((1, j), dtype=int)
+                    coeff[(i, j)] = np.zeros((1,))
+
+    return Acre, Ades, Bcre, Bdes, coeff
+
+
+# reading dets from dice
+def read_dets(
+    fname: str = "dets.bin", ndets: Optional[int] = None
+) -> Tuple[int, dict, int]:
+    """Read determinants from a binary file generated by Dice.
+
+    Args:
+        fname: Binary file containing determinants.
+        ndets: Number of determinants to read.
+
+    Returns:
+        norbs: Number of orbitals.
+        state: Dictionary with determinant (tuple of up and down occupation number tuples) keys and coefficient values.
+        ndets_all: Total number of determinants in the file.
+    """
+    state = {}
+    norbs = 0
+    with open(fname, "rb") as f:
+        ndets_all = struct.unpack("i", f.read(4))[0]
+        norbs = struct.unpack("i", f.read(4))[0]
+        if ndets is None:
+            ndets = ndets_all
+        for _ in range(ndets):
+            coeff = struct.unpack("d", f.read(8))[0]
+            det = [[0 for _ in range(norbs)], [0 for _ in range(norbs)]]
+            for j in range(norbs):
+                occ = struct.unpack("c", f.read(1))[0]
+                if occ == b"a":
+                    det[0][j] = 1
+                elif occ == b"b":
+                    det[1][j] = 1
+                elif occ == b"2":
+                    det[0][j] = 1
+                    det[1][j] = 1
+            state[tuple(map(tuple, det))] = coeff
+
+    return norbs, state, ndets_all
+
+
+def parity(d0: np.ndarray, cre: Sequence, des: Sequence) -> float:
+    """Compute the parity for an excitation.
+
+    Args:
+        d0: Reference determinant.
+        cre: Creation indices.
+        des: Destruction indices.
+
+    Returns:
+        Parity of the excitation.
+    """
+    d = 1.0 * d0
+    parity = 1.0
+
+    C = np.asarray(cre).flatten()
+    D = np.asarray(des).flatten()
+    for i in range(C.shape[0]):
+        I, A = min(D[i], C[i]), max(D[i], C[i])
+        parity *= 1.0 - 2.0 * ((np.sum(d[I + 1 : A])) % 2)
+        d[C[i]] = 0
+        d[D[i]] = 1
+    return parity

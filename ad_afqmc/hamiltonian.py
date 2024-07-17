@@ -65,6 +65,7 @@ class hamiltonian:
             ham_data["chol"].reshape(-1, self.norb, self.norb),
             optimize="optimal",
         )
+        ham_data["normal_ordering_term"] = -v0
         h1_mod = ham_data["h1"] - v0
         h1_mod = h1_mod - jnp.real(
             1.0j
@@ -146,6 +147,7 @@ class hamiltonian_uhf:
             ham_data["chol"].reshape(-1, self.norb, self.norb),
             optimize="optimal",
         )
+        ham_data["normal_ordering_term"] = -v0
         v1 = jnp.real(
             1.0j
             * jnp.einsum(
@@ -229,6 +231,7 @@ class hamiltonian_ghf:
             ham_data["chol"].reshape(-1, self.norb, self.norb),
             optimize="optimal",
         )
+        ham_data["normal_ordering_term"] = -v0
         v1 = jnp.real(
             1.0j
             * jnp.einsum(
@@ -321,6 +324,7 @@ class hamiltonian_noci:
             ham_data["chol"].reshape(-1, self.norb, self.norb),
             optimize="optimal",
         )
+        ham_data["normal_ordering_term"] = -v0
         v1 = jnp.real(
             1.0j
             * jnp.einsum(
