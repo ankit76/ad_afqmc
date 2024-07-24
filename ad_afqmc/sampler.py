@@ -258,12 +258,12 @@ def propagate_free(ham, ham_data, propagator, prop_data, trial, wave_data):
     return prop_data_tr, block_energy, block_weight, prop_data["key"]
 
 
-@partial(jit, static_argnums=(0, 4, 6))
+@partial(jit, static_argnums=(0, 5, 7))
 def propagate_phaseless_nucgrad_norot(
-    ham, ham_data, rdm1op, rdm2op, propagator, prop_data, trial, wave_data
+    ham, ham_data, coupling, rdm1op, rdm2op, propagator, prop_data, trial, wave_data
 ):
 
-    ham_data["h1"] = rdm1op
+    ham_data["h1"] = ham_data["h1"] + coupling * rdm1op
     rdm2op = (rdm2op + jnp.transpose(rdm2op, (0, 2, 1))) / 2
 
     ham_data["chol"] = rdm2op.reshape(-1, ham.norb * ham.norb)
@@ -277,12 +277,12 @@ def propagate_phaseless_nucgrad_norot(
     return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
 
 
-@partial(jit, static_argnums=(0, 4, 6))
+@partial(jit, static_argnums=(0, 5, 7))
 def propagate_phaseless_nucgrad_norot_nosr(
-    ham, ham_data, rdm1op, rdm2op, propagator, prop_data, trial, wave_data
+    ham, ham_data, coupling, rdm1op, rdm2op, propagator, prop_data, trial, wave_data
 ):
 
-    ham_data["h1"] = rdm1op
+    ham_data["h1"] = ham_data["h1"] + coupling * rdm1op
     rdm2op = (rdm2op + jnp.transpose(rdm2op, (0, 2, 1))) / 2
 
     ham_data["chol"] = rdm2op.reshape(-1, ham.norb * ham.norb)
@@ -306,14 +306,13 @@ def propagate_phaseless_nucgrad_norot_nosr(
     return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
 
 
-@partial(jit, static_argnums=(0, 4, 6))
+@partial(jit, static_argnums=(0, 5, 7))
 def propagate_phaseless_nucgrad(  # do rot  do SR
-    ham, ham_data, rdm1op, rdm2op, propagator, prop_data, trial, wave_data
+    ham, ham_data, coupling, rdm1op, rdm2op, propagator, prop_data, trial, wave_data
 ):
 
-    ham_data["h1"] = rdm1op
+    ham_data["h1"] = ham_data["h1"] + coupling * rdm1op
     rdm2op = (rdm2op + jnp.transpose(rdm2op, (0, 2, 1))) / 2
-
     ham_data["chol"] = rdm2op.reshape(-1, ham.norb * ham.norb)
 
     wave_data = trial.optimize_orbs(ham_data, wave_data)
@@ -327,12 +326,12 @@ def propagate_phaseless_nucgrad(  # do rot  do SR
     return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
 
 
-@partial(jit, static_argnums=(0, 4, 6))
+@partial(jit, static_argnums=(0, 5, 7))
 def propagate_phaseless_nucgrad_rot_nosr(
-    ham, ham_data, rdm1op, rdm2op, propagator, prop_data, trial, wave_data
+    ham, ham_data, coupling, rdm1op, rdm2op, propagator, prop_data, trial, wave_data
 ):
 
-    ham_data["h1"] = rdm1op
+    ham_data["h1"] = ham_data["h1"] + coupling * rdm1op
     rdm2op = (rdm2op + jnp.transpose(rdm2op, (0, 2, 1))) / 2
 
     ham_data["chol"] = rdm2op.reshape(-1, ham.norb * ham.norb)

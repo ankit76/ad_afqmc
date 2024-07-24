@@ -91,7 +91,6 @@ def afqmc(
         trial_rdm2 = trial_rdm2.reshape(ham.norb**2, ham.norb**2)
         trial_rdm2 = jnp.array(trial_rdm2)
     if options["ad_mode"] == "nuc_grad":
-        rdm_op = jnp.array(ham_data["h1"]).copy()
         rdm_2_op = jnp.array(ham_data["chol"]).reshape((-1, ham.norb, ham.norb)).copy()
 
     comm.Barrier()
@@ -220,8 +219,8 @@ def afqmc(
         and (options["do_sr"] == False)
     ):
         propagate_phaseless_wrapper = (
-            lambda y, k, z: sampler.propagate_phaseless_nucgrad_norot_nosr(
-                ham, ham_data, y, k, propagator, z, trial, wave_data
+            lambda x, y, k, z: sampler.propagate_phaseless_nucgrad_norot_nosr(
+                ham, ham_data, x, y, k, propagator, z, trial, wave_data
             )
         )
 
@@ -231,14 +230,14 @@ def afqmc(
         and (options["do_sr"] == True)
     ):
         propagate_phaseless_wrapper = (
-            lambda y, k, z: sampler.propagate_phaseless_nucgrad_norot(
-                ham, ham_data, y, k, propagator, z, trial, wave_data
+            lambda x, y, k, z: sampler.propagate_phaseless_nucgrad_norot(
+                ham, ham_data, x, y, k, propagator, z, trial, wave_data
             )
         )
     elif (options["ad_mode"] == "nuc_grad") and (options["orbital_rotation"] == True):
         propagate_phaseless_wrapper = (
-            lambda y, k, z: sampler.propagate_phaseless_nucgrad(
-                ham, ham_data, y, k, propagator, z, trial, wave_data
+            lambda x, y, k, z: sampler.propagate_phaseless_nucgrad(
+                ham, ham_data, x, y, k, propagator, z, trial, wave_data
             )
         )
 
@@ -322,11 +321,17 @@ def afqmc(
                 block_rdm2_n = trial_rdm2
                 local_large_deviations += 1
         elif options["ad_mode"] == "nuc_grad":
+            coupling = 1.0
             block_energy_n, block_vjp_fun, prop_data = vjp(
-                propagate_phaseless_wrapper, rdm_op, rdm_2_op, prop_data, has_aux=True
+                propagate_phaseless_wrapper,
+                coupling,
+                rdm_op,
+                rdm_2_op,
+                prop_data,
+                has_aux=True,
             )
-            block_rdm1_n = block_vjp_fun(1.0)[0]
-            block_rdm2_n = block_vjp_fun(1.0)[1]
+            block_rdm1_n = block_vjp_fun(1.0)[1]
+            block_rdm2_n = block_vjp_fun(1.0)[2]
             grad_utils.append_to_array(
                 f"en_der_afqmc_{comm.rank}.npz",
                 block_rdm1_n,
