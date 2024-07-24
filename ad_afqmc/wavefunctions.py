@@ -395,6 +395,72 @@ class rhf(wave_function_restricted):
 
 
 @dataclass
+class rhf_orthoAO(rhf):
+    norb: int
+    nelec: int
+    n_opt_iter: int = 30
+    dm0: jnp.ndarray = None
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap(self, walker, wave_data=None):
+        return jnp.linalg.det(wave_data[:, : self.nelec].T @ walker) ** 2
+
+    @partial(jit, static_argnums=0)
+    def calc_green(self, walker, wave_data=None):
+        return (walker.dot(jnp.linalg.inv(wave_data[:, : self.nelec].T.dot(walker)))).T
+
+    @partial(jit, static_argnums=0)
+    def optimize_orbs(self, ham_data, wave_data=None):
+        h1 = ham_data["h1"]
+        h2 = ham_data["chol"]
+        h2 = h2.reshape((h2.shape[0], h1.shape[0], h1.shape[0]))
+        nelec = self.nelec
+        h1 = (h1 + h1.T) / 2.0
+
+        def scanned_fun(carry, x):
+            dm = carry
+            f = jnp.einsum("gij,ik->gjk", h2, dm)
+            c = vmap(jnp.trace)(f)
+            vj = jnp.einsum("g,gij->ij", c, h2)
+            vk = jnp.einsum("glj,gjk->lk", f, h2)
+            vhf = vj - 0.5 * vk
+            fock = h1 + vhf
+            mo_energy, mo_coeff = linalg_utils._eigh(fock)
+            idx = jnp.argmax(abs(mo_coeff.real), axis=0)
+            mo_coeff = jnp.where(
+                mo_coeff[idx, jnp.arange(len(mo_energy))].real < 0, -mo_coeff, mo_coeff
+            )
+            e_idx = jnp.argsort(mo_energy)
+            nmo = mo_energy.size
+            mo_occ = jnp.zeros(nmo)
+            nocc = nelec
+            mo_occ = mo_occ.at[e_idx[:nocc]].set(2)
+            mocc = mo_coeff[:, jnp.nonzero(mo_occ, size=nocc)[0]]
+            dm = (mocc * mo_occ[jnp.nonzero(mo_occ, size=nocc)[0]]).dot(mocc.T)
+            return dm, mo_coeff
+
+        norb = h1.shape[0]
+        if self.dm0 is not None:
+            dm0 = self.dm0
+        elif wave_data is not None:
+            dm0 = 2 * wave_data[:, : self.nelec].dot(wave_data[:, : self.nelec].T)
+        else:
+            dm0 = 2 * jnp.eye(norb, nelec).dot(jnp.eye(norb, nelec).T)
+        _, mo_coeff = lax.scan(scanned_fun, dm0, None, length=self.n_opt_iter)
+
+        return mo_coeff[-1]
+
+    def __hash__(self):
+        return hash(
+            (
+                self.norb,
+                self.nelec,
+                self.n_opt_iter,
+            )
+        )
+
+
+@dataclass
 class uhf(wave_function_unrestricted):
     norb: int
     nelec: Tuple[int, int]
@@ -546,6 +612,91 @@ class uhf(wave_function_unrestricted):
         dm_up = (wave_data[0][:, : nelec[0]]).dot(wave_data[0][:, : nelec[0]].T)
         dm_dn = (wave_data[1][:, : nelec[1]]).dot(wave_data[1][:, : nelec[1]].T)
         dm0 = jnp.array([dm_up, dm_dn])
+        _, mo_coeff = lax.scan(scanned_fun, dm0, None, length=self.n_opt_iter)
+
+        return mo_coeff[-1]
+
+    def __hash__(self):
+        return hash(
+            (
+                self.norb,
+                self.nelec,
+                self.n_opt_iter,
+            )
+        )
+
+
+@dataclass
+class uhf_orthoAO(uhf):
+    norb: int
+    nelec: Tuple[int, int]
+    n_opt_iter: int = 30
+    dm0: jnp.ndarray = None
+
+    @partial(jit, static_argnums=0)
+    def optimize_orbs(self, ham_data, wave_data):
+        h1 = ham_data["h1"]
+        h1 = h1.at[0].set((h1[0] + h1[0].T) / 2.0)
+        h1 = h1.at[1].set((h1[1] + h1[1].T) / 2.0)
+        h2 = ham_data["chol"]
+        h2 = h2.reshape((h2.shape[0], h1.shape[1], h1.shape[1]))
+        nelec = self.nelec
+
+        def scanned_fun(carry, x):
+            dm = carry
+            f_up = jnp.einsum("gij,ik->gjk", h2, dm[0])
+            c_up = vmap(jnp.trace)(f_up)
+            vj_up = jnp.einsum("g,gij->ij", c_up, h2)
+            vk_up = jnp.einsum("glj,gjk->lk", f_up, h2)
+            f_dn = jnp.einsum("gij,ik->gjk", h2, dm[1])
+            c_dn = vmap(jnp.trace)(f_dn)
+            vj_dn = jnp.einsum("g,gij->ij", c_dn, h2)
+            vk_dn = jnp.einsum("glj,gjk->lk", f_dn, h2)
+            fock_up = h1[0] + vj_up + vj_dn - vk_up
+            fock_dn = h1[1] + vj_up + vj_dn - vk_dn
+            mo_energy_up, mo_coeff_up = linalg_utils._eigh(fock_up)
+            mo_energy_dn, mo_coeff_dn = linalg_utils._eigh(fock_dn)
+
+            nmo = mo_energy_up.size
+
+            idx_up = jnp.argmax(abs(mo_coeff_up.real), axis=0)
+            mo_coeff_up = jnp.where(
+                mo_coeff_up[idx_up, jnp.arange(len(mo_energy_up))].real < 0,
+                -mo_coeff_up,
+                mo_coeff_up,
+            )
+            e_idx_up = jnp.argsort(mo_energy_up)
+            mo_occ_up = jnp.zeros(nmo)
+            nocc_up = nelec[0]
+            mo_occ_up = mo_occ_up.at[e_idx_up[:nocc_up]].set(1)
+            mocc_up = mo_coeff_up[:, jnp.nonzero(mo_occ_up, size=nocc_up)[0]]
+            dm_up = (mocc_up * mo_occ_up[jnp.nonzero(mo_occ_up, size=nocc_up)[0]]).dot(
+                mocc_up.T
+            )
+
+            idx_dn = jnp.argmax(abs(mo_coeff_dn.real), axis=0)
+            mo_coeff_dn = jnp.where(
+                mo_coeff_dn[idx_dn, jnp.arange(len(mo_energy_dn))].real < 0,
+                -mo_coeff_dn,
+                mo_coeff_dn,
+            )
+            e_idx_dn = jnp.argsort(mo_energy_dn)
+            mo_occ_dn = jnp.zeros(nmo)
+            nocc_dn = nelec[1]
+            mo_occ_dn = mo_occ_dn.at[e_idx_dn[:nocc_dn]].set(1)
+            mocc_dn = mo_coeff_dn[:, jnp.nonzero(mo_occ_dn, size=nocc_dn)[0]]
+            dm_dn = (mocc_dn * mo_occ_dn[jnp.nonzero(mo_occ_dn, size=nocc_dn)[0]]).dot(
+                mocc_dn.T
+            )
+
+            return jnp.array([dm_up, dm_dn]), jnp.array([mo_coeff_up, mo_coeff_dn])
+
+        if self.dm0 is not None:
+            dm0 = self.dm0
+        else:
+            dm_up = (wave_data[0][:, : nelec[0]]).dot(wave_data[0][:, : nelec[0]].T)
+            dm_dn = (wave_data[1][:, : nelec[1]]).dot(wave_data[1][:, : nelec[1]].T)
+            dm0 = jnp.array([dm_up, dm_dn])
         _, mo_coeff = lax.scan(scanned_fun, dm0, None, length=self.n_opt_iter)
 
         return mo_coeff[-1]
