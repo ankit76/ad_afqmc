@@ -1436,7 +1436,7 @@ class CISD(wave_function_auto_restricted):
         o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
         o1 = jnp.einsum('ia,ia', ci1, GF[:,nocc:])
         o2 = 2*jnp.einsum('iajb, ia, jb', ci2, GF[:,nocc:], GF[:,nocc:]) - jnp.einsum('iajb, ib, ja', ci2, GF[:,nocc:], GF[:,nocc:])
-        return (1. + o1 + o2) * o0
+        return (1. + 2*o1 + o2) * o0
 
 
 
@@ -1491,7 +1491,7 @@ class CISD_THC(wave_function_auto_restricted):
         B = ((Xocc @ GF[:,nocc:]) @ Xvirt.T)
         o2 -= jnp.sum(B * B.T * VKL)
 
-        return (1. + o1 + o2) * o0
+        return (1. + 2*o1 + o2) * o0
 
 
     @partial(jit, static_argnums=0)
