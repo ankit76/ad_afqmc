@@ -1113,7 +1113,9 @@ class noci(wave_function_unrestricted):
 
 
 class wave_function_auto_restricted(wave_function_restricted):
-    """This wave function only requires the definition of overlap functions. It evaluates force bias and local energy by differentiating various overlaps (single derivatives with AD and double with FD)."""
+    """This wave function only requires the definition of overlap functions.
+    It evaluates force bias and local energy by differentiating various overlaps
+    (single derivatives with AD and double with FD)."""
 
     def __init__(self, eps: float = 1.0e-4):
         """eps is the finite difference step size in local energy calculations."""
@@ -1127,7 +1129,8 @@ class wave_function_auto_restricted(wave_function_restricted):
         chol: jnp.ndarray,
         wave_data: dict,
     ) -> complex:
-        """Helper function for calculating force bias using AD, evaluates < psi_T | exp(x_gamma * chol) | walker > to linear order"""
+        """Helper function for calculating force bias using AD,
+        evaluates < psi_T | exp(x_gamma * chol) | walker > to linear order"""
         x_chol = jnp.einsum(
             "gij,g->ij", chol.reshape(-1, self.norb, self.norb), x_gamma
         )
@@ -1138,7 +1141,8 @@ class wave_function_auto_restricted(wave_function_restricted):
     def calc_force_bias(
         self, walker: jnp.ndarray, ham_data: dict, wave_data: dict
     ) -> jnp.ndarray:
-        """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker > by differentiating  < psi_T | exp(x_gamma * chol) | walker > / < psi_T | walker >"""
+        """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker > by differentiating
+        < psi_T | exp(x_gamma * chol) | walker > / < psi_T | walker >"""
         val, grad = vjp(
             self.overlap_with_rot_sd,
             jnp.zeros((ham_data["chol"].shape[0],)) + 0.0j,
@@ -1152,7 +1156,8 @@ class wave_function_auto_restricted(wave_function_restricted):
     def overlap_with_single_rot(
         self, x: float, h1: jnp.ndarray, walker: jnp.ndarray, wave_data: dict
     ) -> complex:
-        """Helper function for calculating local energy using AD, evaluates < psi_T | exp(x * h1) | walker > to linear order"""
+        """Helper function for calculating local energy using AD,
+        evaluates < psi_T | exp(x * h1) | walker > to linear order"""
         walker2 = walker + x * h1.dot(walker)
         return self.calc_overlap(walker2, wave_data)
 
@@ -1160,7 +1165,8 @@ class wave_function_auto_restricted(wave_function_restricted):
     def overlap_with_double_rot(
         self, x: float, chol_i: jnp.ndarray, walker: jnp.ndarray, wave_data: dict
     ) -> complex:
-        """Helper function for calculating local energy using AD, evaluates < psi_T | exp(x * chol_i) | walker > to quadratic order"""
+        """Helper function for calculating local energy using AD,
+        evaluates < psi_T | exp(x * chol_i) | walker > to quadratic order"""
         walker2 = (
             walker
             + x * chol_i.dot(walker)
@@ -1205,11 +1211,138 @@ class wave_function_auto_restricted(wave_function_restricted):
         return (dx1 + jnp.sum(dx2) / 2.0) / val1 + h0
 
 
+class wave_function_auto_unrestricted(wave_function_unrestricted):
+    """This wave function only requires the definition of overlap functions.
+    It evaluates force bias and local energy by differentiating various overlaps."""
+
+    def __init__(self, eps: float = 1.0e-4):
+        self.eps = eps
+
+    @partial(jit, static_argnums=0)
+    def overlap_with_rot_sd(
+        self,
+        x_gamma: jnp.ndarray,
+        walker_up: jnp.ndarray,
+        walker_dn: jnp.ndarray,
+        chol: jnp.ndarray,
+        wave_data: Any,
+    ) -> complex:
+        """Helper function for calculating force bias using AD,
+        evaluates < psi_T | exp(x_gamma * chol) | walker > to linear order"""
+        x_chol = jnp.einsum(
+            "gij,g->ij", chol.reshape(-1, self.norb, self.norb), x_gamma
+        )
+        walker_up_1 = walker_up + x_chol.dot(walker_up)
+        walker_dn_1 = walker_dn + x_chol.dot(walker_dn)
+        return self.calc_overlap(walker_up_1, walker_dn_1, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def calc_force_bias(
+        self,
+        walker_up: jnp.ndarray,
+        walker_dn: jnp.ndarray,
+        ham_data: dict,
+        wave_data: Any,
+    ) -> jnp.ndarray:
+        """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker > by differentiating
+        < psi_T | exp(x_gamma * chol) | walker > / < psi_T | walker >"""
+        val, grad = vjp(
+            self.overlap_with_rot_sd,
+            jnp.zeros((ham_data["chol"].shape[0],)) + 0.0j,
+            walker_up,
+            walker_dn,
+            ham_data["chol"],
+            wave_data,
+        )
+        return grad(1.0 + 0.0j)[0] / val
+
+    @partial(jit, static_argnums=0)
+    def overlap_with_single_rot(
+        self,
+        x: float,
+        h1: jnp.ndarray,
+        walker_up: jnp.ndarray,
+        walker_dn: jnp.ndarray,
+        wave_data: Any,
+    ) -> complex:
+        """Helper function for calculating local energy using AD,
+        evaluates < psi_T | exp(x * h1) | walker > to linear order"""
+        walker_up_1 = walker_up + x * h1[0].dot(walker_up)
+        walker_dn_1 = walker_dn + x * h1[1].dot(walker_dn)
+        return self.calc_overlap(walker_up_1, walker_dn_1, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def overlap_with_double_rot(
+        self,
+        x: float,
+        chol_i: jnp.ndarray,
+        walker_up: jnp.ndarray,
+        walker_dn: jnp.ndarray,
+        wave_data: Any,
+    ) -> complex:
+        """Helper function for calculating local energy using AD,
+        evaluates < psi_T | exp(x * chol_i) | walker > to quadratic order"""
+        walker_up_1 = (
+            walker_up
+            + x * chol_i.dot(walker_up)
+            + x**2 / 2.0 * chol_i.dot(chol_i.dot(walker_up))
+        )
+        walker_dn_1 = (
+            walker_dn
+            + x * chol_i.dot(walker_dn)
+            + x**2 / 2.0 * chol_i.dot(chol_i.dot(walker_dn))
+        )
+        return self.calc_overlap(walker_up_1, walker_dn_1, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def calc_energy(
+        self,
+        walker_up: jnp.ndarray,
+        walker_dn: jnp.ndarray,
+        ham_data: dict,
+        wave_data: Any,
+    ) -> complex:
+        """Calculates local energy using AD and finite difference for the two body term"""
+
+        h0, h1, chol, v0 = (
+            ham_data["h0"],
+            ham_data["h1"],
+            ham_data["chol"].reshape(-1, self.norb, self.norb),
+            ham_data["normal_ordering_term"],
+        )
+
+        x = 0.0
+        # one body
+        f1 = lambda a: self.overlap_with_single_rot(
+            a, h1 + v0, walker_up, walker_dn, wave_data
+        )
+        val1, dx1 = jvp(f1, [x], [1.0])
+
+        # two body
+        vmap_fun = vmap(
+            self.overlap_with_double_rot, in_axes=(None, 0, None, None, None)
+        )
+
+        eps, zero = self.eps, 0.0
+        dx2 = (
+            (
+                vmap_fun(eps, chol, walker_up, walker_dn, wave_data)
+                - 2.0 * vmap_fun(zero, chol, walker_up, walker_dn, wave_data)
+                + vmap_fun(-1.0 * eps, chol, walker_up, walker_dn, wave_data)
+            )
+            / eps
+            / eps
+        )
+
+        return (dx1 + jnp.sum(dx2) / 2.0) / val1 + h0
+
+
 @dataclass
 class multislater_rhf(wave_function_auto_restricted):
     """Multislater wave function
 
-    We work in the orbital basis of the wave function. Associated wave_data consists of excitation indices and ci coefficients.
+    We work in the orbital basis of the wave function.
+    Associated wave_data consists of excitation indices and ci coefficients.
     """
 
     norb: int
