@@ -14,12 +14,13 @@ from functools import partial
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
-from jax import dtypes, jvp, random, vjp
+from jax import dtypes, jvp, random, vjp, config
 from mpi4py import MPI
 
 from ad_afqmc import linalg_utils, propagation, sampler, stat_utils
 
 print = partial(print, flush=True)
+config.update("jax_enable_x64", True)
 
 comm = MPI.COMM_WORLD
 size = comm.Get_size()

@@ -11,9 +11,10 @@ from functools import partial
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import jit, vmap
+from jax import jit, vmap, config
 
 print = partial(print, flush=True)
+config.update("jax_enable_x64", True)
 
 # TODO: move rotation member functions to wavefunctions, prop_ham to propagators, and use wrappers around them as member functions of one hamiltonian class
 

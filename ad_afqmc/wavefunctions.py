@@ -14,11 +14,12 @@ from typing import Any, Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import jit, jvp, lax, vjp, vmap
+from jax import jit, jvp, lax, vjp, vmap, config
 
 from ad_afqmc import linalg_utils
 
 print = partial(print, flush=True)
+config.update("jax_enable_x64", True)
 
 
 class wave_function(ABC):
@@ -1276,3 +1277,100 @@ class multislater_rhf(wave_function_auto_restricted):
 
     def __hash__(self):
         return hash((self.norb, self.nelec, self.max_excitation, self.eps))
+
+
+@dataclass
+class CISD(wave_function_auto_restricted):
+    """This class contains functions for the CISD wavefunction
+    |0> + c(ia) |ia> + c(ia jb) |ia jb>
+
+    . The wave_data need to store the coefficient C(ia) and C(ia jb)
+    """
+
+    norb: int
+    nelec: int
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+
+
+    @partial(jit, static_argnums=0)
+    def calc_green(self, walker: jnp.ndarray) -> jnp.ndarray:
+        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap(self,walker: jnp.ndarray, wave_data: dict) -> complex:
+        nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
+        GF = self.calc_green(walker)
+        o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
+        o1 = jnp.einsum('ia,ia', ci1, GF[:,nocc:])
+        o2 = 2*jnp.einsum('iajb, ia, jb', ci2, GF[:,nocc:], GF[:,nocc:]) - jnp.einsum('iajb, ib, ja', ci2, GF[:,nocc:], GF[:,nocc:])
+        return (1. + o1 + o2) * o0
+
+
+
+    @partial(jit, static_argnums=0)
+    def get_rdm1(self, wave_data: dict) -> jnp.ndarray:
+        """Spatial 1RDM of the reference det"""
+        rdm1 = 2 * np.eye(self.norb, self.nelec).dot(np.eye(self.norb, self.nelec).T)
+        return rdm1
+
+    # not implemented
+    @partial(jit, static_argnums=0)
+    def optimize_orbs(self, ham_data: dict, wave_data: dict) -> dict:
+        return wave_data
+
+    def __hash__(self):
+        return hash((self.norb, self.nelec, 2, self.eps))
+
+
+@dataclass
+class CISD_THC(wave_function_auto_restricted):
+    """This class contains functions for the CISD wavefunction
+    |0> + c(ia) |ia> + c(ia jb) |ia jb>
+
+    . The wave_data need to store the coefficient C(ia) and C(ia jb)  in the THC format
+    i.e. C(i,a,j,b) = X1(P,i) X2(P,a) V(P,Q) X1(P,j) X2(P,b) 
+    """
+
+    norb: int
+    nelec: int
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+
+
+    @partial(jit, static_argnums=0)
+    def calc_green(self, walker: jnp.ndarray) -> jnp.ndarray:
+        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap(self,walker: jnp.ndarray, wave_data: dict) -> complex:
+        nocc, ci1, Xocc, Xvirt, VKL = walker.shape[1], wave_data["ci1"], wave_data["Xocc"], wave_data["Xvirt"], wave_data["VKL"]
+        GF = self.calc_green(walker)
+
+        o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
+
+        o1 = jnp.einsum('ia,ia', ci1, GF[:,nocc:])
+
+        #A = jnp.einsum('ia,Pi,Pa->P', GF[:,nocc:], Xocc, Xvirt)
+        #o2 = 2*jnp.einsum('P,PQ,Q', A, VKL, A) 
+
+        A = jnp.einsum('Pa,Pa->P', (Xocc @ GF[:,nocc:]), Xvirt) 
+        o2 = 2* (A @ VKL).dot(A)
+
+        B = ((Xocc @ GF[:,nocc:]) @ Xvirt.T)
+        o2 -= jnp.sum(B * B.T * VKL)
+
+        return (1. + o1 + o2) * o0
+
+
+    @partial(jit, static_argnums=0)
+    def get_rdm1(self, wave_data: dict) -> jnp.ndarray:
+        """Spatial 1RDM of the reference det"""
+        rdm1 = 2 * np.eye(self.norb, self.nelec).dot(np.eye(self.norb, self.nelec).T)
+        return rdm1
+
+    # not implemented
+    @partial(jit, static_argnums=0)
+    def optimize_orbs(self, ham_data: dict, wave_data: dict) -> dict:
+        return wave_data
+
+    def __hash__(self):
+        return hash((self.norb, self.nelec, 2, self.eps))
