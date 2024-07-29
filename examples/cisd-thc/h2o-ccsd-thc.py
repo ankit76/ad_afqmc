@@ -41,7 +41,7 @@ mycc.run()
 et = mycc.ccsd_t()
 print(mycc.e_corr + et)
 
-ci2 = mycc.t2 + 0.5 * np.einsum('ia,jb->ijab', mycc.t1, mycc.t1)
+ci2 = mycc.t2 + np.einsum('ia,jb->ijab', mycc.t1, mycc.t1)
 ci2 = ci2.transpose(0,2,1,3)
 ci1 = mycc.t1
 
