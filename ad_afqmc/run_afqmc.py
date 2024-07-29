@@ -15,11 +15,12 @@ from functools import partial
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
-from jax import dtypes, jvp, random, vjp
+from jax import dtypes, jvp, random, vjp, config
 
 # from ad_afqmc import propagation, sampler, stat_utils
 
 print = partial(print, flush=True)
+config.update("jax_enable_x64", True)
 
 
 def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):

@@ -13,9 +13,11 @@ from typing import Any, Optional, Sequence
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import jit, lax, random, vmap
+from jax import jit, lax, random, vmap, jvp, config
 
 from ad_afqmc import linalg_utils, sr, wavefunctions
+
+config.update("jax_enable_x64", True)
 
 print = partial(print, flush=True)
 

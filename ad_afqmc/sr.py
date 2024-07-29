@@ -9,8 +9,9 @@ os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit, vmap, config
 
+config.update("jax_enable_x64", True)
 
 # this uses numpy but is only called once after each block
 def stochastic_reconfiguration_np(walkers, weights, zeta):

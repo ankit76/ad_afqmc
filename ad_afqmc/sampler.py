@@ -9,12 +9,13 @@ from functools import partial
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
-from jax import checkpoint, jit, lax, random
+from jax import checkpoint, jit, lax, random, config
 
 # import stat_utils
 from ad_afqmc import linalg_utils
 
 print = partial(print, flush=True)
+config.update("jax_enable_x64", True)
 
 
 @partial(jit, static_argnums=(3, 4))
