@@ -38,56 +38,7 @@ class hamiltonian:
     @partial(jit, static_argnums=(0,))
     def rot_ham(self, ham_data, wave_data=None):
         ham_data["h1"] = (ham_data["h1"] + ham_data["h1"].T) / 2.0
-        ham_data["rot_h1"] = ham_data["h1"][: self.nelec, :].copy()
-        ham_data["rot_chol"] = (
-            ham_data["chol"]
-            .reshape(-1, self.norb, self.norb)[:, : self.nelec, :]
-            .copy()
-        )
-        return ham_data
-
-    @partial(jit, static_argnums=(0, 3))
-    def prop_ham(self, ham_data, dt, _trial, wave_data=None):
-        ham_data["mf_shifts"] = 2.0j * vmap(
-            lambda x: jnp.sum(jnp.diag(x.reshape(self.norb, self.norb))[: self.nelec])
-        )(ham_data["chol"])
-        ham_data["mf_shifts_fp"] = ham_data["mf_shifts"] / 2.0 / self.nelec
-        ham_data["h0_prop"] = (
-            -ham_data["h0"] - jnp.sum(ham_data["mf_shifts"] ** 2) / 2.0
-        )
-        ham_data["h0_prop_fp"] = [
-            (ham_data["h0_prop"] + ham_data["ene0"]) / self.nelec,
-            (ham_data["h0_prop"] + ham_data["ene0"]) / self.nelec,
-        ]
-        v0 = 0.5 * jnp.einsum(
-            "gik,gjk->ij",
-            ham_data["chol"].reshape(-1, self.norb, self.norb),
-            ham_data["chol"].reshape(-1, self.norb, self.norb),
-            optimize="optimal",
-        )
-        ham_data["normal_ordering_term"] = -v0
-        h1_mod = ham_data["h1"] - v0
-        h1_mod = h1_mod - jnp.real(
-            1.0j
-            * jnp.einsum(
-                "g,gik->ik",
-                ham_data["mf_shifts"],
-                ham_data["chol"].reshape(-1, self.norb, self.norb),
-            )
-        )
-        ham_data["exp_h1"] = jsp.linalg.expm(-dt * h1_mod / 2.0)
-        return ham_data
-
-    def __hash__(self):
-        return hash((self.norb, self.nelec, self.nchol))
-
-
-@dataclass
-class hamiltonian_rhf_orthoAO(hamiltonian):
-    @partial(jit, static_argnums=(0,))
-    def rot_ham(self, ham_data, wave_data=None):
-        ham_data["h1"] = (ham_data["h1"] + ham_data["h1"].T) / 2.0
-        ham_data["rot_h1"] = (wave_data[:, : self.nelec].T @ ham_data["h1"]).copy()
+        ham_data["rot_h1"] = (wave_data[:, : self.nelec].T.dot(ham_data["h1"])).copy()
         ham_data["rot_chol"] = (
             jnp.einsum(
                 "pi,gij->gpj",
@@ -100,7 +51,7 @@ class hamiltonian_rhf_orthoAO(hamiltonian):
     @partial(jit, static_argnums=(0, 3))
     def prop_ham(self, ham_data, dt, _trial, wave_data=None):
         trial = wave_data[:, : self.nelec]
-        dm = 2.0 * trial @ trial.T
+        dm = 2.0 * trial.dot(trial.T)
         ham_data["mf_shifts"] = 1.0j * vmap(
             lambda x: jnp.sum(x.reshape(self.norb, self.norb) * dm)
         )(ham_data["chol"])
@@ -118,6 +69,7 @@ class hamiltonian_rhf_orthoAO(hamiltonian):
             ham_data["chol"].reshape(-1, self.norb, self.norb),
             optimize="optimal",
         )
+        ham_data["normal_ordering_term"] = -v0
         h1_mod = ham_data["h1"] - v0
         h1_mod = h1_mod - jnp.real(
             1.0j

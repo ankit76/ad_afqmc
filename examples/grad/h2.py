@@ -12,8 +12,7 @@ import numpy
 
 
 rs = [2.4]
-#rs = [2.0]
-basis=  "ccpvdz" #   "631+g"
+basis=  "sto6g" #   "631+g"
 
 for r in rs:
   atom_symbols = np.array(["H","H"])#,"H","H"])
@@ -29,7 +28,7 @@ for r in rs:
       "n_eql": 10,
       "n_ene_blocks": 4,
       "n_sr_blocks": 50,
-      "n_blocks": 10,
+      "n_blocks": 20,
       "n_walkers": 25,
       "do_sr": True,
       "orbital_rotation": True,
@@ -39,10 +38,8 @@ for r in rs:
       "ad_mode": "nuc_grad",
 }                          
 
-  grad_utils.FD_integrals(mf)
-  grad_utils.write_integrals_lowdins(mf)
-
-  run_afqmc.run_afqmc(options=options,nproc=1)
+  grad_utils.prep_afqmc_nuc_grad(mf)
+  run_afqmc.run_afqmc(options=options,nproc=4)
   grad_utils.calculate_nuc_gradients(uhf=True)
   print(f"r = {r}")
   mf_grad = mf.Gradients()

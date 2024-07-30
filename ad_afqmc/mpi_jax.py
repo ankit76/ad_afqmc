@@ -105,10 +105,6 @@ def _prep_afqmc(options=None):
         trial = wavefunctions.rhf(norb, nelec // 2)
         wave_data = jnp.eye(norb)
         if options["ad_mode"] == "nuc_grad":
-            ham = hamiltonian.hamiltonian_rhf_orthoAO(nmo, nelec // 2, nchol)
-            trial = wavefunctions.rhf_orthoAO(
-                norb, nelec // 2, dm0=jnp.array(np.load("Integral_der.npz")["dm"])
-            )
             wave_data = jnp.array(np.load("rhf.npz")["mo_coeff"])
             init_walkers = jnp.stack(
                 [wave_data[:, : nelec // 2] + 0.0j for _ in range(options["n_walkers"])]
@@ -175,10 +171,6 @@ def _prep_afqmc(options=None):
                 )
             trial = wavefunctions.uhf(norb, nelec_sp)
             wave_data = jnp.array(np.load("uhf.npz")["mo_coeff"])
-            if options["ad_mode"] == "nuc_grad":
-                trial = wavefunctions.uhf_orthoAO(
-                    norb, nelec_sp, dm0=jnp.array(np.load("Integral_der.npz")["dm"])
-                )
 
     if rank == 0:
         print(f"# norb: {norb}")

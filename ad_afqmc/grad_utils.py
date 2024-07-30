@@ -111,11 +111,6 @@ def FD_integrals_chol(mf, dR=1e-5, chol_cut=1e-5):
             h1_der_array[i, j] = h1_der
             h2_der_array[i, j] = h2_der
     h0_der = pyscf.grad.rhf.grad_nuc(mol)
-    # X = get_transformation_matrix(mf.get_ovlp())
-    # X_inv = np.linalg.inv(X)
-    # c_ao = X_inv @ mf.mo_coeff
-    # c_ao = np.linalg.inv(basis0) @ mf.mo_coeff
-    # dm0 = mf.make_rdm1(c_ao, mf.mo_occ)
     dm0 = basis0.T @ mf.get_ovlp() @ mf.make_rdm1() @ mf.get_ovlp() @ basis0
     np.savez(
         "Integral_der.npz",
@@ -184,11 +179,7 @@ def FD_integrals(mf, dR=0.00001):
             h1_der_array[i, j] = h1_der
             h2_der_array[i, j] = h2_der
     h0_der = pyscf.grad.rhf.grad_nuc(mol)
-    # X = get_transformation_matrix(mf.get_ovlp())
-    # X_inv = np.linalg.inv(X)
-    # c_ao = X_inv @ mf.mo_coeff
-    # c_ao = np.linalg.inv(basis0) @ mf.mo_coeff
-    # dm0 = mf.make_rdm1(c_ao, mf.mo_occ)
+
     if isinstance(mf, scf.uhf.UHF):
         dm0 = [
             basis0.T @ mf.get_ovlp() @ mf.make_rdm1()[0] @ mf.get_ovlp() @ basis0,
@@ -207,14 +198,7 @@ def FD_integrals(mf, dR=0.00001):
 
 def write_integrals_lowdins(mf):
     mol = mf.mol
-    # X =  get_transformation_matrix(mf.get_ovlp())
-    # basis0 = X.copy()
-    # X_inv = np.linalg.inv(X)
-    # c_ao = X_inv @ mf.mo_coeff
-    # dm0 =  mf.make_rdm1(c_ao, mf.mo_occ)
-
     basis0 = np.array(fractional_matrix_power(mf.get_ovlp(), -0.5), dtype="float64")
-    # dm0 = basis0.T @ mf.get_ovlp() @ mf.make_rdm1()@ mf.get_ovlp() @ basis0
     X = basis0.copy()
     X_inv = np.linalg.inv(X)
     c_ao = X_inv @ mf.mo_coeff
@@ -222,25 +206,12 @@ def write_integrals_lowdins(mf):
         c_ao = [X_inv @ mf.mo_coeff[0], X_inv @ mf.mo_coeff[1]]
     elif isinstance(mf, scf.rhf.RHF):
         c_ao = X_inv @ mf.mo_coeff
-    # basis0 = c_ao
-    # dm0 =  mf.make_rdm1(c_ao, mf.mo_occ)
-
     h1 = np.array(basis0.T @ mf.get_hcore() @ basis0, dtype="float64")
 
     df0 = df.incore.cholesky_eri(mol, auxbasis=mf.auxbasis)  # ,aosym='s1')
     df0 = lib.unpack_tril(df0)
-    chol1 = _ao2mo(
-        df0, basis0
-    )  # pyscf_interface.ao2mo_chol_copy(df0,mf.mo_coeff).reshape(df0.shape[0],mol.nao,mol.nao)
+    chol1 = _ao2mo(df0, basis0)
 
-    # #df0 = pyscf_interface.chunked_cholesky(mol,max_error = chol_cut)
-    # mat = ao2mo.kernel(mol,basis0,compact=False)
-    # df0 = pyscf_interface.modified_cholesky(mat,max_error = chol_cut)
-    # chol1 = df0.reshape(df0.shape[0],mol.nao,mol.nao)[:85,:,:]
-    # #chol1 = _ao2mo(chol1,basis0)
-
-    print(chol1.shape)
-    # pyscf_interface.prep_afqmc(mf, chol_cut=chol_cut)#, integrals=integrals)
     h1e = h1.copy()
     chol = chol1.copy()
     nbasis = h1e.shape[-1]
@@ -268,9 +239,12 @@ def write_integrals_lowdins(mf):
         enuc,
         ms=mol.spin,
         filename="FCIDUMP_chol",
-    )  # ,mo_coeffs=[basis0,basis0])
-    print("nchol:", chol.shape[0])
-    print("nelec:", sum(nelec))
+    )
+
+
+def prep_afqmc_nuc_grad(mf, dR=1e-5):
+    FD_integrals(mf, dR=dR)
+    write_integrals_lowdins(mf)
 
 
 def round_to_1_sig_fig(num):
@@ -365,13 +339,6 @@ def print_xyz(mol):
     # print(num_atoms)
     for symbol, coord in zip(atom_symbols, atom_coords):
         print(f"{symbol} {coord[0]:.6f} {coord[1]:.6f} {coord[2]:.6f}")
-
-
-# def reject_outliers(data, m=10.0):
-#    d = np.abs(data - np.median(data))
-#    mdev = np.median(d)
-#    s = d / mdev if mdev else 0.0
-#    return data[s < m], s < m
 
 
 def reject_outliers(data, m=10.0):
@@ -489,18 +456,12 @@ def calculate_nuc_gradients(
     avg = np.zeros((natm, 3))
     for i in range(natm):
         for j in range(3):
-            # import pdb;pdb.set_trace()
             data, mask = reject_outliers(gradients[:, i, j], m=10)
-            # print(gradients[:,i,j][~mask])
-            # import pdb;pdb.set_trace()
             if np.sum(mask == False):
                 print(f"({i},{j}) Outliers removed: {np.sum(mask == False)}")
-                # print(gradients[:,i,j][~mask])
             grad_avg, grad_err = stat_utils.blocking_analysis(
                 weights[mask], data, neql=0, printQ=printQ, writeBlockedQ=False
             )
-            # import pdb;pdb.set_trace()
-            # grad_avg, grad_err = stat_utils.blocking_analysis(weights,gradients[:,i,j],neql=0,printQ=printQ,writeBlockedQ=False)
             if grad_avg is None:
                 print(f"({i},{j}) Couldnt find average estimate")
                 grad_avg = 0.0
@@ -527,8 +488,6 @@ def calculate_nuc_gradients(
         print(error)
         print("----------------------------------------------")
     return avg, error
-
-    # import pdb;pdb.set_trace()
 
 
 def append_to_array(filename, array_data1, array_data2, array_data3):
