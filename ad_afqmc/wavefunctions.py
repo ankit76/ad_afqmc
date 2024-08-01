@@ -1508,3 +1508,80 @@ class CISD_THC(wave_function_auto_restricted):
 
     def __hash__(self):
         return hash((self.norb, self.nelec, 2, self.eps))
+
+
+@dataclass
+class UCISD(wave_function_auto_unrestricted):
+    """This class contains functions for the CISD wavefunction
+    |0> + c(ia) |ia> + c(ia jb) |ia jb>
+
+    . The wave_data need to store the coefficient C(ia) and C(ia jb)
+    """
+
+    norb: int
+    nelec: Tuple[int, int]
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+
+
+    @partial(jit, static_argnums=0)
+    def calc_green(
+        self, 
+        walker_up: jnp.ndarray,
+        walker_dn: jnp.ndarray
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        
+        green_up = (
+            walker_up.dot(
+                jnp.linalg.inv(walker_up[:walker_up.shape[1],:]))
+            ).T
+        green_dn = (
+            walker_up.dot(
+                jnp.linalg.inv(walker_up[:walker_dn.shape[1],:]))
+            ).T
+        return [green_up, green_dn]
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap(self,walker_up: jnp.ndarray, walker_dn: jnp.ndarray, wave_data: dict) -> complex:
+
+        noccA, ci1A, ci2AA = walker_up.shape[1], wave_data["ci1A"], wave_data["ci2AA"]
+        noccB, ci1B, ci2BB = walker_dn.shape[1], wave_data["ci1A"], wave_data["ci2BB"]
+        ci2AB = wave_data["ci2AB"]
+
+        GFA, GFB = self.calc_green(walker_up, walker_dn)
+
+        o0 = jnp.linalg.det(walker_up[: noccA, :]) *\
+             jnp.linalg.det(walker_dn[: noccB, :]) 
+
+        o1 = jnp.einsum('ia,ia', ci1A, GFA[:,noccA:]) +\
+             jnp.einsum('ia,ia', ci1A, GFA[:,noccB:])
+
+        ##AA        
+        o2  = 0.25*jnp.einsum('iajb, ia, jb', ci2AA, GFA[:,noccA:], GFA[:,noccA:])
+        o2 -= 0.25*jnp.einsum('iajb, ib, ja', ci2AA, GFA[:,noccA:], GFA[:,noccA:])
+
+        ##BB
+        o2 += 0.25*jnp.einsum('iajb, ia, jb', ci2BB, GFB[:,noccB:], GFB[:,noccB:])
+        o2 -= 0.25*jnp.einsum('iajb, ib, ja', ci2BB, GFB[:,noccB:], GFB[:,noccB:])
+
+        ##AB
+        o2 += jnp.einsum('iajb, ia, jb', ci2AB, GFA[:,noccA:], GFB[:,noccB:])
+
+        return (1. + o1 + o2) * o0
+
+
+
+    @partial(jit, static_argnums=0)
+    def get_rdm1(self, wave_data: dict) -> jnp.ndarray:
+        """Spatial 1RDM of the reference det"""
+        rdm1 = 2 * np.eye(self.norb, self.nelec).dot(np.eye(self.norb, self.nelec).T)
+        return rdm1
+
+    # not implemented
+    @partial(jit, static_argnums=0)
+    def optimize_orbs(self, ham_data: dict, wave_data: dict) -> dict:
+        return wave_data
+
+    def __hash__(self):
+        return hash((self.norb, self.nelec, 2, self.eps))
+
+
