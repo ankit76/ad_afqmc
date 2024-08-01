@@ -1485,10 +1485,11 @@ class CISD_THC(wave_function_auto_restricted):
         #A = jnp.einsum('ia,Pi,Pa->P', GF[:,nocc:], Xocc, Xvirt)
         #o2 = 2*jnp.einsum('P,PQ,Q', A, VKL, A) 
 
-        A = jnp.einsum('Pa,Pa->P', (Xocc @ GF[:,nocc:]), Xvirt) 
-        o2 = 2* (A @ VKL).dot(A)
+        gv = GF[:, nocc:] @ Xvirt.T
+        A = jnp.einsum("Pi,iP->P", Xocc, gv)
+        o2 = 2 * (A @ VKL).dot(A)
 
-        B = ((Xocc @ GF[:,nocc:]) @ Xvirt.T)
+        B = Xocc @ gv
         o2 -= jnp.sum(B * B.T * VKL)
 
         return (1. + 2*o1 + o2) * o0
