@@ -27,8 +27,8 @@ ham_data["h0"] = np.random.rand(
 ham_data["h1"] = jnp.array(np.random.rand(norb, norb))
 ham_data["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
 ham_data["ene0"] = 0.0
-ham_data = ham_handler.prop_ham(ham_data, prop_handler.dt, trial)
-ham_data = ham_handler.rot_ham(ham_data)
+ham_data = ham_handler.prop_ham(ham_data, prop_handler.dt, trial, wave_data)
+ham_data = ham_handler.rot_ham(ham_data, wave_data)
 
 prop_data = prop_handler.init_prop_data(trial, wave_data, ham_handler, ham_data)
 prop_data["key"] = random.PRNGKey(seed)

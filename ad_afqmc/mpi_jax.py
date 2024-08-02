@@ -54,7 +54,7 @@ def _prep_afqmc(options=None):
     options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
     options["n_eql"] = options.get("n_eql", 1)
     options["ad_mode"] = options.get("ad_mode", None)
-    assert options["ad_mode"] in [None, "forward", "reverse", "2rdm"]
+    assert options["ad_mode"] in [None, "forward", "reverse", "2rdm", "nuc_grad"]
     options["orbital_rotation"] = options.get("orbital_rotation", True)
     options["do_sr"] = options.get("do_sr", True)
     options["walker_type"] = options.get("walker_type", "rhf")
@@ -88,6 +88,7 @@ def _prep_afqmc(options=None):
     ham_data["h0"] = h0
     ham_data["chol"] = chol.reshape(nchol, -1)
     ham_data["ene0"] = options["ene0"]
+    init_walkers = None
     if options["walker_type"] == "rhf":
         ham_data["h1"] = h1
         if options["symmetry"]:
@@ -106,6 +107,12 @@ def _prep_afqmc(options=None):
         )
         trial = wavefunctions.rhf(norb, nelec // 2)
         wave_data = jnp.eye(norb)
+        if options["ad_mode"] == "nuc_grad":
+            wave_data = jnp.array(np.load("rhf.npz")["mo_coeff"])
+            init_walkers = jnp.stack(
+                [wave_data[:, : nelec // 2] + 0.0j for _ in range(options["n_walkers"])]
+            )
+
     elif options["walker_type"] == "uhf":
         ham_data["h1"] = jnp.array([h1, h1])
         if options["symmetry"]:
@@ -177,19 +184,23 @@ def _prep_afqmc(options=None):
                 print(f"# {op}: {options[op]}")
         print("#")
 
-    return ham_data, ham, prop, trial, wave_data, observable, options
+    return ham_data, ham, prop, trial, wave_data, observable, options, init_walkers
 
 
 if __name__ == "__main__":
-    ham_data, ham, prop, trial, wave_data, observable, options = _prep_afqmc()
+    ham_data, ham, prop, trial, wave_data, observable, options, init_walkers = (
+        _prep_afqmc()
+    )
     init = time.time()
     comm.Barrier()
     e_afqmc, err_afqmc = 0.0, 0.0
+    if options["ad_mode"] == "nuc_grad":
+        os.system(f"rm en_der_afqmc_{comm.rank}.npz")
     if options["free_projection"]:
         driver.fp_afqmc(ham_data, ham, prop, trial, wave_data, observable, options)
     else:
         e_afqmc, err_afqmc = driver.afqmc(
-            ham_data, ham, prop, trial, wave_data, observable, options
+            ham_data, ham, prop, trial, wave_data, observable, options, init_walkers
         )
     comm.Barrier()
     end = time.time()

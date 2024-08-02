@@ -39,18 +39,22 @@ class hamiltonian:
     @partial(jit, static_argnums=(0,))
     def rot_ham(self, ham_data, wave_data=None):
         ham_data["h1"] = (ham_data["h1"] + ham_data["h1"].T) / 2.0
-        ham_data["rot_h1"] = ham_data["h1"][: self.nelec, :].copy()
+        ham_data["rot_h1"] = (wave_data[:, : self.nelec].T.dot(ham_data["h1"])).copy()
         ham_data["rot_chol"] = (
-            ham_data["chol"]
-            .reshape(-1, self.norb, self.norb)[:, : self.nelec, :]
-            .copy()
-        )
+            jnp.einsum(
+                "pi,gij->gpj",
+                wave_data[:, : self.nelec].T,
+                ham_data["chol"].reshape(-1, self.norb, self.norb),
+            )
+        ).copy()
         return ham_data
 
     @partial(jit, static_argnums=(0, 3))
     def prop_ham(self, ham_data, dt, _trial, wave_data=None):
-        ham_data["mf_shifts"] = 2.0j * vmap(
-            lambda x: jnp.sum(jnp.diag(x.reshape(self.norb, self.norb))[: self.nelec])
+        trial = wave_data[:, : self.nelec]
+        dm = 2.0 * trial.dot(trial.T)
+        ham_data["mf_shifts"] = 1.0j * vmap(
+            lambda x: jnp.sum(x.reshape(self.norb, self.norb) * dm)
         )(ham_data["chol"])
         ham_data["mf_shifts_fp"] = ham_data["mf_shifts"] / 2.0 / self.nelec
         ham_data["h0_prop"] = (
