@@ -65,7 +65,7 @@ def _prep_afqmc(options=None):
     options["trial"] = options.get("trial", None)
     if options["trial"] is None:
         if rank == 0:
-            print(f"# No trial specified, needs to be built separately.")
+            print(f"# No trial specified in options.")
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
 
@@ -92,7 +92,7 @@ def _prep_afqmc(options=None):
     ham_data["ene0"] = options["ene0"]
 
     wave_data = {}
-    mo_coeff = jnp.array(np.load("wave_data.npz")["mo_coeff"])
+    mo_coeff = jnp.array(np.load("mo_coeff.npz")["mo_coeff"])
     wave_data["rdm1"] = jnp.array(
         [
             mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[1]].T,
@@ -119,7 +119,18 @@ def _prep_afqmc(options=None):
         wave_data["ci_coeffs_dets"] = ci_coeffs_dets
         trial = wavefunctions.noci(norb, nelec_sp, ci_coeffs_dets[0].size)
     else:
-        trial = None
+        try:
+            with open("trial.pkl", "rb") as f:
+                [trial, trial_wave_data] = pickle.load(f)
+            wave_data.update(trial_wave_data)
+            if rank == 0:
+                print(f"# Read trial of type {type(trial).__name__} from trial.pkl.")
+        except:
+            if rank == 0:
+                print(
+                    "# trial.pkl not found, make sure to construct the trial separately."
+                )
+            trial = None
 
     if options["walker_type"] == "rhf":
         if options["symmetry"]:

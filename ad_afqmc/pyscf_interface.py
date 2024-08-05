@@ -166,7 +166,7 @@ def prep_afqmc(
         trial_coeffs[0] = uhfCoeffs[:, :nbasis]
         trial_coeffs[1] = uhfCoeffs[:, nbasis:]
         # np.savetxt("uhf.txt", uhfCoeffs)
-        np.savez("wave_data.npz", mo_coeff=trial_coeffs)
+        np.savez("mo_coeff.npz", mo_coeff=trial_coeffs)
 
     elif isinstance(mf, scf.rhf.RHF):
         q, _ = np.linalg.qr(
@@ -176,7 +176,7 @@ def prep_afqmc(
         )
         trial_coeffs[0] = q
         trial_coeffs[1] = q
-        np.savez("wave_data.npz", mo_coeff=trial_coeffs)
+        np.savez("mo_coeff.npz", mo_coeff=trial_coeffs)
 
     write_dqmc(
         h1e,

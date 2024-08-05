@@ -1,7 +1,4 @@
 import os
-import subprocess
-import time
-from subprocess import PIPE
 
 import numpy as np
 
@@ -17,8 +14,6 @@ from jax import config
 
 config.update("jax_enable_x64", True)
 config.update("jax_platform_name", "cpu")
-
-# from ad_afqmc import propagation, sampler, stat_utils
 
 print = partial(print, flush=True)
 
@@ -39,9 +34,6 @@ def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
     os.system(
         f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script}"
     )
-    # os.system("mpirun hostname")
-    # p = subprocess.run(["mpirun", "python", f"{script}"], stdout=PIPE, stderr=PIPE)
-    # print(p.stderr)
     try:
         ene_err = np.loadtxt("ene_err.txt")
     except:
