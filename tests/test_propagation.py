@@ -27,6 +27,7 @@ ham_data["h0"] = np.random.rand(
     1,
 )[0]
 ham_data["h1"] = jnp.array(np.random.rand(norb, norb))
+ham_data["h1"] = jnp.array([ham_data["h1"], ham_data["h1"]])
 ham_data["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
 ham_data["ene0"] = 0.0
 ham_data = ham_handler.build_propagation_intermediates(

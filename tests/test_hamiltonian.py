@@ -19,6 +19,7 @@ ham_data["h0"] = np.random.rand(
     1,
 )[0]
 ham_data["h1"] = jnp.array(np.random.rand(norb, norb))
+ham_data["h1"] = jnp.array([ham_data["h1"], ham_data["h1"]])
 ham_data["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
 ham_data["ene0"] = 0.0
 wave_data = {}
@@ -76,7 +77,7 @@ ham_data_g["ene0"] = 0.0
 
 def test_rot_orbs():
     ham_rot = ham_handler.rotate_orbs(ham_data, mo_coeff)
-    assert ham_rot["h1"].shape == (norb, norb)
+    assert ham_rot["h1"].shape == (2, norb, norb)
     assert ham_rot["chol"].shape == (nchol, norb * norb)
 
 

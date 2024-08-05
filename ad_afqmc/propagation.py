@@ -11,10 +11,14 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Optional, Sequence
 
-# os.environ['JAX_DISABLE_JIT'] = 'True'
+from jax import config
+
+config.update("jax_enable_x64", True)
+config.update("jax_platform_name", "cpu")
+
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import jit, lax, random, vmap
+from jax import jit, jvp, lax, random, vmap
 
 from ad_afqmc import linalg_utils, sr, wavefunctions
 from ad_afqmc.wavefunctions import wave_function

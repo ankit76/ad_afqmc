@@ -2,14 +2,19 @@ import os
 
 import numpy as np
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
-# os.environ['JAX_DISABLE_JIT'] = 'True'
+
+from jax import config
+
+config.update("jax_enable_x64", True)
+config.update("jax_platform_name", "cpu")
+
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import config, jit, vmap
 
 
 # this uses numpy but is only called once after each block

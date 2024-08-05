@@ -10,10 +10,13 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Sequence
 
-# os.environ['JAX_DISABLE_JIT'] = 'True'
+from jax import config
+
+config.update("jax_enable_x64", True)
+config.update("jax_platform_name", "cpu")
+
 import jax.numpy as jnp
-import jax.scipy as jsp
-from jax import jit, vmap
+from jax import config, jit, vmap
 
 from ad_afqmc.propagation import propagator
 from ad_afqmc.wavefunctions import wave_function
@@ -43,7 +46,12 @@ class hamiltonian:
         Returns:
             dict: Rotated Hamiltonian data.
         """
-        ham_data["h1"] = mo_coeff.T.dot(ham_data["h1"]).dot(mo_coeff)
+        ham_data["h1"] = (
+            ham_data["h1"].at[0].set(mo_coeff.T.dot(ham_data["h1"][0]).dot(mo_coeff))
+        )
+        ham_data["h1"] = (
+            ham_data["h1"].at[1].set(mo_coeff.T.dot(ham_data["h1"][1]).dot(mo_coeff))
+        )
         ham_data["chol"] = jnp.einsum(
             "gij,jp->gip", ham_data["chol"].reshape(-1, self.norb, self.norb), mo_coeff
         )

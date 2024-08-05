@@ -12,13 +12,19 @@ from dataclasses import dataclass
 from functools import partial, singledispatchmethod
 from typing import Any, List, Sequence, Tuple
 
+from jax import config
+
+config.update("jax_enable_x64", True)
+config.update("jax_platform_name", "cpu")
+
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import jit, jvp, lax, vjp, vmap
+from jax import config, jit, jvp, lax, vjp, vmap
 
 from ad_afqmc import linalg_utils
 
 print = partial(print, flush=True)
+config.update("jax_enable_x64", True)
 
 
 class wave_function(ABC):
@@ -1689,4 +1695,153 @@ class multislater(wave_function_auto):
         return jnp.array([rdm_up, rdm_dn])
 
     def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class CISD(wave_function_auto):
+    """This class contains functions for the CISD wavefunction
+    |0> + c(ia) |ia> + c(ia jb) |ia jb>
+
+    . The wave_data need to store the coefficient C(ia) and C(ia jb)
+    """
+
+    norb: int
+    nelec: Tuple[int, int]
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+
+    @partial(jit, static_argnums=0)
+    def _calc_green_restricted(self, walker: jnp.ndarray) -> jnp.ndarray:
+        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_restricted(self, walker: jnp.ndarray, wave_data: dict) -> complex:
+        nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
+        GF = self._calc_green_restricted(walker)
+        o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
+        o1 = jnp.einsum("ia,ia", ci1, GF[:, nocc:])
+        o2 = 2 * jnp.einsum(
+            "iajb, ia, jb", ci2, GF[:, nocc:], GF[:, nocc:]
+        ) - jnp.einsum("iajb, ib, ja", ci2, GF[:, nocc:], GF[:, nocc:])
+        return (1.0 + 2 * o1 + o2) * o0
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class UCISD(wave_function_auto):
+    """This class contains functions for the CISD wavefunction
+    |0> + c(ia) |ia> + c(ia jb) |ia jb>
+
+    . The wave_data need to store the coefficient C(ia) and C(ia jb)
+    """
+
+    norb: int
+    nelec: Tuple[int, int]
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+
+    @partial(jit, static_argnums=0)
+    def _calc_green_restricted(self, walker: jnp.ndarray) -> jnp.ndarray:
+        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_restricted(self, walker: jnp.ndarray, wave_data: dict) -> complex:
+        nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
+        GF = self._calc_green_restricted(walker)
+        o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
+        o1 = jnp.einsum("ia,ia", ci1, GF[:, nocc:])
+        o2 = 2 * jnp.einsum(
+            "iajb, ia, jb", ci2, GF[:, nocc:], GF[:, nocc:]
+        ) - jnp.einsum("iajb, ib, ja", ci2, GF[:, nocc:], GF[:, nocc:])
+        return (1.0 + 2 * o1 + o2) * o0
+
+    @partial(jit, static_argnums=0)
+    def _calc_green(
+        self, walker_up: jnp.ndarray, walker_dn: jnp.ndarray
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+
+        green_up = (walker_up.dot(jnp.linalg.inv(walker_up[: walker_up.shape[1], :]))).T
+        green_dn = (walker_up.dot(jnp.linalg.inv(walker_up[: walker_dn.shape[1], :]))).T
+        return [green_up, green_dn]
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap(
+        self, walker_up: jnp.ndarray, walker_dn: jnp.ndarray, wave_data: dict
+    ) -> complex:
+
+        noccA, ci1A, ci2AA = walker_up.shape[1], wave_data["ci1A"], wave_data["ci2AA"]
+        noccB, ci1B, ci2BB = walker_dn.shape[1], wave_data["ci1A"], wave_data["ci2BB"]
+        ci2AB = wave_data["ci2AB"]
+
+        GFA, GFB = self._calc_green(walker_up, walker_dn)
+
+        o0 = jnp.linalg.det(walker_up[:noccA, :]) * jnp.linalg.det(walker_dn[:noccB, :])
+
+        o1 = jnp.einsum("ia,ia", ci1A, GFA[:, noccA:]) + jnp.einsum(
+            "ia,ia", ci1A, GFA[:, noccB:]
+        )
+
+        ##AA
+        o2 = 0.25 * jnp.einsum("iajb, ia, jb", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
+        o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
+
+        ##BB
+        o2 += 0.25 * jnp.einsum("iajb, ia, jb", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
+        o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
+
+        ##AB
+        o2 += jnp.einsum("iajb, ia, jb", ci2AB, GFA[:, noccA:], GFB[:, noccB:])
+
+        return (1.0 + o1 + o2) * o0
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class CISD_THC(wave_function_auto):
+    """This class contains functions for the CISD wavefunction
+    |0> + c(ia) |ia> + c(ia jb) |ia jb>
+
+    . The wave_data need to store the coefficient C(ia) and C(ia jb)  in the THC format
+    i.e. C(i,a,j,b) = X1(P,i) X2(P,a) V(P,Q) X1(P,j) X2(P,b)
+    """
+
+    norb: int
+    nelec: int
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+
+    @partial(jit, static_argnums=0)
+    def _calc_green_restricted(self, walker: jnp.ndarray) -> jnp.ndarray:
+        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_restricted(self, walker: jnp.ndarray, wave_data: dict) -> complex:
+        nocc, ci1, Xocc, Xvirt, VKL = (
+            walker.shape[1],
+            wave_data["ci1"],
+            wave_data["Xocc"],
+            wave_data["Xvirt"],
+            wave_data["VKL"],
+        )
+        GF = self._calc_green_restricted(walker)
+
+        o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
+
+        o1 = jnp.einsum("ia,ia", ci1, GF[:, nocc:])
+
+        # A = jnp.einsum('ia,Pi,Pa->P', GF[:,nocc:], Xocc, Xvirt)
+        # o2 = 2*jnp.einsum('P,PQ,Q', A, VKL, A)
+
+        gv = GF[:, nocc:] @ Xvirt.T
+        A = jnp.einsum("Pi,iP->P", Xocc, gv)
+        o2 = 2 * (A @ VKL).dot(A)
+
+        B = Xocc @ gv
+        o2 -= jnp.sum(B * B.T * VKL)
+
+        return (1.0 + 2 * o1 + o2) * o0
+
+    def __hash__(self):
         return hash(tuple(self.__dict__.values()))

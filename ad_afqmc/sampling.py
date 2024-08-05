@@ -9,6 +9,11 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Sequence, Tuple
 
+from jax import config
+
+config.update("jax_enable_x64", True)
+config.update("jax_platform_name", "cpu")
+
 import jax.numpy as jnp
 from jax import checkpoint, jit, lax, random
 

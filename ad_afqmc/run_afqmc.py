@@ -5,17 +5,18 @@ from subprocess import PIPE
 
 import numpy as np
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 import pickle
 from functools import partial
 
-# os.environ['JAX_DISABLE_JIT'] = 'True'
-import jax.numpy as jnp
-from jax import dtypes, jvp, random, vjp
+from jax import config
+
+config.update("jax_enable_x64", True)
+config.update("jax_platform_name", "cpu")
 
 # from ad_afqmc import propagation, sampler, stat_utils
 

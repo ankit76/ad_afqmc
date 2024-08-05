@@ -13,7 +13,11 @@ from copy import deepcopy
 from functools import partial
 from typing import Optional, Sequence
 
-# os.environ['JAX_DISABLE_JIT'] = 'True'
+from jax import config
+
+config.update("jax_enable_x64", True)
+config.update("jax_platform_name", "cpu")
+
 import jax.numpy as jnp
 from jax import dtypes, jvp, random, vjp
 from mpi4py import MPI
@@ -21,6 +25,7 @@ from mpi4py import MPI
 from ad_afqmc import hamiltonian, propagation, sampling, stat_utils, wavefunctions
 
 print = partial(print, flush=True)
+
 
 comm = MPI.COMM_WORLD
 size = comm.Get_size()
