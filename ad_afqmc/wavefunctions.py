@@ -1434,7 +1434,7 @@ class wave_function_auto(wave_function):
 
         h0, h1, chol, v0 = (
             ham_data["h0"],
-            ham_data["h1"],
+            (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0,
             ham_data["chol"].reshape(-1, self.norb, self.norb),
             ham_data["normal_ordering_term"],
         )

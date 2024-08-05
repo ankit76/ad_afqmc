@@ -49,9 +49,10 @@ ci2 = mycc.t2 + np.einsum("ia,jb->ijab", mycc.t1, mycc.t1)
 ci2 = ci2.transpose(0, 2, 1, 3)
 ci1 = mycc.t1
 
-trial = wavefunctions.CISD(sum(ci1.shape), ci1.shape[0])
+trial = wavefunctions.CISD(sum(ci1.shape), (ci1.shape[0], ci1.shape[0]))
 
-wave_data = {"ci1": 1.0 * ci1, "ci2": 1.0 * ci2}
+wave_data["ci1"] = ci1
+wave_data["ci2"] = ci2
 
 e_afqmc, err_afqmc = driver.afqmc(
     ham_data,

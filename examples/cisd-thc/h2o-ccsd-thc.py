@@ -62,14 +62,12 @@ Xocc, Xvirt = pyscf_interface.getCollocationMatrices(
 
 
 VKL = pyscf_interface.solveLS_twoSided(ci2, Xocc, Xvirt)
-trial = wavefunctions.CISD_THC(sum(ci1.shape), ci1.shape[0])
+trial = wavefunctions.CISD_THC(sum(ci1.shape), (ci1.shape[0], ci1.shape[0]))
 
-wave_data = {
-    "ci1": 1.0 * ci1,
-    "Xocc": 1.0 * Xocc,
-    "Xvirt": 1.0 * Xvirt,
-    "VKL": 1.0 * VKL,
-}
+wave_data["ci1"] = ci1
+wave_data["Xocc"] = Xocc
+wave_data["Xvirt"] = Xvirt
+wave_data["VKL"] = VKL
 
 e_afqmc, err_afqmc = driver.afqmc(
     ham_data,

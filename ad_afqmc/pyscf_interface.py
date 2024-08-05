@@ -3,10 +3,11 @@ import time
 from functools import partial
 from typing import Any, Optional, Sequence, Tuple, Union
 
-import h5py, scipy
-import numpy as np
-from pyscf import __config__, ao2mo, df, lib, mcscf, scf, dft
+import h5py
 import jax.numpy as jnp
+import numpy as np
+import scipy
+from pyscf import __config__, ao2mo, df, dft, lib, mcscf, scf
 
 print = partial(print, flush=True)
 
@@ -165,7 +166,7 @@ def prep_afqmc(
         trial_coeffs[0] = uhfCoeffs[:, :nbasis]
         trial_coeffs[1] = uhfCoeffs[:, nbasis:]
         # np.savetxt("uhf.txt", uhfCoeffs)
-        np.savez("uhf.npz", mo_coeff=trial_coeffs)
+        np.savez("wave_data.npz", mo_coeff=trial_coeffs)
 
     elif isinstance(mf, scf.rhf.RHF):
         q, _ = np.linalg.qr(
@@ -175,7 +176,7 @@ def prep_afqmc(
         )
         trial_coeffs[0] = q
         trial_coeffs[1] = q
-        np.savez("rhf.npz", mo_coeff=q)
+        np.savez("wave_data.npz", mo_coeff=trial_coeffs)
 
     write_dqmc(
         h1e,
@@ -190,62 +191,65 @@ def prep_afqmc(
     )
 
 
-def getCollocationMatrices(mol, grid_level = 0, thc_eps = 1.e-4, mo1 = None, mo2 = None, alpha = 0.25):
+def getCollocationMatrices(
+    mol, grid_level=0, thc_eps=1.0e-4, mo1=None, mo2=None, alpha=0.25
+):
     """Return the matrices X1 and X2 the equation
     Z(ab,r) = X1(a,P) X2(b,P) Xi(P,r)
     can be satisfied well. Note that in this code we do not evaluate Xi, for that call the least square solver.
-    
+
     The two matrices X1 and X2 are the same when the space spanned by {a} and {b} is the same, e.g. all AOs.
-    
+
     Args:
         mol: pysf Mol object
         grid_level (int, optional): The size of the Becke grid used in these calculations. Defaults to 0.
         thc_eps (double, optional): The threshold used in the THC calculation, the lower it is the more accurate the approximation. Defaults to 1.e-4.
-        mo1 (array, optional): The orbital coefficient in terms of AOs mo1(ao, mo) 
+        mo1 (array, optional): The orbital coefficient in terms of AOs mo1(ao, mo)
                 Defaults to None, so this assumes mo1 is identity and all AOs are fit
                 Other options might be all mos, all occupied, all virtual etc.
-        mo2 (array, optional): The orbital coefficient in terms of AOs mo2(ao, mo) 
+        mo2 (array, optional): The orbital coefficient in terms of AOs mo2(ao, mo)
                 Defaults to None, so this assumes mo2 is identity and all AOs are fit
                 Other options might be all mos, all occupied, all virtual etc.
         alpha (double, optional): the exponent on the weight in the collocation matrix
             X(a,P) = phi_a(r_P) w_p^\alpha
     """
-    
+
     grids = dft.gen_grid.Grids(mol)
     grids.level = 0
     grids.build()
 
     coords = grids.coords
     weights = grids.weights
-    ao = mol.eval_gto('GTOval_sph', coords)   ##aos on coords
-    X1 = np.einsum('ri,r->ri', (ao @ mo1), abs(weights)**alpha)    ##mos on coords
-    X2 = np.einsum('ri,r->ri', (ao @ mo2), abs(weights)**alpha)    ##mos on coords
+    ao = mol.eval_gto("GTOval_sph", coords)  ##aos on coords
+    X1 = np.einsum("ri,r->ri", (ao @ mo1), abs(weights) ** alpha)  ##mos on coords
+    X2 = np.einsum("ri,r->ri", (ao @ mo2), abs(weights) ** alpha)  ##mos on coords
 
     P = doISDF(X1, X2, thc_eps)
     return X1[P], X2[P]
 
-def doISDF(X1 : np.ndarray, X2 : np.ndarray, thc_eps = 1.e-4):
+
+def doISDF(X1: np.ndarray, X2: np.ndarray, thc_eps=1.0e-4):
     """Return the pivot points P such that the equation
     Z(ab,r) = X1(a,P) X2(b,P) Xi(P,r)
-    can be satisfied to high accuracy. 
+    can be satisfied to high accuracy.
 
     Args:
         X1 (np.ndarray): The first matrix
         X2 (np.ndarray): The second matrix
         thc_eps (_type_, optional): The threshold up to which the pivot points are retained. Defaults to 1.e-4.
     """
-    
-    S = np.einsum('ri,si->rs', X1, X1) * np.einsum('ri,si->rs', X2, X2)
+
+    S = np.einsum("ri,si->rs", X1, X1) * np.einsum("ri,si->rs", X2, X2)
     R, P, rankc, info = scipy.linalg.lapack.dpstrf(S, thc_eps**2)
     P = P[:rankc] - 1
     return P
-    
-    
+
+
 def solveLS(T, X1, X2):
-    """ T is a three index quantity and we want to obtain Xi such that
+    """T is a three index quantity and we want to obtain Xi such that
     T(a,b,M) = X1(P,a) X2(P,b) Xi(P, M)
     is satisfied approximately using least square minimization.
-    
+
     Args:
         T (array): The input three index quantity
         X1 (array): The two index collocation array, the size of the second index should be equal to the size of first index in T
@@ -255,21 +259,22 @@ def solveLS(T, X1, X2):
     Returns:
         Xi (array): The matrix that satisfies the equation above
     """
-    
-    S = np.einsum('Pa,Qa->PQ', X1, X1) * np.einsum('Pb,Qb->PQ', X2, X2)
-    X12 = jnp.einsum('Pa,Pb->abP', X1, X2)
-    Stilde = jnp.einsum('abP, abM->PM', X12, T)
-    
+
+    S = np.einsum("Pa,Qa->PQ", X1, X1) * np.einsum("Pb,Qb->PQ", X2, X2)
+    X12 = jnp.einsum("Pa,Pb->abP", X1, X2)
+    Stilde = jnp.einsum("abP, abM->PM", X12, T)
+
     L = scipy.linalg.cholesky(S, lower=True)
     Xi = scipy.linalg.cho_solve((L, True), Stilde, overwrite_b=True)
 
     return Xi
 
+
 def solveLS_twoSided(T, X1, X2):
-    """ T is a four index quantity and we want to obtain V such that
+    """T is a four index quantity and we want to obtain V such that
     T(a,b,c,d) = X1(P,a) X2(P,b) V(P, Q) X1(Q,c) X2(Q,d)
     is satisfied approximately using least square minimization.
-    
+
     Args:
         T (array): The input four index quantity
         X1 (array): The two index collocation array, the size of the second index should be equal to the size of first and third index in T
@@ -280,22 +285,20 @@ def solveLS_twoSided(T, X1, X2):
         V (array): The matrix that satisfies the equation above
     """
 
-    S = np.einsum('Pa,Qa->PQ', X1, X1) * np.einsum('Pb,Qb->PQ', X2, X2)
+    S = np.einsum("Pa,Qa->PQ", X1, X1) * np.einsum("Pb,Qb->PQ", X2, X2)
     L = scipy.linalg.cholesky(S, lower=True)
 
-    X12 = jnp.einsum('Pa,Pb->abP', X1, X2)
-    E = jnp.einsum('abP, abcd->Pcd', X12, T).reshape(X1.shape[0],-1)
-    
+    X12 = jnp.einsum("Pa,Pb->abP", X1, X2)
+    E = jnp.einsum("abP, abcd->Pcd", X12, T).reshape(X1.shape[0], -1)
 
     E = scipy.linalg.cho_solve((L, True), E).reshape(-1, T.shape[2], T.shape[3])
 
-    E = jnp.einsum('Pcd, cdQ->PQ', E, X12).T
+    E = jnp.einsum("Pcd, cdQ->PQ", E, X12).T
     V = scipy.linalg.cho_solve((L, True), E)
 
     ##symmetrize it
-    V = 0.5 * ( V + V.T )
+    V = 0.5 * (V + V.T)
 
-    
     return V
 
 

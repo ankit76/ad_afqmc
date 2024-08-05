@@ -92,27 +92,23 @@ def _prep_afqmc(options=None):
     ham_data["ene0"] = options["ene0"]
 
     wave_data = {}
+    mo_coeff = jnp.array(np.load("wave_data.npz")["mo_coeff"])
+    wave_data["rdm1"] = jnp.array(
+        [
+            mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[1]].T,
+            mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
+        ]
+    )
+
     if options["trial"] == "rhf":
         trial = wavefunctions.rhf(norb, nelec_sp)
-        wave_data["mo_coeff"] = jnp.array(np.load("rhf.npz")["mo_coeff"])[
-            :, : nelec_sp[0]
-        ]
-        wave_data["rdm1"] = jnp.array(
-            [wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2
-        )
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
     elif options["trial"] == "uhf":
         trial = wavefunctions.uhf(norb, nelec_sp)
-        mo_coeff = jnp.array(np.load("uhf.npz")["mo_coeff"])
         wave_data["mo_coeff"] = [
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
         ]
-        wave_data["rdm1"] = jnp.array(
-            [
-                wave_data["mo_coeff"][0] @ wave_data["mo_coeff"][0].T,
-                wave_data["mo_coeff"][1] @ wave_data["mo_coeff"][1].T,
-            ]
-        )
     elif options["trial"] == "noci":
         with open("dets.pkl", "rb") as f:
             ci_coeffs_dets = pickle.load(f)
