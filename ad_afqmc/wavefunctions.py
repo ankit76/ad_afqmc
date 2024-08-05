@@ -1749,7 +1749,7 @@ class UCISD(wave_function_auto):
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
 
         green_up = (walker_up.dot(jnp.linalg.inv(walker_up[: walker_up.shape[1], :]))).T
-        green_dn = (walker_up.dot(jnp.linalg.inv(walker_up[: walker_dn.shape[1], :]))).T
+        green_dn = (walker_dn.dot(jnp.linalg.inv(walker_dn[: walker_dn.shape[1], :]))).T
         return [green_up, green_dn]
 
     @partial(jit, static_argnums=0)
@@ -1758,7 +1758,7 @@ class UCISD(wave_function_auto):
     ) -> complex:
 
         noccA, ci1A, ci2AA = walker_up.shape[1], wave_data["ci1A"], wave_data["ci2AA"]
-        noccB, ci1B, ci2BB = walker_dn.shape[1], wave_data["ci1A"], wave_data["ci2BB"]
+        noccB, ci1B, ci2BB = walker_dn.shape[1], wave_data["ci1B"], wave_data["ci2BB"]
         ci2AB = wave_data["ci2AB"]
 
         GFA, GFB = self._calc_green(walker_up, walker_dn)
@@ -1766,11 +1766,11 @@ class UCISD(wave_function_auto):
         o0 = jnp.linalg.det(walker_up[:noccA, :]) * jnp.linalg.det(walker_dn[:noccB, :])
 
         o1 = jnp.einsum("ia,ia", ci1A, GFA[:, noccA:]) + jnp.einsum(
-            "ia,ia", ci1A, GFA[:, noccB:]
+            "ia,ia", ci1B, GFB[:, noccB:]
         )
 
         ##AA
-        o2 = 0.25 * jnp.einsum("iajb, ia, jb", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
+        o2  = 0.25 * jnp.einsum("iajb, ia, jb", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
         o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
 
         ##BB
