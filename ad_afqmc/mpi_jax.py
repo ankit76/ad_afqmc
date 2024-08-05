@@ -58,7 +58,10 @@ def _prep_afqmc(options=None):
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
-    assert options["trial"] is not None, "Trial wavefunction not specified in options."
+    if options["trial"] is None:
+        if rank == 0:
+            print(f"# No trial specified, needs to be built separately.")
+    # assert options["trial"] is not None, "Trial wavefunction not specified in options."
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
 
@@ -77,7 +80,6 @@ def _prep_afqmc(options=None):
     except:
         observable = None
 
-    ad_q = options["ad_mode"] != None
     ham = hamiltonian.hamiltonian(nmo)
     ham_data = {}
     ham_data["h0"] = h0
@@ -106,7 +108,7 @@ def _prep_afqmc(options=None):
                 wave_data["mo_coeff"][1] @ wave_data["mo_coeff"][1].T,
             ]
         )
-    else:
+    elif options["trial"] == "noci":
         with open("dets.pkl", "rb") as f:
             ci_coeffs_dets = pickle.load(f)
         ci_coeffs_dets = [
@@ -115,6 +117,8 @@ def _prep_afqmc(options=None):
         ]
         wave_data["ci_coeffs_dets"] = ci_coeffs_dets
         trial = wavefunctions.noci(norb, nelec_sp, ci_coeffs_dets[0].size)
+    else:
+        trial = None
 
     if options["walker_type"] == "rhf":
         ham_data["h1"] = h1

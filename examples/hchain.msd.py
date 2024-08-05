@@ -1,13 +1,6 @@
 from pyscf import fci, gto, scf
 
-from ad_afqmc import (
-    driver,
-    hamiltonian,
-    mpi_jax,
-    propagation,
-    pyscf_interface,
-    wavefunctions,
-)
+from ad_afqmc import driver, mpi_jax, pyscf_interface, wavefunctions
 
 r = 1.6  # 2.0
 nH = 6
@@ -35,13 +28,13 @@ options = {
     "walker_type": "rhf",
 }
 
-ham_data, ham, prop, trial, wave_data, observable, options = mpi_jax._prep_afqmc(
+ham_data, ham, prop, _, wave_data, sampler, observable, options = mpi_jax._prep_afqmc(
     options
 )
 
-trial = wavefunctions.multislater_rhf(mol.nao, mol.nelec[0], max_excitation=6)
+trial = wavefunctions.multislater(mol.nao, mol.nelec, max_excitation=6)
 state_dict = pyscf_interface.get_fci_state(ci, ndets=10)
-Acre, Ades, Bcre, Bdes, coeff = pyscf_interface.get_excitations(
+Acre, Ades, Bcre, Bdes, coeff, ref_det = pyscf_interface.get_excitations(
     state=state_dict, max_excitation=6, ndets=10
 )  # this function reads the Dice dets.bin file if state is not provided
 wave_data = {
@@ -50,6 +43,7 @@ wave_data = {
     "Bcre": Bcre,
     "Bdes": Bdes,
     "coeff": coeff,
+    "ref_det": ref_det,
 }
 
 e_afqmc, err_afqmc = driver.afqmc(
@@ -58,6 +52,7 @@ e_afqmc, err_afqmc = driver.afqmc(
     prop,
     trial,
     wave_data,
+    sampler,
     observable,
     options,
     # init_walkers=init_walkers,
