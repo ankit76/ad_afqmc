@@ -33,9 +33,9 @@ for i in range(mol.natm):
 dip_ints_ao = -mol.intor_symmetric("int1e_r", comp=3)
 
 # orbital relaxed hf, mp2, ccsd, ccsd(t) properties
-#pyscf_interface.finite_difference_properties(
+# pyscf_interface.finite_difference_properties(
 #    mol, dip_ints_ao[2], observable_constant=nuc_dipmom[2], norb_frozen=norb_frozen
-#)
+# )
 
 # ad afqmc
 pyscf_interface.prep_afqmc(mf, norb_frozen=norb_frozen)
@@ -62,5 +62,6 @@ options = {
     "seed": 698,
     "orbital_rotation": True,
     "ad_mode": "forward",
+    "trial": "rhf",
 }
 run_afqmc.run_afqmc(options=options, nproc=4)

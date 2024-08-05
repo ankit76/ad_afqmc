@@ -52,7 +52,7 @@ def afqmc(
     rdm_op = 0.0 * jnp.array(ham_data["h1"])  # for reverse mode
     rdm_2_op = None
     if options["ad_mode"] == "2rdm":
-        nchol = ham.nchol
+        nchol = ham_data["chol"].shape[0]
         norb = ham.norb
         eri_full = np.einsum(
             "gj,gl->jl",
@@ -98,7 +98,6 @@ def afqmc(
         print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
-    # propagator_eq = deepcopy(propagator)
     sampler_eq = sampling.sampler(n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
 
     for n in range(1, neql + 1):

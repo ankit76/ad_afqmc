@@ -449,7 +449,7 @@ class rhf(wave_function):
 
     @partial(jit, static_argnums=0)
     def optimize(self, ham_data: dict, wave_data: dict) -> dict:
-        h1 = ham_data["h1"]
+        h1 = (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
         h2 = ham_data["chol"]
         h2 = h2.reshape((h2.shape[0], h1.shape[0], h1.shape[0]))
         nelec = self.nelec[0]
@@ -479,7 +479,7 @@ class rhf(wave_function):
 
         dm0 = 2 * wave_data["mo_coeff"] @ wave_data["mo_coeff"].T.conj()
         _, mo_coeff = lax.scan(scanned_fun, dm0, None, length=self.n_opt_iter)
-        wave_data["mo_coeff"] = mo_coeff[-1]
+        wave_data["mo_coeff"] = mo_coeff[-1][:, :nelec]
         return wave_data
 
     @partial(jit, static_argnums=0)
@@ -677,7 +677,10 @@ class uhf(wave_function):
         dm0 = self._calc_rdm1(wave_data)
         _, mo_coeff = lax.scan(scanned_fun, dm0, None, length=self.n_opt_iter)
 
-        wave_data["mo_coeff"] = mo_coeff[-1]
+        wave_data["mo_coeff"] = [
+            mo_coeff[-1][0][:, : nelec[0]],
+            mo_coeff[-1][1][:, : nelec[1]],
+        ]
         return wave_data
 
     @partial(jit, static_argnums=0)

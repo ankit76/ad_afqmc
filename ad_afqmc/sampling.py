@@ -160,7 +160,7 @@ class sampler:
         ham_data: dict,
         prop: propagator,
         trial: wave_function,
-        wave_data: Any,
+        wave_data: dict,
     ) -> Tuple[dict, Tuple[jnp.ndarray, jnp.ndarray]]:
         _sr_block_scan_wrapper = lambda x, y: self._sr_block_scan(
             x, y, ham_data, prop, trial, wave_data

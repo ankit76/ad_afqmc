@@ -39,10 +39,11 @@ options = {
     "n_blocks": 10,
     "n_walkers": 50,
     "seed": 98,
+    "trial": "uhf",
     "walker_type": "uhf",
     "ad_mode": "reverse",
 }
 # serial run
-#driver.run_afqmc(options=options, mpi_prefix='')
+# driver.run_afqmc(options=options, mpi_prefix='')
 # mpi run
 run_afqmc.run_afqmc(options=options, nproc=4)
