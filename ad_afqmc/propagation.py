@@ -298,7 +298,7 @@ class propagator_restricted(propagator):
             optimize="optimal",
         )
         ham_data["normal_ordering_term"] = -v0
-        h1_mod = ham_data["h1"] - v0
+        h1_mod = (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0 - v0
         h1_mod = h1_mod - jnp.real(
             1.0j
             * jnp.einsum(
@@ -309,7 +309,7 @@ class propagator_restricted(propagator):
         )
         ham_data["exp_h1"] = jsp.linalg.expm(-self.dt * h1_mod / 2.0)
         return ham_data
-    
+
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
@@ -470,7 +470,7 @@ class propagator_unrestricted(propagator_restricted):
             ]
         )
         return ham_data
-    
+
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 

@@ -485,8 +485,15 @@ class rhf(wave_function):
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         """Builds half rotated integrals for efficient force bias and energy calculations."""
-        ham_data["h1"] = (ham_data["h1"] + ham_data["h1"].T) / 2.0
-        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"]
+        ham_data["h1"] = (
+            ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
+        )
+        ham_data["h1"] = (
+            ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
+        )
+        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ (
+            (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
+        )
         ham_data["rot_chol"] = jnp.einsum(
             "pi,gij->gpj",
             wave_data["mo_coeff"].T.conj(),

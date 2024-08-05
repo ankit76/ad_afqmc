@@ -61,7 +61,6 @@ def _prep_afqmc(options=None):
     if options["trial"] is None:
         if rank == 0:
             print(f"# No trial specified, needs to be built separately.")
-    # assert options["trial"] is not None, "Trial wavefunction not specified in options."
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
 
@@ -83,6 +82,7 @@ def _prep_afqmc(options=None):
     ham = hamiltonian.hamiltonian(nmo)
     ham_data = {}
     ham_data["h0"] = h0
+    ham_data["h1"] = jnp.array([h1, h1])
     ham_data["chol"] = chol.reshape(nchol, -1)
     ham_data["ene0"] = options["ene0"]
 
@@ -121,7 +121,6 @@ def _prep_afqmc(options=None):
         trial = None
 
     if options["walker_type"] == "rhf":
-        ham_data["h1"] = h1
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
@@ -130,7 +129,6 @@ def _prep_afqmc(options=None):
         prop = propagation.propagator_restricted(options["dt"], options["n_walkers"])
 
     elif options["walker_type"] == "uhf":
-        ham_data["h1"] = jnp.array([h1, h1])
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
