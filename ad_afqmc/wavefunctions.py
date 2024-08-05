@@ -1742,21 +1742,6 @@ class UCISD(wave_function_auto):
     eps: float = 1.0e-4  # finite difference step size in local energy calculations
 
     @partial(jit, static_argnums=0)
-    def _calc_green_restricted(self, walker: jnp.ndarray) -> jnp.ndarray:
-        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
-
-    @partial(jit, static_argnums=0)
-    def _calc_overlap_restricted(self, walker: jnp.ndarray, wave_data: dict) -> complex:
-        nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
-        GF = self._calc_green_restricted(walker)
-        o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
-        o1 = jnp.einsum("ia,ia", ci1, GF[:, nocc:])
-        o2 = 2 * jnp.einsum(
-            "iajb, ia, jb", ci2, GF[:, nocc:], GF[:, nocc:]
-        ) - jnp.einsum("iajb, ib, ja", ci2, GF[:, nocc:], GF[:, nocc:])
-        return (1.0 + 2 * o1 + o2) * o0
-
-    @partial(jit, static_argnums=0)
     def _calc_green(
         self, walker_up: jnp.ndarray, walker_dn: jnp.ndarray
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
