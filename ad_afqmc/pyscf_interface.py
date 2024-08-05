@@ -174,7 +174,7 @@ def prep_afqmc(
         )
         trial_coeffs[0] = q
         trial_coeffs[1] = q
-        np.savetxt("rhf.txt", q)
+        np.savez("rhf.npz", mo_coeff=q)
 
     write_dqmc(
         h1e,
@@ -528,7 +528,7 @@ def get_excitations(
     fname: str = "dets.bin",
     ndets: Optional[int] = None,
     max_excitation: int = 10,
-) -> Tuple[dict, dict, dict, dict, dict]:
+) -> Tuple[dict, dict, dict, dict, dict, np.ndarray]:
     """Use given a state or read determinants from a binary file and return excitations.
 
     | psi_t > = sum_i coeff_i E_i | d_0 > (note that coeff_i differ from those in sum_i coeff_i_1 | d_i > by parity factors).
@@ -546,6 +546,7 @@ def get_excitations(
         Bcre: Beta creation indices.
         Bdes: Beta destruction indices.
         coeff: Coefficients of the determinants.
+        ref_det: Reference determinant.
     """
     if state is None:
         _, state, ndets_all = read_dets(fname, ndets)
@@ -635,8 +636,8 @@ def get_excitations(
                     Bdes[(i, j)] = np.zeros((1, j), dtype=int)
                     Bcre[(i, j)] = np.zeros((1, j), dtype=int)
                     coeff[(i, j)] = np.zeros((1,))
-
-    return Acre, Ades, Bcre, Bdes, coeff
+    ref_det = np.array([d0a, d0b])
+    return Acre, Ades, Bcre, Bdes, coeff, ref_det
 
 
 # reading dets from dice

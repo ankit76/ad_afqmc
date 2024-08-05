@@ -10,17 +10,20 @@ from ad_afqmc import pyscf_interface, wavefunctions
 
 seed = 102
 np.random.seed(seed)
-norb, nelec, nchol = 10, 5, 5
+norb, nelec, nchol = 10, (5, 5), 5
 rhf = wavefunctions.rhf(norb, nelec)
-walker = jnp.array(np.random.rand(norb, nelec)) + 1.0j * jnp.array(
-    np.random.rand(norb, nelec)
+wave_data = {}
+wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec[0]]
+wave_data["rdm1"] = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
+walker = jnp.array(np.random.rand(norb, nelec[0])) + 1.0j * jnp.array(
+    np.random.rand(norb, nelec[0])
 )
 ham_data = {}
 ham_data["h0"] = np.random.rand(
     1,
 )[0]
-ham_data["rot_h1"] = jnp.array(np.random.rand(nelec, norb))
-ham_data["rot_chol"] = jnp.array(np.random.rand(nchol, nelec, norb))
+ham_data["rot_h1"] = jnp.array(np.random.rand(nelec[0], norb))
+ham_data["rot_chol"] = jnp.array(np.random.rand(nchol, nelec[0], norb))
 ham_data["h1"] = jnp.array(np.random.rand(norb, norb))
 ham_data["chol"] = jnp.array(np.random.rand(nchol, norb, norb))
 ham_data["ene0"] = 0.0
@@ -33,25 +36,34 @@ ham_data["normal_ordering_term"] = -0.5 * jnp.einsum(
     optimize="optimal",
 )
 
-multislater = wavefunctions.multislater_rhf(norb, nelec, max_excitation=6)
+multislater = wavefunctions.multislater(norb, nelec, max_excitation=6)
 path = os.path.dirname(os.path.abspath(__file__))
-Acre, Ades, Bcre, Bdes, coeff = pyscf_interface.get_excitations(
+Acre, Ades, Bcre, Bdes, coeff, ref_det = pyscf_interface.get_excitations(
     fname=path + "/dets.bin", max_excitation=6, ndets=10
-)  # readds dets.bin
+)  # reads dets.bin
+ref_det = jnp.array([[1, 1, 1, 1, 1, 0, 0, 0, 0, 0] * 2])
 wave_data_multislater = {
     "Acre": Acre,
     "Ades": Ades,
     "Bcre": Bcre,
     "Bdes": Bdes,
     "coeff": coeff,
+    "ref_det": ref_det,
 }
 
 nelec_sp = (3, 2)
 uhf = wavefunctions.uhf(norb, nelec_sp)
-wave_data = [
+wave_data_u = {}
+wave_data_u["mo_coeff"] = [
     jnp.array(np.random.rand(norb, nelec_sp[0])),
     jnp.array(np.random.rand(norb, nelec_sp[1])),
 ]
+wave_data_u["rdm1"] = jnp.array(
+    [
+        jnp.array(wave_data_u["mo_coeff"][0] @ wave_data_u["mo_coeff"][0].T),
+        jnp.array(wave_data_u["mo_coeff"][1] @ wave_data_u["mo_coeff"][1].T),
+    ]
+)
 walker_up, walker_dn = jnp.array(np.random.rand(norb, nelec_sp[0])) + 1.0j * jnp.array(
     np.random.rand(norb, nelec_sp[0])
 ), jnp.array(np.random.rand(norb, nelec_sp[1])) + 1.0j * jnp.array(
@@ -78,7 +90,9 @@ dets = [
     jnp.array(np.random.rand(ndets, norb, nelec_sp[1])),
 ]
 ci_coeffs = jnp.array(np.random.randn(ndets))
-wave_data_noci = [ci_coeffs, dets]
+wave_data_noci = {}
+wave_data_noci["ci_coeffs_dets"] = [ci_coeffs, dets]
+wave_data_noci["rdm1"] = wave_data_u["rdm1"]
 ham_data_noci = {}
 ham_data_noci["h0"] = ham_data["h0"]
 ham_data_noci["rot_h1"] = [
@@ -93,7 +107,9 @@ ham_data_noci["rot_chol"] = [
 
 nelec_sp = (3, 2)
 ghf = wavefunctions.ghf(norb, nelec_sp)
-wave_data_g = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1]))
+wave_data_g = {}
+wave_data_g["mo_coeff"] = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1]))
+wave_data_g["rdm1"] = wave_data_u["rdm1"]
 ham_data_g = {}
 ham_data_g["h0"] = ham_data["h0"]
 ham_data_g["rot_h1"] = jnp.array(np.random.rand(nelec_sp[0] + nelec_sp[1], 2 * norb))
@@ -108,40 +124,41 @@ uhf_cpmc = wavefunctions.uhf_cpmc(norb, nelec_sp)
 
 
 def test_rhf_overlap():
-    overlap = rhf.calc_overlap(walker)
+    overlap = rhf._calc_overlap_restricted(walker, wave_data)
     assert np.allclose(jnp.real(overlap), -0.10794844182417201)
 
 
 def test_rhf_green():
-    green = rhf.calc_green(walker)
-    assert green.shape == (nelec, norb)
+    green = rhf._calc_green(walker, wave_data)
+    assert green.shape == (nelec[0], norb)
     assert np.allclose(jnp.real(jnp.sum(green)), 12.181348093111438)
 
 
 def test_rhf_force_bias():
-    force_bias = rhf.calc_force_bias(walker, ham_data)
+    force_bias = rhf._calc_force_bias_restricted(walker, ham_data, wave_data)
     assert force_bias.shape == (nchol,)
     assert np.allclose(jnp.real(jnp.sum(force_bias)), 66.13455680423321)
 
 
 def test_rhf_energy():
-    energy = rhf.calc_energy(walker, ham_data)
+    energy = rhf._calc_energy_restricted(walker, ham_data, wave_data)
     assert np.allclose(jnp.real(energy), 217.79874063608622)
 
 
 def test_rhf_optimize_orbs():
-    orbs = rhf.optimize_orbs(ham_data)
+    wave_data_opt = rhf.optimize(ham_data, wave_data)
+    orbs = wave_data_opt["mo_coeff"]
     assert orbs.shape == (norb, norb)
     assert np.allclose(jnp.sum(orbs), 2.9662577668717933)
 
 
 def test_uhf_overlap():
-    overlap = uhf.calc_overlap(walker_up, walker_dn, wave_data)
+    overlap = uhf._calc_overlap(walker_up, walker_dn, wave_data_u)
     assert np.allclose(jnp.real(overlap), -0.4029825074695857)
 
 
 def test_uhf_green():
-    green = uhf.calc_green(walker_up, walker_dn, wave_data)
+    green = uhf._calc_green(walker_up, walker_dn, wave_data_u)
     assert green[0].shape == (nelec_sp[0], norb)
     assert green[1].shape == (nelec_sp[1], norb)
     assert np.allclose(
@@ -150,45 +167,46 @@ def test_uhf_green():
 
 
 def test_uhf_force_bias():
-    force_bias = uhf.calc_force_bias(walker_up, walker_dn, ham_data_u, wave_data)
+    force_bias = uhf._calc_force_bias(walker_up, walker_dn, ham_data_u, wave_data_u)
     assert force_bias.shape == (nchol,)
     assert np.allclose(jnp.real(jnp.sum(force_bias)), 10.441272099672341)
 
 
 def test_uhf_energy():
-    energy = uhf.calc_energy(
+    energy = uhf._calc_energy(
         walker_up,
         walker_dn,
         ham_data_u,
-        wave_data,
+        wave_data_u,
     )
     assert np.allclose(jnp.real(energy), -1.7203463308366032)
 
 
 def test_uhf_optimize_orbs():
-    orbs = uhf.optimize_orbs(ham_data_u, wave_data)
+    wave_data_opt = uhf.optimize(ham_data_u, wave_data_u)
+    orbs = wave_data_opt["mo_coeff"]
     assert orbs[0].shape == (norb, norb)
     assert orbs[1].shape == (norb, norb)
     assert np.allclose(jnp.sum(orbs[0]) + jnp.sum(orbs[1]), 7.402931219898609)
 
 
 def test_ghf_overlap():
-    overlap = ghf.calc_overlap(walker_up, walker_dn, wave_data_g)
+    overlap = ghf._calc_overlap(walker_up, walker_dn, wave_data_g)
     assert np.allclose(jnp.real(overlap), -0.7645032356687913)
 
 
 def test_ghf_green():
-    green = ghf.calc_green(walker_up, walker_dn, wave_data_g)
+    green = ghf._calc_green(walker_up, walker_dn, wave_data_g)
     assert green.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
 
 
 def test_ghf_force_bias():
-    force_bias = ghf.calc_force_bias(walker_up, walker_dn, ham_data_g, wave_data_g)
+    force_bias = ghf._calc_force_bias(walker_up, walker_dn, ham_data_g, wave_data_g)
     assert force_bias.shape == (nchol,)
 
 
 def test_ghf_energy():
-    energy = ghf.calc_energy(
+    energy = ghf._calc_energy(
         walker_up,
         walker_dn,
         ham_data_g,
@@ -198,20 +216,20 @@ def test_ghf_energy():
 
 
 def test_noci_overlap():
-    overlap = noci.calc_overlap(walker_up, walker_dn, wave_data_noci)
+    overlap = noci._calc_overlap(walker_up, walker_dn, wave_data_noci)
     # print(overlap)
     # assert np.allclose(jnp.real(overlap), -0.4029825074695857)
 
 
 def test_noci_green():
-    green_0, green_1, _ = noci.calc_green(walker_up, walker_dn, wave_data_noci)
+    green_0, green_1, _ = noci._calc_green(walker_up, walker_dn, wave_data_noci)
     assert green_0.shape == (ndets, nelec_sp[0], norb)
     assert green_1.shape == (ndets, nelec_sp[1], norb)
     # assert np.allclose(jnp.real(jnp.sum(green[0])+jnp.sum(green[1])), 3.6324117896217394)
 
 
 def test_noci_force_bias():
-    force_bias = noci.calc_force_bias(
+    force_bias = noci._calc_force_bias(
         walker_up, walker_dn, ham_data_noci, wave_data_noci
     )
     assert force_bias.shape == (nchol,)
@@ -219,7 +237,7 @@ def test_noci_force_bias():
 
 
 def test_noci_energy():
-    energy = noci.calc_energy(
+    energy = noci._calc_energy(
         walker_up,
         walker_dn,
         ham_data_noci,
@@ -230,7 +248,7 @@ def test_noci_energy():
 
 def test_noci_get_rdm1():
     rdm1 = noci.get_rdm1(wave_data_noci)
-    assert rdm1.shape == (norb, norb)
+    assert rdm1.shape == (2, norb, norb)
 
 
 def test_uhf_cpmc():
@@ -241,7 +259,7 @@ def test_uhf_cpmc():
     hs_constant = const * jnp.array(
         [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
     )
-    green = uhf_cpmc.calc_full_green(walker_up, walker_dn, wave_data)
+    green = uhf_cpmc.calc_full_green(walker_up, walker_dn, wave_data_u)
     assert green[0].shape == (norb, norb)
     assert green[1].shape == (norb, norb)
     wick_ratio = uhf_cpmc.calc_overlap_ratio(
@@ -249,13 +267,13 @@ def test_uhf_cpmc():
         jnp.array([[0, 3], [1, 3]]),
         hs_constant[0] - 1,
     )
-    overlap_0 = uhf_cpmc.calc_overlap(walker_up, walker_dn, wave_data)
+    overlap_0 = uhf_cpmc._calc_overlap(walker_up, walker_dn, wave_data_u)
     new_walker_0 = walker_up.at[3, :].mul(hs_constant[0, 0])
     new_walker_1 = walker_dn.at[3, :].mul(hs_constant[0, 1])
-    ratio = uhf_cpmc.calc_overlap(new_walker_0, new_walker_1, wave_data) / overlap_0
+    ratio = uhf_cpmc._calc_overlap(new_walker_0, new_walker_1, wave_data_u) / overlap_0
     assert np.allclose(ratio, wick_ratio)
 
-    new_green = uhf_cpmc.calc_full_green(new_walker_0, new_walker_1, wave_data)
+    new_green = uhf_cpmc.calc_full_green(new_walker_0, new_walker_1, wave_data_u)
     new_green_wick = uhf_cpmc.update_greens_function(
         green,
         ratio,
@@ -267,18 +285,22 @@ def test_uhf_cpmc():
 
 def test_multislater():
     # slow test due to compilation time for fb and energy
-    overlap = multislater.calc_overlap(walker, wave_data_multislater)
+    overlap = multislater._calc_overlap_restricted(walker, wave_data_multislater)
     assert np.allclose(jnp.real(overlap), -0.10468995287669804)
 
-    green = multislater.calc_green(walker, wave_data_multislater)
-    assert green.shape == (nelec, norb)
+    green = multislater._calc_green_restricted(walker, wave_data_multislater)
+    assert green.shape == (nelec[0], norb)
     assert np.allclose(jnp.real(jnp.sum(green)), 12.181348093111438)
 
-    force_bias = multislater.calc_force_bias(walker, ham_data, wave_data_multislater)
+    force_bias = multislater._calc_force_bias_restricted(
+        walker, ham_data, wave_data_multislater
+    )
     assert force_bias.shape == (nchol,)
     assert np.allclose(jnp.real(jnp.sum(force_bias)), 63.76752581694084)
 
-    energy = multislater.calc_energy(walker, ham_data, wave_data_multislater)
+    energy = multislater._calc_energy_restricted(
+        walker, ham_data, wave_data_multislater
+    )
     assert np.allclose(jnp.real(energy), 204.41045113133066)
 
 

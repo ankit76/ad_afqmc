@@ -11,13 +11,14 @@ os.environ["JAX_ENABLE_X64"] = "True"
 import pickle
 from copy import deepcopy
 from functools import partial
+from typing import Optional, Sequence
 
 # os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
 from jax import dtypes, jvp, random, vjp
 from mpi4py import MPI
 
-from ad_afqmc import linalg_utils, propagation, sampler, stat_utils
+from ad_afqmc import hamiltonian, propagation, sampling, stat_utils, wavefunctions
 
 print = partial(print, flush=True)
 
@@ -27,7 +28,15 @@ rank = comm.Get_rank()
 
 
 def afqmc(
-    ham_data, ham, propagator, trial, wave_data, observable, options, init_walkers=None
+    ham_data: dict,
+    ham: hamiltonian.hamiltonian,
+    propagator: propagation.propagator,
+    trial: wavefunctions.wave_function,
+    wave_data: dict,
+    sampler: sampling.sampler,
+    observable,
+    options: dict,
+    init_walkers: Optional[Sequence] = None,
 ):
     init = time.time()
     seed = options["seed"]
@@ -50,33 +59,22 @@ def afqmc(
             ham_data["chol"].reshape(nchol, -1),
             ham_data["chol"].reshape(nchol, -1),
         )
-        # # convert to symmetry 4
-        # # very slow, but only done once
-        # npair = norb * (norb + 1) // 2
-        # eri = np.zeros((npair, npair))
-        # for ij in range(npair):
-        #     i = int(np.floor(np.sqrt(2 * ij + 0.25) - 0.5))
-        #     j = ij - i * (i + 1) // 2
-        #     ij_full = i * norb + j
-        #     eri[ij, ij] = eri_full[ij_full, ij_full]
-        #     for kl in range(ij):
-        #         k = int(np.floor(np.sqrt(2 * kl + 0.25) - 0.5))
-        #         l = kl - k * (k + 1) // 2
-        #         kl_full = k * norb + l
-        #         eri[ij, kl] = eri_full[ij_full, kl_full]
-        #         eri[kl, ij] = eri[ij, kl]
-        # ham_data["chol"] = linalg_utils.modified_cholesky(eri, ham.norb, ham.nchol)
         rdm_2_op = jnp.array(eri_full).reshape(norb, norb, norb, norb)
 
-    ham_data = ham.rot_ham(ham_data, wave_data)
-    ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
-    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data, init_walkers)
+    trial_rdm1 = trial.get_rdm1(wave_data)
+    if "rdm1" not in wave_data:
+        wave_data["rdm1"] = trial_rdm1
+    ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+    ham_data = ham.build_propagation_intermediates(
+        ham_data, propagator, trial, wave_data
+    )
+    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
     prop_data["key"] = random.PRNGKey(seed + rank)
-    trial_rdm1 = trial.get_rdm1(wave_data)
+
     trial_observable = np.sum(trial_rdm1 * observable_op)
     trial_rdm2 = None
     if options["ad_mode"] == "2rdm":
@@ -100,47 +98,12 @@ def afqmc(
         print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
-    # if isinstance(propagator, propagation.propagator_cpmc):
-    #     propagator_eq = propagation.propagator_cpmc(
-    #         propagator.dt,
-    #         n_prop_steps=50,
-    #         n_ene_blocks=5,
-    #         n_sr_blocks=10,
-    #         n_walkers=options["n_walkers"],
-    #     )
-    # elif isinstance(propagator, propagation.propagator_cpmc_continuous):
-    #     propagator_eq = propagation.propagator_cpmc_continuous(
-    #         propagator.dt,
-    #         n_prop_steps=50,
-    #         n_ene_blocks=5,
-    #         n_sr_blocks=10,
-    #         n_walkers=options["n_walkers"],
-    #     )
-    # elif options["walker_type"] == "rhf":
-    #     propagator_eq = propagation.propagator(
-    #         propagator.dt,
-    #         n_prop_steps=50,
-    #         n_ene_blocks=5,
-    #         n_sr_blocks=10,
-    #         n_walkers=options["n_walkers"],
-    #     )
-    # elif options["walker_type"] == "uhf":
-    #     propagator_eq = propagation.propagator_uhf(
-    #         propagator.dt,
-    #         n_prop_steps=50,
-    #         n_ene_blocks=5,
-    #         n_sr_blocks=10,
-    #         n_walkers=options["n_walkers"],
-    #     )
-    propagator_eq = deepcopy(propagator)
-    propagator_eq.n_prop_steps = 50
-    propagator_eq.n_ene_blocks = 5
-    propagator_eq.n_sr_blocks = 10
-    propagator_eq.n_walkers = options["n_walkers"]
+    # propagator_eq = deepcopy(propagator)
+    sampler_eq = sampling.sampler(n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
 
     for n in range(1, neql + 1):
-        block_energy_n, prop_data = sampler.propagate_phaseless(
-            ham, ham_data, propagator_eq, prop_data, trial, wave_data
+        block_energy_n, prop_data = sampler_eq.propagate_phaseless(
+            ham, ham_data, propagator, prop_data, trial, wave_data
         )
         block_energy_n = np.array([block_energy_n], dtype="float32")
         block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
@@ -200,17 +163,15 @@ def afqmc(
     global_block_rdm1s = None
     global_block_rdm2s = None
     if rank == 0:
-        global_block_weights = np.zeros(size * propagator.n_blocks)
-        global_block_energies = np.zeros(size * propagator.n_blocks)
-        global_block_observables = np.zeros(size * propagator.n_blocks)
+        global_block_weights = np.zeros(size * sampler.n_blocks)
+        global_block_energies = np.zeros(size * sampler.n_blocks)
+        global_block_observables = np.zeros(size * sampler.n_blocks)
         if options["ad_mode"] == "reverse":
             global_block_rdm1s = np.zeros(
-                (size * propagator.n_blocks, *(ham_data["h1"].shape))
+                (size * sampler.n_blocks, *(ham_data["h1"].shape))
             )
         elif options["ad_mode"] == "2rdm":
-            global_block_rdm2s = np.zeros(
-                (size * propagator.n_blocks, *(rdm_2_op.shape))
-            )
+            global_block_rdm2s = np.zeros((size * sampler.n_blocks, *(rdm_2_op.shape)))
 
     if options["orbital_rotation"] == False and options["do_sr"] == False:
         propagate_phaseless_wrapper = (
@@ -254,7 +215,7 @@ def afqmc(
         block_rdm2_n = np.zeros_like(rdm_2_op)
     block_observable_n = 0.0
 
-    for n in range(propagator.n_blocks):
+    for n in range(sampler.n_blocks):
         if options["ad_mode"] == "forward":
             coupling = 0.0
             block_energy_n, block_observable_n, prop_data = jvp(
@@ -356,7 +317,7 @@ def afqmc(
         prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
 
-        if n % (max(propagator.n_blocks // 10, 1)) == 0:
+        if n % (max(sampler.n_blocks // 10, 1)) == 0:
             comm.Barrier()
             if rank == 0:
                 e_afqmc, energy_error = stat_utils.blocking_analysis(
@@ -536,13 +497,26 @@ def afqmc(
 
 
 def fp_afqmc(
-    ham_data, ham, propagator, trial, wave_data, observable, options, init_walkers=None
+    ham_data: dict,
+    ham: hamiltonian.hamiltonian,
+    propagator: propagation.propagator,
+    trial: wavefunctions.wave_function,
+    wave_data: dict,
+    sampler: sampling.sampler,
+    observable,
+    options: dict,
+    init_walkers=None,
 ):
     init = time.time()
     seed = options["seed"]
 
-    ham_data = ham.rot_ham(ham_data, wave_data)
-    ham_data = ham.prop_ham(ham_data, propagator.dt, trial, wave_data)
+    trial_rdm1 = trial.get_rdm1(wave_data)
+    if "rdm1" not in wave_data:
+        wave_data["rdm1"] = trial_rdm1
+    ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+    ham_data = ham.build_propagation_intermediates(
+        ham_data, propagator, trial, wave_data
+    )
     prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data, init_walkers)
     prop_data["key"] = random.PRNGKey(seed + rank)
 
@@ -553,13 +527,13 @@ def fp_afqmc(
         print("#  Iter        Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
-    global_block_weights = np.zeros(size * propagator.n_ene_blocks) + 0.0j
-    global_block_energies = np.zeros(size * propagator.n_ene_blocks) + 0.0j
+    global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
+    global_block_energies = np.zeros(size * sampler.n_ene_blocks) + 0.0j
 
-    total_energy = np.zeros(propagator.n_blocks) + 0.0j
-    total_weight = np.zeros(propagator.n_blocks) + 0.0j
+    total_energy = np.zeros(sampler.n_blocks) + 0.0j
+    total_weight = np.zeros(sampler.n_blocks) + 0.0j
     for n in range(
-        propagator.n_ene_blocks
+        sampler.n_ene_blocks
     ):  # hacking this variable for number of trajectories
         (
             prop_data_tr,
@@ -581,7 +555,7 @@ def fp_afqmc(
                 with open(f"prop_data_{rank}.bin", "wb") as f:
                     pickle.dump(prop_data_tr, f)
 
-        if n % (max(propagator.n_ene_blocks // 10, 1)) == 0:
+        if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
             comm.Barrier()
             if rank == 0:
                 print(f"{n:5d}: {total_energy}")
