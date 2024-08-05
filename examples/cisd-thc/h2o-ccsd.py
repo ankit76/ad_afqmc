@@ -49,23 +49,8 @@ options = {
     "walker_type": "rhf",
 }
 
-# if you want to run mpi, run this script to generate ham and wave functions
-# comment out the pyscf cc import, and uncomment the following line
-# pyscf cc seems to have issues with mpi
-# run_afqmc.run_afqmc(options, nproc=4)
+# pyscf cc initializes mpi so we need to finalize it before running afqmc
+from mpi4py import MPI
 
-from ad_afqmc import driver, mpi_jax
-
-ham_data, ham, prop, trial, wave_data, sampler, observable, options = (
-    mpi_jax._prep_afqmc(options)
-)
-e_afqmc, err_afqmc = driver.afqmc(
-    ham_data,
-    ham,
-    prop,
-    trial,
-    wave_data,
-    sampler,
-    observable,
-    options,
-)
+MPI.Finalize()
+run_afqmc.run_afqmc(options, nproc=4)

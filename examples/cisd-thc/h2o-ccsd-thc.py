@@ -1,9 +1,10 @@
+import pickle
 from functools import partial
 
 import numpy as np
 from pyscf import cc, gto, scf
 
-from ad_afqmc import driver, mpi_jax, pyscf_interface, wavefunctions
+from ad_afqmc import pyscf_interface, run_afqmc, wavefunctions
 
 print = partial(print, flush=True)
 
@@ -20,23 +21,6 @@ mf = scf.RHF(mol)
 mf.kernel()
 
 nfrozen = 1
-pyscf_interface.prep_afqmc(mf, norb_frozen=nfrozen)
-options = {
-    "dt": 0.005,
-    "n_eql": 5,
-    "n_ene_blocks": 5,
-    "n_sr_blocks": 10,
-    "n_blocks": 10,
-    "n_prop_steps": 50,
-    "n_walkers": 50,
-    "seed": 8,
-    "walker_type": "rhf",
-}
-
-ham_data, ham, prop, trial, wave_data, sampler, observable, options = (
-    mpi_jax._prep_afqmc(options)
-)
-
 mycc = cc.CCSD(mf)
 mycc.frozen = nfrozen
 mycc.run()
@@ -64,18 +48,31 @@ Xocc, Xvirt = pyscf_interface.getCollocationMatrices(
 VKL = pyscf_interface.solveLS_twoSided(ci2, Xocc, Xvirt)
 trial = wavefunctions.CISD_THC(sum(ci1.shape), (ci1.shape[0], ci1.shape[0]))
 
+wave_data = {}
 wave_data["ci1"] = ci1
 wave_data["Xocc"] = Xocc
 wave_data["Xvirt"] = Xvirt
 wave_data["VKL"] = VKL
 
-e_afqmc, err_afqmc = driver.afqmc(
-    ham_data,
-    ham,
-    prop,
-    trial,
-    wave_data,
-    sampler,
-    observable,
-    options,
-)
+# write wavefunction to disk
+with open("trial.pkl", "wb") as f:
+    pickle.dump([trial, wave_data], f)
+
+pyscf_interface.prep_afqmc(mf, norb_frozen=nfrozen)
+options = {
+    "dt": 0.005,
+    "n_eql": 5,
+    "n_ene_blocks": 5,
+    "n_sr_blocks": 10,
+    "n_blocks": 10,
+    "n_prop_steps": 50,
+    "n_walkers": 50,
+    "seed": 8,
+    "walker_type": "rhf",
+}
+
+# pyscf cc initializes mpi so we need to finalize it before running afqmc
+from mpi4py import MPI
+
+MPI.Finalize()
+run_afqmc.run_afqmc(options, nproc=4)
