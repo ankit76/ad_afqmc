@@ -1323,14 +1323,16 @@ class noci(wave_function):
         return hash(tuple(self.__dict__.values()))
 
 
+@dataclass
 class wave_function_auto(wave_function):
     """This wave function only requires the definition of overlap functions.
     It evaluates force bias and local energy by differentiating various overlaps
     (single derivatives with AD and double with FD)."""
 
-    def __init__(self, eps: float = 1.0e-4):
+    def __post_init__(self):
         """eps is the finite difference step size in local energy calculations."""
-        self.eps = eps
+        if not hasattr(self, "eps"):
+            self.eps = 1.0e-4
 
     @partial(jit, static_argnums=0)
     def _overlap_with_rot_sd_restricted(
