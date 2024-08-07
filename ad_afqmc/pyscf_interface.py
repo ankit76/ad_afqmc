@@ -142,17 +142,23 @@ def prep_afqmc(
     if isinstance(mf, (scf.uhf.UHF, scf.rohf.ROHF)):
         uhfCoeffs = np.empty((nbasis, 2 * nbasis))
         if isinstance(mf, scf.uhf.UHF):
-            q, _ = np.linalg.qr(
-                basis_coeff[:, norb_frozen:]
-                .T.dot(overlap)
-                .dot(mf.mo_coeff[0][:, norb_frozen:])
-            )
+            q, r = np.linalg.qr(basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[0][:, norb_frozen:]))
+            sgn = np.sign(r.diagonal())
+            q = np.einsum('ij,i->ij', q, sgn)
+            #q, _ = np.linalg.qr(
+            #    basis_coeff[:, norb_frozen:]
+            #    .T.dot(overlap)
+            #    .dot(mf.mo_coeff[0][:, norb_frozen:])
+            #)
             uhfCoeffs[:, :nbasis] = q
-            q, _ = np.linalg.qr(
-                basis_coeff[:, norb_frozen:]
-                .T.dot(overlap)
-                .dot(mf.mo_coeff[1][:, norb_frozen:])
-            )
+            q, r = np.linalg.qr(basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[1][:, norb_frozen:]))
+            sgn = np.sign(r.diagonal())
+            q = np.einsum('ij,i->ij', q, sgn)
+            # q, _ = np.linalg.qr(
+            #     basis_coeff[:, norb_frozen:]
+            #     .T.dot(overlap)
+            #     .dot(mf.mo_coeff[1][:, norb_frozen:])
+            # )
             uhfCoeffs[:, nbasis:] = q
         else:
             q, _ = np.linalg.qr(
