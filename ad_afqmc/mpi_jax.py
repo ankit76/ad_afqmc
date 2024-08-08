@@ -95,7 +95,7 @@ def _prep_afqmc(options=None):
     mo_coeff = jnp.array(np.load("mo_coeff.npz")["mo_coeff"])
     wave_data["rdm1"] = jnp.array(
         [
-            mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[1]].T,
+            mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
             mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
         ]
     )
