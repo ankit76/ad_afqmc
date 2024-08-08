@@ -1760,14 +1760,16 @@ class UCISD(wave_function_auto):
         noccA, ci1A, ci2AA = walker_up.shape[1], wave_data["ci1A"], wave_data["ci2AA"]
         noccB, ci1B, ci2BB = walker_dn.shape[1], wave_data["ci1B"], wave_data["ci2BB"]
         ci2AB = wave_data["ci2AB"]
+        moA, moB = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
 
-        GFA, GFB = self._calc_green(walker_up, walker_dn)
+        walker_dn_B = moB.T.dot(walker_dn)  ##put walker_dn in the basis of alpha reference
 
-        o0 = jnp.linalg.det(walker_up[:noccA, :]) * jnp.linalg.det(walker_dn[:noccB, :])
+        GFA, GFB = self._calc_green(walker_up, walker_dn_B)
 
-        o1 = jnp.einsum("ia,ia", ci1A, GFA[:, noccA:]) + jnp.einsum(
-            "ia,ia", ci1B, GFB[:, noccB:]
-        )
+
+        o0 = jnp.linalg.det(walker_up[:noccA, :]) * jnp.linalg.det(walker_dn_B[:noccB, :])
+
+        o1 = jnp.einsum("ia,ia", ci1A, GFA[:, noccA:]) + jnp.einsum("ia,ia", ci1B, GFB[:, noccB:])
 
         ##AA
         o2  = 0.25 * jnp.einsum("iajb, ia, jb", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
@@ -1778,7 +1780,7 @@ class UCISD(wave_function_auto):
         o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
 
         ##AB
-        o2 += jnp.einsum("iajb, ia, jb", ci2AB, GFA[:, noccA:], GFB[:, noccB:])
+        o2  += jnp.einsum("iajb, ia, jb", ci2AB, GFA[:, noccA:], GFB[:, noccB:])
 
         return (1.0 + o1 + o2) * o0
 

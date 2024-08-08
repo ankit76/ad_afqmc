@@ -7,7 +7,7 @@ os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 
 from jax import config
-
+#config.update("jax_disable_jit", True)
 config.update("jax_enable_x64", True)
 config.update("jax_platform_name", "cpu")
 
