@@ -10,13 +10,19 @@ import jax.numpy as jnp
 
 print = partial(print, flush=True)
 
-r = 2.118
+r = 3.0
 mol = gto.M(atom=
             f''' N 0 0 0 
             N 0 0 {r}''', 
                   basis="cc-pvdz", verbose=4, symmetry=0,unit='B')
 mf = scf.UHF(mol)
 mf.kernel()
+mo1 = mf.stability()[0]
+mf = mf.newton().run(mo1, mf.mo_occ)
+mo1 = mf.stability()[0]
+mf = mf.newton().run(mo1, mf.mo_occ)
+mf.stability()
+
 
 #mf.mo_coeff[1] = 1*mf.mo_coeff[0]
 ##
@@ -62,7 +68,7 @@ options = {
     "n_prop_steps": 50,
     "n_walkers": 50,
     "seed": 8,
-    "walker_type": "rhf",
+    "walker_type": "uhf",
 }
 
 from mpi4py import MPI
