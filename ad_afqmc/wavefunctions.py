@@ -1528,22 +1528,34 @@ class wave_function_auto(wave_function):
         val1, dx1 = jvp(f1, [x], [1.0])
 
         # two body
-        vmap_fun = vmap(
-            self._overlap_with_double_rot, in_axes=(None, 0, None, None, None)
-        )
+        # vmap_fun = vmap(
+        #     self._overlap_with_double_rot, in_axes=(None, 0, None, None, None)
+        # )
 
         eps, zero = self.eps, 0.0
-        dx2 = (
-            (
-                vmap_fun(eps, chol, walker_up, walker_dn, wave_data)
-                - 2.0 * vmap_fun(zero, chol, walker_up, walker_dn, wave_data)
-                + vmap_fun(-1.0 * eps, chol, walker_up, walker_dn, wave_data)
+        # carry: [eps, walker, wave_data]
+        def scanned_fun(carry, x):
+            eps, walker_up, walker_dn, wave_data = carry
+            return carry, self._overlap_with_double_rot(
+                eps, x, walker_up, walker_dn, wave_data
             )
-            / eps
-            / eps
-        )
 
-        return (dx1 + jnp.sum(dx2) / 2.0) / val1 + h0
+        _, overlap_p = lax.scan(scanned_fun, (eps, walker_up, walker_dn, wave_data), chol)
+        _, overlap_0 = lax.scan(scanned_fun, (0.0, walker_up, walker_dn, wave_data), chol)
+        _, overlap_m = lax.scan(scanned_fun, (-1.0 * eps, walker_up, walker_dn, wave_data), chol)
+        d_2_overlap = (overlap_p - 2.0 * overlap_0 + overlap_m) / eps / eps
+
+        # dx2 = (
+        #     (
+        #         vmap_fun(eps, chol, walker_up, walker_dn, wave_data)
+        #         - 2.0 * vmap_fun(zero, chol, walker_up, walker_dn, wave_data)
+        #         + vmap_fun(-1.0 * eps, chol, walker_up, walker_dn, wave_data)
+        #     )
+        #     / eps
+        #     / eps
+        # )
+
+        return (dx1 + jnp.sum(d_2_overlap) / 2.0) / val1 + h0
 
 
 @dataclass
