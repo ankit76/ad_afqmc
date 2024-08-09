@@ -237,9 +237,9 @@ class wave_function(ABC):
         natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
         natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
         if restricted:
-            assert (
-                self.nelec[0] == self.nelec[1]
-            ), "Restricted walkers must have equal number of up and down electrons."
+            # assert (
+            #     self.nelec[0] == self.nelec[1]
+            # ), "Restricted walkers must have equal number of up and down electrons."
             return jnp.array([natorbs_up + 0.0j] * n_walkers)
         else:
             return [
@@ -1769,12 +1769,12 @@ class UCISD(wave_function_auto):
         self, walker_up: jnp.ndarray, walker_dn: jnp.ndarray, wave_data: dict
     ) -> complex:
 
-        noccA, ci1A, ci2AA = walker_up.shape[1], wave_data["ci1A"], wave_data["ci2AA"]
-        noccB, ci1B, ci2BB = walker_dn.shape[1], wave_data["ci1B"], wave_data["ci2BB"]
+        noccA, ci1A, ci2AA = self.nelec[0], wave_data["ci1A"], wave_data["ci2AA"]
+        noccB, ci1B, ci2BB = self.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
         ci2AB = wave_data["ci2AB"]
         moA, moB = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
 
-        walker_dn_B = moB.T.dot(walker_dn)  ##put walker_dn in the basis of alpha reference
+        walker_dn_B = moB.T.dot(walker_dn[:,:noccB])  ##put walker_dn in the basis of alpha reference
 
         GFA, GFB = self._calc_green(walker_up, walker_dn_B)
 
