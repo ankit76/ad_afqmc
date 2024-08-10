@@ -24,7 +24,7 @@ ham_data["h0"] = np.random.rand(
 )[0]
 ham_data["rot_h1"] = jnp.array(np.random.rand(nelec[0], norb))
 ham_data["rot_chol"] = jnp.array(np.random.rand(nchol, nelec[0], norb))
-ham_data["h1"] = jnp.array(np.random.rand(norb, norb))
+ham_data["h1"] = jnp.array([np.random.rand(norb, norb)] * 2)
 ham_data["chol"] = jnp.array(np.random.rand(nchol, norb, norb))
 ham_data["ene0"] = 0.0
 
@@ -79,7 +79,7 @@ ham_data_u["rot_chol"] = [
     ham_data["rot_chol"][:, : nelec_sp[0], :],
     ham_data["rot_chol"][:, : nelec_sp[1], :],
 ]
-ham_data_u["h1"] = jnp.array([ham_data["h1"], ham_data["h1"]])
+ham_data_u["h1"] = ham_data["h1"]  # jnp.array([ham_data["h1"], ham_data["h1"]])
 ham_data_u["chol"] = ham_data["chol"]
 ham_data_u["ene0"] = ham_data["ene0"]
 
