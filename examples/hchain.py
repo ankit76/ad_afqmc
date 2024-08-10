@@ -3,7 +3,7 @@ from functools import partial
 import numpy as np
 from pyscf import fci, gto, scf
 
-from ad_afqmc import pyscf_interface, run_afqmc
+from ad_afqmc import pyscf_interface, driver, mpi_jax,  run_afqmc
 
 print = partial(print, flush=True)
 
@@ -41,9 +41,10 @@ options = {
     "seed": 98,
     "trial": "uhf",
     "walker_type": "uhf",
-    "ad_mode": "reverse",
+    # "ad_mode": "reverse",
 }
+# driver.afqmc(*(mpi_jax._prep_afqmc(options)))
 # serial run
-# driver.run_afqmc(options=options, mpi_prefix='')
+run_afqmc.run_afqmc(options=options, mpi_prefix='')
 # mpi run
-run_afqmc.run_afqmc(options=options, nproc=4)
+# run_afqmc.run_afqmc(options=options, nproc=4)

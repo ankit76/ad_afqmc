@@ -2,16 +2,16 @@ import os
 
 import numpy as np
 
-os.environ["XLA_FLAGS"] = (
-    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
-)
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
+# os.environ["XLA_FLAGS"] = (
+#     "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+# )
+# os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 
 from jax import config
 
 config.update("jax_enable_x64", True)
-config.update("jax_platform_name", "cpu")
+# config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
 from jax import config, jit, vmap

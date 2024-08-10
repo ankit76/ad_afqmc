@@ -3,7 +3,7 @@ import os
 import numpy as np
 
 os.environ["JAX_ENABLE_X64"] = "True"
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
+# os.environ["JAX_PLATFORM_NAME"] = "cpu"
 from jax import numpy as jnp
 
 from ad_afqmc import pyscf_interface, wavefunctions
@@ -301,8 +301,8 @@ def test_multislater():
     energy = multislater._calc_energy_restricted(
         walker, ham_data, wave_data_multislater
     )
+    print(jnp.real(energy))
     assert np.allclose(jnp.real(energy), 204.41045113133066)
-
 
 if __name__ == "__main__":
     test_rhf_overlap()
