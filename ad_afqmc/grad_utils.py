@@ -124,10 +124,11 @@ def FD_integrals_chol(mf, dR=1e-5, chol_cut=1e-5):
 def FD_integrals(mf, dR=0.00001):
     basis = mf.mol.basis
     mol = mf.mol
-    # atoms = mf.mol.atom
-    atom_symbols, coords = [list(t) for t in zip(*mol.atom)]
-    unit = mf.mol.unit
-    # print("unit=",unit)
+    
+    coords = mol.atom_coords()  # This returns coords in Bohr
+    atom_symbols = [mol.atom_pure_symbol(i) for i in range(len(coords))]
+    unit = "Bohr"  # mf.mol.unit
+
     coords = np.array(coords)
     df0 = df.incore.cholesky_eri(mol, auxbasis=mf.auxbasis)
 
