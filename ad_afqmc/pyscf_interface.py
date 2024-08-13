@@ -617,7 +617,7 @@ def get_fci_state(fci: Any, ndets: Optional[int] = None, tol: float = 1.0e-4) ->
     norb = fci.norb
     nelec = fci.nelec
     if ndets is None:
-        ndets = ci_coeffs.shape[0]
+        ndets = ci_coeffs.size
     coeffs, occ_a, occ_b = zip(
         *fci.large_ci(ci_coeffs, norb, nelec, tol=tol, return_strs=False)
     )
@@ -625,7 +625,7 @@ def get_fci_state(fci: Any, ndets: Optional[int] = None, tol: float = 1.0e-4) ->
         *sorted(zip(coeffs, occ_a, occ_b), key=lambda x: -abs(x[0]))
     )
     state = {}
-    for i in range(ndets):
+    for i in range(min(ndets, len(coeffs))):
         det = [[0 for _ in range(norb)], [0 for _ in range(norb)]]
         for j in range(nelec[0]):
             det[0][occ_a[i][j]] = 1
