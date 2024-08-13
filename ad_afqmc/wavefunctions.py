@@ -237,9 +237,9 @@ class wave_function(ABC):
         natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
         natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
         if restricted:
-            assert (
-                self.nelec[0] == self.nelec[1]
-            ), "Restricted walkers must have equal number of up and down electrons."
+            # assert (
+            #     self.nelec[0] == self.nelec[1]
+            # ), "Restricted walkers must have equal number of up and down electrons."
             return jnp.array([natorbs_up + 0.0j] * n_walkers)
         else:
             return [
@@ -1528,22 +1528,34 @@ class wave_function_auto(wave_function):
         val1, dx1 = jvp(f1, [x], [1.0])
 
         # two body
-        vmap_fun = vmap(
-            self._overlap_with_double_rot, in_axes=(None, 0, None, None, None)
-        )
+        # vmap_fun = vmap(
+        #     self._overlap_with_double_rot, in_axes=(None, 0, None, None, None)
+        # )
 
         eps, zero = self.eps, 0.0
-        dx2 = (
-            (
-                vmap_fun(eps, chol, walker_up, walker_dn, wave_data)
-                - 2.0 * vmap_fun(zero, chol, walker_up, walker_dn, wave_data)
-                + vmap_fun(-1.0 * eps, chol, walker_up, walker_dn, wave_data)
+        # carry: [eps, walker, wave_data]
+        def scanned_fun(carry, x):
+            eps, walker_up, walker_dn, wave_data = carry
+            return carry, self._overlap_with_double_rot(
+                eps, x, walker_up, walker_dn, wave_data
             )
-            / eps
-            / eps
-        )
 
-        return (dx1 + jnp.sum(dx2) / 2.0) / val1 + h0
+        _, overlap_p = lax.scan(scanned_fun, (eps, walker_up, walker_dn, wave_data), chol)
+        _, overlap_0 = lax.scan(scanned_fun, (0.0, walker_up, walker_dn, wave_data), chol)
+        _, overlap_m = lax.scan(scanned_fun, (-1.0 * eps, walker_up, walker_dn, wave_data), chol)
+        d_2_overlap = (overlap_p - 2.0 * overlap_0 + overlap_m) / eps / eps
+
+        # dx2 = (
+        #     (
+        #         vmap_fun(eps, chol, walker_up, walker_dn, wave_data)
+        #         - 2.0 * vmap_fun(zero, chol, walker_up, walker_dn, wave_data)
+        #         + vmap_fun(-1.0 * eps, chol, walker_up, walker_dn, wave_data)
+        #     )
+        #     / eps
+        #     / eps
+        # )
+
+        return (dx1 + jnp.sum(d_2_overlap) / 2.0) / val1 + h0
 
 
 @dataclass
@@ -1749,7 +1761,7 @@ class UCISD(wave_function_auto):
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
 
         green_up = (walker_up.dot(jnp.linalg.inv(walker_up[: walker_up.shape[1], :]))).T
-        green_dn = (walker_up.dot(jnp.linalg.inv(walker_up[: walker_dn.shape[1], :]))).T
+        green_dn = (walker_dn.dot(jnp.linalg.inv(walker_dn[: walker_dn.shape[1], :]))).T
         return [green_up, green_dn]
 
     @partial(jit, static_argnums=0)
@@ -1757,20 +1769,22 @@ class UCISD(wave_function_auto):
         self, walker_up: jnp.ndarray, walker_dn: jnp.ndarray, wave_data: dict
     ) -> complex:
 
-        noccA, ci1A, ci2AA = walker_up.shape[1], wave_data["ci1A"], wave_data["ci2AA"]
-        noccB, ci1B, ci2BB = walker_dn.shape[1], wave_data["ci1A"], wave_data["ci2BB"]
+        noccA, ci1A, ci2AA = self.nelec[0], wave_data["ci1A"], wave_data["ci2AA"]
+        noccB, ci1B, ci2BB = self.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
         ci2AB = wave_data["ci2AB"]
+        moA, moB = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
 
-        GFA, GFB = self._calc_green(walker_up, walker_dn)
+        walker_dn_B = moB.T.dot(walker_dn[:,:noccB])  ##put walker_dn in the basis of alpha reference
 
-        o0 = jnp.linalg.det(walker_up[:noccA, :]) * jnp.linalg.det(walker_dn[:noccB, :])
+        GFA, GFB = self._calc_green(walker_up, walker_dn_B)
 
-        o1 = jnp.einsum("ia,ia", ci1A, GFA[:, noccA:]) + jnp.einsum(
-            "ia,ia", ci1A, GFA[:, noccB:]
-        )
+
+        o0 = jnp.linalg.det(walker_up[:noccA, :]) * jnp.linalg.det(walker_dn_B[:noccB, :])
+
+        o1 = jnp.einsum("ia,ia", ci1A, GFA[:, noccA:]) + jnp.einsum("ia,ia", ci1B, GFB[:, noccB:])
 
         ##AA
-        o2 = 0.25 * jnp.einsum("iajb, ia, jb", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
+        o2  = 0.25 * jnp.einsum("iajb, ia, jb", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
         o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
 
         ##BB
@@ -1778,7 +1792,7 @@ class UCISD(wave_function_auto):
         o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
 
         ##AB
-        o2 += jnp.einsum("iajb, ia, jb", ci2AB, GFA[:, noccA:], GFB[:, noccB:])
+        o2  += jnp.einsum("iajb, ia, jb", ci2AB, GFA[:, noccA:], GFB[:, noccB:])
 
         return (1.0 + o1 + o2) * o0
 
