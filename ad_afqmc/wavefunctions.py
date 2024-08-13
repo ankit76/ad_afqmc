@@ -304,12 +304,12 @@ class rhf(wave_function_restricted):
     n_opt_iter: int = 30
 
     @partial(jit, static_argnums=0)
-    def calc_overlap(self, walker: Sequence, wave_data: Any = None) -> complex:
-        return jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
+    def calc_overlap(self, walker: Sequence, wave_data: Any) -> complex:
+        return jnp.linalg.det(wave_data[:, : self.nelec].T @ walker) ** 2
 
     @partial(jit, static_argnums=0)
-    def calc_green(self, walker: Sequence, wave_data: Any = None) -> jnp.ndarray:
-        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+    def calc_green(self, walker: Sequence, wave_data: Any) -> jnp.ndarray:
+        return (walker.dot(jnp.linalg.inv(wave_data[:, : self.nelec].T.dot(walker)))).T
 
     @partial(jit, static_argnums=0)
     def calc_1rdm(self, walker: Sequence, wave_data: Any = None):  # shouldnt be here
@@ -380,7 +380,7 @@ class rhf(wave_function_restricted):
             return dm, mo_coeff
 
         norb = h1.shape[0]
-        dm0 = 2 * jnp.eye(norb, nelec).dot(jnp.eye(norb, nelec).T)
+        dm0 = 2 * wave_data[:, :nelec].dot(wave_data[:, :nelec].T)
         _, mo_coeff = lax.scan(scanned_fun, dm0, None, length=self.n_opt_iter)
 
         return mo_coeff[-1]

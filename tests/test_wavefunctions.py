@@ -106,31 +106,33 @@ ham_data_g["ene0"] = ham_data["ene0"]
 
 uhf_cpmc = wavefunctions.uhf_cpmc(norb, nelec_sp)
 
+wave_data_rhf = jnp.eye(norb)
+
 
 def test_rhf_overlap():
-    overlap = rhf.calc_overlap(walker)
+    overlap = rhf.calc_overlap(walker, wave_data_rhf)
     assert np.allclose(jnp.real(overlap), -0.10794844182417201)
 
 
 def test_rhf_green():
-    green = rhf.calc_green(walker)
+    green = rhf.calc_green(walker, wave_data_rhf)
     assert green.shape == (nelec, norb)
     assert np.allclose(jnp.real(jnp.sum(green)), 12.181348093111438)
 
 
 def test_rhf_force_bias():
-    force_bias = rhf.calc_force_bias(walker, ham_data)
+    force_bias = rhf.calc_force_bias(walker, ham_data, wave_data_rhf)
     assert force_bias.shape == (nchol,)
     assert np.allclose(jnp.real(jnp.sum(force_bias)), 66.13455680423321)
 
 
 def test_rhf_energy():
-    energy = rhf.calc_energy(walker, ham_data)
+    energy = rhf.calc_energy(walker, ham_data, wave_data_rhf)
     assert np.allclose(jnp.real(energy), 217.79874063608622)
 
 
 def test_rhf_optimize_orbs():
-    orbs = rhf.optimize_orbs(ham_data)
+    orbs = rhf.optimize_orbs(ham_data, wave_data_rhf)
     assert orbs.shape == (norb, norb)
     assert np.allclose(jnp.sum(orbs), 2.9662577668717933)
 

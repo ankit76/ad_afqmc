@@ -17,7 +17,7 @@ import jax.numpy as jnp
 from jax import dtypes, jvp, random, vjp, config
 from mpi4py import MPI
 
-from ad_afqmc import linalg_utils, propagation, sampler, stat_utils
+from ad_afqmc import linalg_utils, propagation, sampler, stat_utils, grad_utils
 
 print = partial(print, flush=True)
 config.update("jax_enable_x64", True)
@@ -91,6 +91,8 @@ def afqmc(
         )
         trial_rdm2 = trial_rdm2.reshape(ham.norb**2, ham.norb**2)
         trial_rdm2 = jnp.array(trial_rdm2)
+    if options["ad_mode"] == "nuc_grad":
+        rdm_2_op = jnp.array(ham_data["chol"]).reshape((-1, ham.norb, ham.norb)).copy()
 
     comm.Barrier()
     init_time = time.time() - init
@@ -212,8 +214,35 @@ def afqmc(
             global_block_rdm2s = np.zeros(
                 (size * propagator.n_blocks, *(rdm_2_op.shape))
             )
+    if (
+        (options["ad_mode"] == "nuc_grad")
+        and (options["orbital_rotation"] == False)
+        and (options["do_sr"] == False)
+    ):
+        propagate_phaseless_wrapper = (
+            lambda x, y, k, z: sampler.propagate_phaseless_nucgrad_norot_nosr(
+                ham, ham_data, x, y, k, propagator, z, trial, wave_data
+            )
+        )
 
-    if options["orbital_rotation"] == False and options["do_sr"] == False:
+    elif (
+        (options["ad_mode"] == "nuc_grad")
+        and (options["orbital_rotation"] == False)
+        and (options["do_sr"] == True)
+    ):
+        propagate_phaseless_wrapper = (
+            lambda x, y, k, z: sampler.propagate_phaseless_nucgrad_norot(
+                ham, ham_data, x, y, k, propagator, z, trial, wave_data
+            )
+        )
+    elif (options["ad_mode"] == "nuc_grad") and (options["orbital_rotation"] == True):
+        propagate_phaseless_wrapper = (
+            lambda x, y, k, z: sampler.propagate_phaseless_nucgrad(
+                ham, ham_data, x, y, k, propagator, z, trial, wave_data
+            )
+        )
+
+    elif options["orbital_rotation"] == False and options["do_sr"] == False:
         propagate_phaseless_wrapper = (
             lambda x, y, z: sampler.propagate_phaseless_ad_nosr_norot(
                 ham, ham_data, x, y, propagator, z, trial, wave_data
@@ -251,7 +280,7 @@ def afqmc(
             prop_data_tangent[x] = np.zeros_like(prop_data[x])
     block_rdm1_n = np.zeros_like(ham_data["h1"])
     block_rdm2_n = None
-    if options["ad_mode"] == "2rdm":
+    if options["ad_mode"] == "2rdm" or options["ad_mode"] == "nuc_grad":
         block_rdm2_n = np.zeros_like(rdm_2_op)
     block_observable_n = 0.0
 
@@ -292,6 +321,24 @@ def afqmc(
                 block_observable_n = trial_observable
                 block_rdm2_n = trial_rdm2
                 local_large_deviations += 1
+        elif options["ad_mode"] == "nuc_grad":
+            coupling = 1.0
+            block_energy_n, block_vjp_fun, prop_data = vjp(
+                propagate_phaseless_wrapper,
+                coupling,
+                rdm_op,
+                rdm_2_op,
+                prop_data,
+                has_aux=True,
+            )
+            block_rdm1_n = block_vjp_fun(1.0)[1]
+            block_rdm2_n = block_vjp_fun(1.0)[2]
+            grad_utils.append_to_array(
+                f"en_der_afqmc_{comm.rank}.npz",
+                block_rdm1_n,
+                block_rdm2_n,
+                jnp.sum(prop_data["weights"]),
+            )
         else:
             block_energy_n, prop_data = sampler.propagate_phaseless(
                 ham, ham_data, propagator, prop_data, trial, wave_data

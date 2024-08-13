@@ -61,6 +61,8 @@ ham_g["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
 ham_g["ene0"] = 0.0
 
 
+wave_data_rhf = jnp.eye(norb)
+
 def test_rot_orbs():
     ham_rot = ham_handler.rot_orbs(ham, mo_coeff)
     assert ham_rot["h1"].shape == (norb, norb)
@@ -68,13 +70,13 @@ def test_rot_orbs():
 
 
 def test_rot_ham():
-    rot_ham = ham_handler.rot_ham(ham)
+    rot_ham = ham_handler.rot_ham(ham,mo_coeff)
     assert rot_ham["rot_h1"].shape == (nelec, norb)
     assert rot_ham["rot_chol"].shape == (nchol, nelec, norb)
 
 
 def test_prop_ham():
-    prop_ham = ham_handler.prop_ham(ham, 0.005, trial)
+    prop_ham = ham_handler.prop_ham(ham, 0.005, trial,mo_coeff)
     assert prop_ham["mf_shifts"].shape == (nchol,)
     assert prop_ham["exp_h1"].shape == (norb, norb)
 
