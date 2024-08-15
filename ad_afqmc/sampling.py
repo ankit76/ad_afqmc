@@ -1,29 +1,14 @@
-import os
-
-os.environ["XLA_FLAGS"] = (
-    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
-)
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-os.environ["JAX_ENABLE_X64"] = "True"
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Sequence, Tuple
 
-from jax import config
-
-config.update("jax_enable_x64", True)
-config.update("jax_platform_name", "cpu")
-
 import jax.numpy as jnp
 from jax import checkpoint, jit, lax, random
 
-# import stat_utils
 from ad_afqmc import linalg_utils
 from ad_afqmc.hamiltonian import hamiltonian
 from ad_afqmc.propagation import propagator
 from ad_afqmc.wavefunctions import wave_function
-
-print = partial(print, flush=True)
 
 
 @dataclass

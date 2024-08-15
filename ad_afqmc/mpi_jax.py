@@ -1,29 +1,20 @@
-import os
-
-os.environ["XLA_FLAGS"] = (
-    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
-)
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-os.environ["JAX_ENABLE_X64"] = "True"
-
-from jax import config
-
-config.update("jax_enable_x64", True)
-config.update("jax_platform_name", "cpu")
-
 import pickle
 import time
 
 import h5py
 import numpy as np
-from jax import numpy as jnp
-from mpi4py import MPI
 
-from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
+from ad_afqmc import config
 
+config.setup_jax()
+MPI = config.setup_comm()
 comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
+
+from jax import numpy as jnp
+
+from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
 
 
 def _prep_afqmc(options=None):
@@ -168,21 +159,23 @@ def _prep_afqmc(options=None):
                 print(f"# {op}: {options[op]}")
         print("#")
 
-    return ham_data, ham, prop, trial, wave_data, sampler, observable, options
+    return ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
 
 
 if __name__ == "__main__":
-    ham_data, ham, prop, trial, wave_data, sampler, observable, options = _prep_afqmc()
+    ham_data, ham, prop, trial, wave_data, sampler, observable, options, _ = (
+        _prep_afqmc()
+    )
     init = time.time()
     comm.Barrier()
     e_afqmc, err_afqmc = 0.0, 0.0
     if options["free_projection"]:
         driver.fp_afqmc(
-            ham_data, ham, prop, trial, wave_data, sampler, observable, options
+            ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
         )
     else:
         e_afqmc, err_afqmc = driver.afqmc(
-            ham_data, ham, prop, trial, wave_data, sampler, observable, options
+            ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
         )
     comm.Barrier()
     end = time.time()

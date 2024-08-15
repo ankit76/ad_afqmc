@@ -1,30 +1,14 @@
-import os
-
-import numpy as np
-
-os.environ["XLA_FLAGS"] = (
-    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
-)
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-os.environ["JAX_ENABLE_X64"] = "True"
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial, singledispatchmethod
-from typing import Any, List, Sequence, Tuple
-
-from jax import config
-
-config.update("jax_enable_x64", True)
-config.update("jax_platform_name", "cpu")
+from typing import Any, Sequence, Tuple
 
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import config, jit, jvp, lax, vjp, vmap
+import numpy as np
+from jax import jit, jvp, lax, vjp, vmap
 
 from ad_afqmc import linalg_utils
-
-print = partial(print, flush=True)
-config.update("jax_enable_x64", True)
 
 
 class wave_function(ABC):

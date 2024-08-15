@@ -1,35 +1,15 @@
-import os
-import time
-
-import numpy as np
-
-os.environ["XLA_FLAGS"] = (
-    "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
-)
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-os.environ["JAX_ENABLE_X64"] = "True"
 import pickle
-from copy import deepcopy
+import time
 from functools import partial
 from typing import Optional, Sequence
 
-from jax import config
-
-config.update("jax_enable_x64", True)
-config.update("jax_platform_name", "cpu")
-
 import jax.numpy as jnp
+import numpy as np
 from jax import dtypes, jvp, random, vjp
-from mpi4py import MPI
 
 from ad_afqmc import hamiltonian, propagation, sampling, stat_utils, wavefunctions
 
 print = partial(print, flush=True)
-
-
-comm = MPI.COMM_WORLD
-size = comm.Get_size()
-rank = comm.Get_rank()
 
 
 def afqmc(
@@ -41,9 +21,13 @@ def afqmc(
     sampler: sampling.sampler,
     observable,
     options: dict,
+    MPI,
     init_walkers: Optional[Sequence] = None,
 ):
     init = time.time()
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    rank = comm.Get_rank()
     seed = options["seed"]
     neql = options["n_eql"]
 
@@ -509,9 +493,13 @@ def fp_afqmc(
     sampler: sampling.sampler,
     observable,
     options: dict,
+    MPI,
     init_walkers=None,
 ):
     init = time.time()
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    rank = comm.Get_rank()
     seed = options["seed"]
 
     trial_rdm1 = trial.get_rdm1(wave_data)

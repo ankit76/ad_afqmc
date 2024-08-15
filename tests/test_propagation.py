@@ -1,10 +1,8 @@
-import os
-
 import numpy as np
-import pytest
 
-os.environ["JAX_ENABLE_X64"] = "True"
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
+from ad_afqmc import config
+
+config.setup_jax()
 from jax import numpy as jnp
 from jax import random
 

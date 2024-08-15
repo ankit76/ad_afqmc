@@ -2,8 +2,9 @@ import os
 
 import numpy as np
 
-os.environ["JAX_ENABLE_X64"] = "True"
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
+from ad_afqmc import config
+
+config.setup_jax()
 from jax import numpy as jnp
 
 from ad_afqmc import pyscf_interface, wavefunctions
