@@ -7,7 +7,7 @@ os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "True"
 
 from jax import config
-#config.update("jax_disable_jit", True)
+
 config.update("jax_enable_x64", True)
 config.update("jax_platform_name", "cpu")
 
@@ -126,12 +126,6 @@ def _prep_afqmc(options=None):
                     "# trial.pkl not found, make sure to construct the trial separately."
                 )
             trial = None
-
-    if abs(ms) != 0:
-        assert (
-            options["walker_type"] != "rhf" or type(trial).__name__ == "UCISD"
-        ), "Open shell systems have to use UHF walkers and non-RHF trials."
-
 
     if options["walker_type"] == "rhf":
         if options["symmetry"]:

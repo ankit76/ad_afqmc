@@ -301,7 +301,6 @@ class propagator_restricted(propagator):
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
             optimize="optimal",
         )
-        ham_data["normal_ordering_term"] = -v0
         h1_mod = (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0 - v0
         h1_mod = h1_mod - jnp.real(
             1.0j
@@ -457,7 +456,6 @@ class propagator_unrestricted(propagator_restricted):
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
             optimize="optimal",
         )
-        ham_data["normal_ordering_term"] = -v0
         v1 = jnp.real(
             1.0j
             * jnp.einsum(
