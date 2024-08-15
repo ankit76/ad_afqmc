@@ -1,6 +1,8 @@
 import os
 from dataclasses import dataclass
 
+import numpy as np
+
 afqmc_config = {"use_gpu": False}
 
 
@@ -18,8 +20,8 @@ class not_a_comm:
     def Barrier(self):
         pass
 
-    def Reduce(self, sendbuf, recbuf, op, root=0):
-        recbuf[:] = sendbuf
+    def Reduce(self, sendbuf, recbuf, op=None, root=0):
+        np.copyto(recbuf[0], sendbuf[0])
 
     def Bcast(self, buf, root=0):
         pass

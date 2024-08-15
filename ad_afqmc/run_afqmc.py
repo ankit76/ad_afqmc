@@ -4,6 +4,8 @@ from functools import partial
 
 import numpy as np
 
+from ad_afqmc import config
+
 print = partial(print, flush=True)
 
 
@@ -20,8 +22,10 @@ def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
         mpi_prefix = "mpirun "
         if nproc is not None:
             mpi_prefix += f"-np {nproc} "
+    use_gpu = config.afqmc_config["use_gpu"]
+    gpu_flag = "--use_gpu" if use_gpu else ""
     os.system(
-        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script}"
+        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script} {gpu_flag}"
     )
     try:
         ene_err = np.loadtxt("ene_err.txt")

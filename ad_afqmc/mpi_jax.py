@@ -1,10 +1,18 @@
+import argparse
 import pickle
 import time
 
 import h5py
 import numpy as np
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--use_gpu", action="store_true")
+args = parser.parse_args()
+
 from ad_afqmc import config
+
+if args.use_gpu:
+    config.afqmc_config["use_gpu"] = True
 
 config.setup_jax()
 MPI = config.setup_comm()
