@@ -45,7 +45,7 @@ class not_MPI:
 
 
 def setup_jax():
-    from jax.config import config
+    from jax import config
 
     config.update("jax_enable_x64", True)
     if afqmc_config["use_gpu"] == True:
