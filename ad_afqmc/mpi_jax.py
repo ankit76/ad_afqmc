@@ -21,9 +21,13 @@ comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
 
+from functools import partial
+
 from jax import numpy as jnp
 
 from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
+
+print = partial(print, flush=True)
 
 
 def _prep_afqmc(options=None):
