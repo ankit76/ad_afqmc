@@ -34,10 +34,12 @@ class wave_function(ABC):
     Attributes:
         norb: Number of orbitals.
         nelec: Number of electrons of each spin.
+        n_batch: Number of batches used in scan.
     """
 
     norb: int
     nelec: Tuple[int, int]
+    n_batch: int = 1
 
     @singledispatchmethod
     def calc_overlap(self, walkers, wave_data: dict) -> jnp.ndarray:
@@ -56,15 +58,44 @@ class wave_function(ABC):
 
     @calc_overlap.register
     def _(self, walkers: list, wave_data: dict) -> jnp.ndarray:
-        return vmap(self._calc_overlap, in_axes=(0, 0, None))(
-            walkers[0], walkers[1], wave_data
-        )
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, batch_idx):
+            start_idx = batch_idx * batch_size
+            walker_batch_0 = lax.dynamic_slice(
+                walkers[0], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[0])
+            )
+            walker_batch_1 = lax.dynamic_slice(
+                walkers[1], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[1])
+            )
+            overlap_batch = vmap(self._calc_overlap, in_axes=(0, 0, None))(
+                walker_batch_0, walker_batch_1, wave_data
+            )
+            return carry, overlap_batch
+
+        _, overlaps = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        return overlaps.reshape(n_walkers)
 
     @calc_overlap.register
     def _(self, walkers: jnp.ndarray, wave_data: dict) -> jnp.ndarray:
-        return vmap(self._calc_overlap_restricted, in_axes=(0, None))(
-            walkers, wave_data
-        )
+        n_walkers = walkers.shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, batch_idx):
+            start_idx = batch_idx * batch_size
+            walker_batch = lax.dynamic_slice(
+                walkers,
+                (start_idx, 0, 0),
+                (batch_size, walkers.shape[1], walkers.shape[2]),
+            )
+            overlap_batch = vmap(self._calc_overlap_restricted, in_axes=(0, None))(
+                walker_batch, wave_data
+            )
+            return carry, overlap_batch
+
+        _, overlaps = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        return overlaps.reshape(n_walkers)
 
     @partial(jit, static_argnums=0)
     def _calc_overlap_restricted(
@@ -100,15 +131,45 @@ class wave_function(ABC):
 
     @calc_force_bias.register
     def _(self, walkers: list, ham_data: dict, wave_data: dict) -> jnp.ndarray:
-        return vmap(self._calc_force_bias, in_axes=(0, 0, None, None))(
-            walkers[0], walkers[1], ham_data, wave_data
-        )
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, batch_idx):
+            start_idx = batch_idx * batch_size
+            walker_batch_0 = lax.dynamic_slice(
+                walkers[0], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[0])
+            )
+            walker_batch_1 = lax.dynamic_slice(
+                walkers[1], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[1])
+            )
+            fb_batch = vmap(self._calc_force_bias, in_axes=(0, 0, None, None))(
+                walker_batch_0, walker_batch_1, ham_data, wave_data
+            )
+            return carry, fb_batch
+
+        _, fbs = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        fbs = jnp.concatenate(fbs, axis=0)
+        return fbs.reshape(n_walkers, -1)
 
     @calc_force_bias.register
     def _(self, walkers: jnp.ndarray, ham_data: dict, wave_data: dict) -> jnp.ndarray:
-        return vmap(self._calc_force_bias_restricted, in_axes=(0, None, None))(
-            walkers, ham_data, wave_data
-        )
+        n_walkers = walkers.shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, batch_idx):
+            start_idx = batch_idx * batch_size
+            walker_batch = lax.dynamic_slice(
+                walkers,
+                (start_idx, 0, 0),
+                (batch_size, walkers.shape[1], walkers.shape[2]),
+            )
+            fb_batch = vmap(self._calc_force_bias_restricted, in_axes=(0, None, None))(
+                walker_batch, ham_data, wave_data
+            )
+            return carry, fb_batch
+
+        _, fbs = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        return fbs.reshape(n_walkers, -1)
 
     @partial(jit, static_argnums=0)
     def _calc_force_bias_restricted(
@@ -148,15 +209,47 @@ class wave_function(ABC):
 
     @calc_energy.register
     def _(self, walkers: list, ham_data: dict, wave_data: dict) -> jnp.ndarray:
-        return vmap(self._calc_energy, in_axes=(0, 0, None, None))(
-            walkers[0], walkers[1], ham_data, wave_data
-        )
+        # return vmap(self._calc_energy, in_axes=(0, 0, None, None))(
+        #     walkers[0], walkers[1], ham_data, wave_data
+        # )
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, batch_idx):
+            start_idx = batch_idx * batch_size
+            walker_batch_0 = lax.dynamic_slice(
+                walkers[0], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[0])
+            )
+            walker_batch_1 = lax.dynamic_slice(
+                walkers[1], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[1])
+            )
+            energy_batch = vmap(self._calc_energy, in_axes=(0, 0, None, None))(
+                walker_batch_0, walker_batch_1, ham_data, wave_data
+            )
+            return carry, energy_batch
+
+        _, energies = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        return energies.reshape(n_walkers)
 
     @calc_energy.register
     def _(self, walkers: jnp.ndarray, ham_data: dict, wave_data: dict) -> jnp.ndarray:
-        return vmap(self._calc_energy_restricted, in_axes=(0, None, None))(
-            walkers, ham_data, wave_data
-        )
+        n_walkers = walkers.shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, batch_idx):
+            start_idx = batch_idx * batch_size
+            walker_batch = lax.dynamic_slice(
+                walkers,
+                (start_idx, 0, 0),
+                (batch_size, walkers.shape[1], walkers.shape[2]),
+            )
+            energy_batch = vmap(self._calc_energy_restricted, in_axes=(0, None, None))(
+                walker_batch, ham_data, wave_data
+            )
+            return carry, energy_batch
+
+        _, energies = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        return energies.reshape(n_walkers)
 
     @partial(jit, static_argnums=0)
     def _calc_energy_restricted(
@@ -351,6 +444,7 @@ class rhf(wave_function):
     norb: int
     nelec: Tuple[int, int]
     n_opt_iter: int = 30
+    n_batch: int = 1
 
     def __post_init__(self):
         assert (
@@ -524,6 +618,7 @@ class uhf(wave_function):
     norb: int
     nelec: Tuple[int, int]
     n_opt_iter: int = 30
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def _calc_overlap(
@@ -844,6 +939,7 @@ class ghf(wave_function):
     norb: int
     nelec: Tuple[int, int]
     n_opt_iter: int = 30
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def _calc_overlap(
@@ -1066,6 +1162,7 @@ class noci(wave_function):
     norb: int
     nelec: Tuple[int, int]
     ndets: int
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def _calc_overlap_single_det(
@@ -1589,6 +1686,7 @@ class multislater(wave_function_auto):
     nelec: Tuple[int, int]
     max_excitation: int  # maximum of sum of alpha and beta excitation ranks
     eps: float = 1.0e-4  # finite difference step size in local energy calculations
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def _det_overlap(
@@ -1736,6 +1834,7 @@ class CISD(wave_function_auto):
     norb: int
     nelec: Tuple[int, int]
     eps: float = 1.0e-4  # finite difference step size in local energy calculations
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def _calc_green_restricted(self, walker: jnp.ndarray) -> jnp.ndarray:
@@ -1767,6 +1866,7 @@ class UCISD(wave_function_auto):
     norb: int
     nelec: Tuple[int, int]
     eps: float = 1.0e-4  # finite difference step size in local energy calculations
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def _calc_green(
@@ -1830,6 +1930,7 @@ class CISD_THC(wave_function_auto):
     norb: int
     nelec: int
     eps: float = 1.0e-4  # finite difference step size in local energy calculations
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def _calc_green_restricted(self, walker: jnp.ndarray) -> jnp.ndarray:

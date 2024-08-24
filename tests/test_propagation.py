@@ -14,7 +14,7 @@ norb, nelec, nchol = 10, (5, 5), 5
 
 ham_handler = hamiltonian.hamiltonian(norb)
 trial = wavefunctions.rhf(norb, nelec)
-prop_handler = propagation.propagator_restricted(n_walkers=7)
+prop_handler = propagation.propagator_restricted(n_walkers=10, n_batch=5)
 
 wave_data = {}
 wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec[0]]
@@ -39,7 +39,7 @@ prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
 nelec_sp = (5, 4)
 trial_u = wavefunctions.uhf(norb, nelec_sp)
-prop_handler_u = propagation.propagator_unrestricted(n_walkers=7)
+prop_handler_u = propagation.propagator_unrestricted(n_walkers=10, n_batch=5)
 
 wave_data_u = {}
 wave_data_u["mo_coeff"] = [

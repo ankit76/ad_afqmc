@@ -5,14 +5,15 @@ import time
 import h5py
 import numpy as np
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--use_gpu", action="store_true")
-args = parser.parse_args()
-
 from ad_afqmc import config
 
-if args.use_gpu:
-    config.afqmc_config["use_gpu"] = True
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use_gpu", action="store_true")
+    args = parser.parse_args()
+
+    if args.use_gpu:
+        config.afqmc_config["use_gpu"] = True
 
 config.setup_jax()
 MPI = config.setup_comm()
@@ -67,6 +68,7 @@ def _prep_afqmc(options=None):
             print(f"# No trial specified in options.")
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
+    options["n_batch"] = options.get("n_batch", 1)
 
     try:
         with h5py.File("observable.h5", "r") as fh5:
@@ -95,10 +97,10 @@ def _prep_afqmc(options=None):
     )
 
     if options["trial"] == "rhf":
-        trial = wavefunctions.rhf(norb, nelec_sp)
+        trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
     elif options["trial"] == "uhf":
-        trial = wavefunctions.uhf(norb, nelec_sp)
+        trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = [
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
@@ -111,7 +113,9 @@ def _prep_afqmc(options=None):
             [jnp.array(ci_coeffs_dets[1][0]), jnp.array(ci_coeffs_dets[1][1])],
         ]
         wave_data["ci_coeffs_dets"] = ci_coeffs_dets
-        trial = wavefunctions.noci(norb, nelec_sp, ci_coeffs_dets[0].size)
+        trial = wavefunctions.noci(
+            norb, nelec_sp, ci_coeffs_dets[0].size, n_batch=options["n_batch"]
+        )
     else:
         try:
             with open("trial.pkl", "rb") as f:
@@ -132,7 +136,9 @@ def _prep_afqmc(options=None):
         else:
             ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
 
-        prop = propagation.propagator_restricted(options["dt"], options["n_walkers"])
+        prop = propagation.propagator_restricted(
+            options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+        )
 
     elif options["walker_type"] == "uhf":
         if options["symmetry"]:
@@ -144,11 +150,13 @@ def _prep_afqmc(options=None):
                 options["dt"],
                 options["n_walkers"],
                 10,
+                n_batch=options["n_batch"],
             )
         else:
             prop = propagation.propagator_unrestricted(
                 options["dt"],
                 options["n_walkers"],
+                n_batch=options["n_batch"],
             )
 
     sampler = sampling.sampler(

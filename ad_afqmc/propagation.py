@@ -202,6 +202,7 @@ class propagator_restricted(propagator):
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
+    n_batch: int = 1
 
     def init_prop_data(
         self,
@@ -253,16 +254,36 @@ class propagator_restricted(propagator):
         self, ham_data: dict, walkers: jnp.ndarray, fields: jnp.ndarray
     ) -> jnp.ndarray:
         """Apply the propagator to a batch of walkers."""
-        vhs = (
-            1.0j
-            * jnp.sqrt(self.dt)
-            * fields.dot(ham_data["chol"]).reshape(
-                walkers.shape[0], walkers.shape[1], walkers.shape[1]
+        n_walkers = walkers.shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, batch_idx):
+            start_idx = batch_idx * batch_size
+            field_batch = lax.dynamic_slice(
+                fields, (start_idx, 0), (batch_size, fields.shape[1])
             )
-        )
-        return vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
-            ham_data["exp_h1"], vhs, walkers
-        )
+            vhs = (
+                1.0j
+                * jnp.sqrt(self.dt)
+                * field_batch.dot(ham_data["chol"]).reshape(
+                    batch_size, walkers.shape[1], walkers.shape[1]
+                )
+            )
+            walker_batch = lax.dynamic_slice(
+                walkers,
+                (start_idx, 0, 0),
+                (batch_size, walkers.shape[1], walkers.shape[2]),
+            )
+            walkers_new = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
+                ham_data["exp_h1"],
+                vhs,
+                walker_batch,
+            )
+            return carry, walkers_new
+
+        _, walkers_new = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        walkers = walkers_new.reshape(n_walkers, walkers.shape[1], walkers.shape[2])
+        return walkers
 
     @partial(jit, static_argnums=(0, 2))
     def _build_propagation_intermediates(
@@ -335,6 +356,46 @@ class propagator_unrestricted(propagator_restricted):
     def _apply_trotprop(
         self, ham_data: dict, walkers: Sequence, fields: jnp.ndarray
     ) -> jnp.ndarray:
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, batch_idx):
+            start_idx = batch_idx * batch_size
+            field_batch = lax.dynamic_slice(
+                fields, (start_idx, 0), (batch_size, fields.shape[1])
+            )
+            vhs = (
+                1.0j
+                * jnp.sqrt(self.dt)
+                * field_batch.dot(ham_data["chol"]).reshape(
+                    batch_size, walkers[0].shape[1], walkers[0].shape[1]
+                )
+            )
+            walker_batch_0 = lax.dynamic_slice(
+                walkers[0],
+                (start_idx, 0, 0),
+                (batch_size, walkers[0].shape[1], walkers[0].shape[2]),
+            )
+            walkers_new_0 = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
+                ham_data["exp_h1"][0], vhs, walker_batch_0
+            )
+            walker_batch_1 = lax.dynamic_slice(
+                walkers[1],
+                (start_idx, 0, 0),
+                (batch_size, walkers[1].shape[1], walkers[1].shape[2]),
+            )
+            walkers_new_1 = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
+                ham_data["exp_h1"][1], vhs, walker_batch_1
+            )
+            return carry, [walkers_new_0, walkers_new_1]
+
+        _, walkers_new = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        walkers = [
+            walkers_new[0].reshape(n_walkers, walkers[0].shape[1], walkers[0].shape[2]),
+            walkers_new[1].reshape(n_walkers, walkers[1].shape[1], walkers[1].shape[2]),
+        ]
+        return walkers
+
         vhs = (
             1.0j
             * jnp.sqrt(self.dt)
