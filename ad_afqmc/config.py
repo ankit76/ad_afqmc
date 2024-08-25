@@ -1,4 +1,6 @@
 import os
+import platform
+import socket
 from dataclasses import dataclass
 
 import numpy as np
@@ -49,8 +51,24 @@ def setup_jax():
 
     config.update("jax_enable_x64", True)
     if afqmc_config["use_gpu"] == True:
-        print("Using GPU.")
+        config.update("jax_platform_name", "gpu")
         # TODO: add gpu performance xla flags
+        hostname = socket.gethostname()
+        system_type = platform.system()
+        machine_type = platform.machine()
+        processor = platform.processor()
+        print(f"# Hostname: {hostname}")
+        print(f"# System Type: {system_type}")
+        print(f"# Machine Type: {machine_type}")
+        print(f"# Processor: {processor}")
+        uname_info = platform.uname()
+        print("# Using GPU.")
+        print(f"# System: {uname_info.system}")
+        print(f"# Node Name: {uname_info.node}")
+        print(f"# Release: {uname_info.release}")
+        print(f"# Version: {uname_info.version}")
+        print(f"# Machine: {uname_info.machine}")
+        print(f"# Processor: {uname_info.processor}")
     else:
         afqmc_config["use_gpu"] = False
         config.update("jax_platform_name", "cpu")
@@ -69,5 +87,14 @@ def setup_comm():
         from mpi4py import MPI
     else:
         MPI = not_MPI()
-
+    rank = MPI.COMM_WORLD.Get_rank()
+    if rank == 0 and afqmc_config["use_gpu"] == False:
+        hostname = socket.gethostname()
+        system_type = platform.system()
+        machine_type = platform.machine()
+        processor = platform.processor()
+        print(f"# Hostname: {hostname}")
+        print(f"# System Type: {system_type}")
+        print(f"# Machine Type: {machine_type}")
+        print(f"# Processor: {processor}")
     return MPI
