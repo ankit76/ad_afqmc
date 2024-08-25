@@ -61,20 +61,21 @@ class wave_function(ABC):
         n_walkers = walkers[0].shape[0]
         batch_size = n_walkers // self.n_batch
 
-        def scanned_fun(carry, batch_idx):
-            start_idx = batch_idx * batch_size
-            walker_batch_0 = lax.dynamic_slice(
-                walkers[0], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[0])
-            )
-            walker_batch_1 = lax.dynamic_slice(
-                walkers[1], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[1])
-            )
+        def scanned_fun(carry, walker_batch):
+            walker_batch_0, walker_batch_1 = walker_batch
             overlap_batch = vmap(self._calc_overlap, in_axes=(0, 0, None))(
                 walker_batch_0, walker_batch_1, wave_data
             )
             return carry, overlap_batch
 
-        _, overlaps = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        _, overlaps = lax.scan(
+            scanned_fun,
+            None,
+            (
+                walkers[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                walkers[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+            ),
+        )
         return overlaps.reshape(n_walkers)
 
     @calc_overlap.register
@@ -82,19 +83,15 @@ class wave_function(ABC):
         n_walkers = walkers.shape[0]
         batch_size = n_walkers // self.n_batch
 
-        def scanned_fun(carry, batch_idx):
-            start_idx = batch_idx * batch_size
-            walker_batch = lax.dynamic_slice(
-                walkers,
-                (start_idx, 0, 0),
-                (batch_size, walkers.shape[1], walkers.shape[2]),
-            )
+        def scanned_fun(carry, walker_batch):
             overlap_batch = vmap(self._calc_overlap_restricted, in_axes=(0, None))(
                 walker_batch, wave_data
             )
             return carry, overlap_batch
 
-        _, overlaps = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        _, overlaps = lax.scan(
+            scanned_fun, None, walkers.reshape(self.n_batch, batch_size, self.norb, -1)
+        )
         return overlaps.reshape(n_walkers)
 
     @partial(jit, static_argnums=0)
@@ -134,20 +131,21 @@ class wave_function(ABC):
         n_walkers = walkers[0].shape[0]
         batch_size = n_walkers // self.n_batch
 
-        def scanned_fun(carry, batch_idx):
-            start_idx = batch_idx * batch_size
-            walker_batch_0 = lax.dynamic_slice(
-                walkers[0], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[0])
-            )
-            walker_batch_1 = lax.dynamic_slice(
-                walkers[1], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[1])
-            )
+        def scanned_fun(carry, walker_batch):
+            walker_batch_0, walker_batch_1 = walker_batch
             fb_batch = vmap(self._calc_force_bias, in_axes=(0, 0, None, None))(
                 walker_batch_0, walker_batch_1, ham_data, wave_data
             )
             return carry, fb_batch
 
-        _, fbs = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        _, fbs = lax.scan(
+            scanned_fun,
+            None,
+            (
+                walkers[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                walkers[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+            ),
+        )
         fbs = jnp.concatenate(fbs, axis=0)
         return fbs.reshape(n_walkers, -1)
 
@@ -156,19 +154,15 @@ class wave_function(ABC):
         n_walkers = walkers.shape[0]
         batch_size = n_walkers // self.n_batch
 
-        def scanned_fun(carry, batch_idx):
-            start_idx = batch_idx * batch_size
-            walker_batch = lax.dynamic_slice(
-                walkers,
-                (start_idx, 0, 0),
-                (batch_size, walkers.shape[1], walkers.shape[2]),
-            )
+        def scanned_fun(carry, walker_batch):
             fb_batch = vmap(self._calc_force_bias_restricted, in_axes=(0, None, None))(
                 walker_batch, ham_data, wave_data
             )
             return carry, fb_batch
 
-        _, fbs = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        _, fbs = lax.scan(
+            scanned_fun, None, walkers.reshape(self.n_batch, batch_size, self.norb, -1)
+        )
         return fbs.reshape(n_walkers, -1)
 
     @partial(jit, static_argnums=0)
@@ -209,47 +203,15 @@ class wave_function(ABC):
 
     @calc_energy.register
     def _(self, walkers: list, ham_data: dict, wave_data: dict) -> jnp.ndarray:
-        # return vmap(self._calc_energy, in_axes=(0, 0, None, None))(
-        #     walkers[0], walkers[1], ham_data, wave_data
-        # )
-        n_walkers = walkers[0].shape[0]
-        batch_size = n_walkers // self.n_batch
-
-        def scanned_fun(carry, batch_idx):
-            start_idx = batch_idx * batch_size
-            walker_batch_0 = lax.dynamic_slice(
-                walkers[0], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[0])
-            )
-            walker_batch_1 = lax.dynamic_slice(
-                walkers[1], (start_idx, 0, 0), (batch_size, self.norb, self.nelec[1])
-            )
-            energy_batch = vmap(self._calc_energy, in_axes=(0, 0, None, None))(
-                walker_batch_0, walker_batch_1, ham_data, wave_data
-            )
-            return carry, energy_batch
-
-        _, energies = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
-        return energies.reshape(n_walkers)
+        return vmap(self._calc_energy, in_axes=(0, 0, None, None))(
+            walkers[0], walkers[1], ham_data, wave_data
+        )
 
     @calc_energy.register
     def _(self, walkers: jnp.ndarray, ham_data: dict, wave_data: dict) -> jnp.ndarray:
-        n_walkers = walkers.shape[0]
-        batch_size = n_walkers // self.n_batch
-
-        def scanned_fun(carry, batch_idx):
-            start_idx = batch_idx * batch_size
-            walker_batch = lax.dynamic_slice(
-                walkers,
-                (start_idx, 0, 0),
-                (batch_size, walkers.shape[1], walkers.shape[2]),
-            )
-            energy_batch = vmap(self._calc_energy_restricted, in_axes=(0, None, None))(
-                walker_batch, ham_data, wave_data
-            )
-            return carry, energy_batch
-
-        _, energies = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
-        return energies.reshape(n_walkers)
+        return vmap(self._calc_energy_restricted, in_axes=(0, None, None))(
+            walkers, ham_data, wave_data
+        )
 
     @partial(jit, static_argnums=0)
     def _calc_energy_restricted(

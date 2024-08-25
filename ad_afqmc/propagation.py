@@ -257,22 +257,14 @@ class propagator_restricted(propagator):
         n_walkers = walkers.shape[0]
         batch_size = n_walkers // self.n_batch
 
-        def scanned_fun(carry, batch_idx):
-            start_idx = batch_idx * batch_size
-            field_batch = lax.dynamic_slice(
-                fields, (start_idx, 0), (batch_size, fields.shape[1])
-            )
+        def scanned_fun(carry, batch):
+            field_batch, walker_batch = batch
             vhs = (
                 1.0j
                 * jnp.sqrt(self.dt)
                 * field_batch.dot(ham_data["chol"]).reshape(
                     batch_size, walkers.shape[1], walkers.shape[1]
                 )
-            )
-            walker_batch = lax.dynamic_slice(
-                walkers,
-                (start_idx, 0, 0),
-                (batch_size, walkers.shape[1], walkers.shape[2]),
             )
             walkers_new = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"],
@@ -281,7 +273,16 @@ class propagator_restricted(propagator):
             )
             return carry, walkers_new
 
-        _, walkers_new = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        _, walkers_new = lax.scan(
+            scanned_fun,
+            None,
+            (
+                fields.reshape(self.n_batch, batch_size, -1),
+                walkers.reshape(
+                    self.n_batch, batch_size, walkers.shape[1], walkers.shape[2]
+                ),
+            ),
+        )
         walkers = walkers_new.reshape(n_walkers, walkers.shape[1], walkers.shape[2])
         return walkers
 
@@ -359,11 +360,8 @@ class propagator_unrestricted(propagator_restricted):
         n_walkers = walkers[0].shape[0]
         batch_size = n_walkers // self.n_batch
 
-        def scanned_fun(carry, batch_idx):
-            start_idx = batch_idx * batch_size
-            field_batch = lax.dynamic_slice(
-                fields, (start_idx, 0), (batch_size, fields.shape[1])
-            )
+        def scanned_fun(carry, batch):
+            field_batch, walker_batch_0, walker_batch_1 = batch
             vhs = (
                 1.0j
                 * jnp.sqrt(self.dt)
@@ -371,44 +369,31 @@ class propagator_unrestricted(propagator_restricted):
                     batch_size, walkers[0].shape[1], walkers[0].shape[1]
                 )
             )
-            walker_batch_0 = lax.dynamic_slice(
-                walkers[0],
-                (start_idx, 0, 0),
-                (batch_size, walkers[0].shape[1], walkers[0].shape[2]),
-            )
             walkers_new_0 = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"][0], vhs, walker_batch_0
-            )
-            walker_batch_1 = lax.dynamic_slice(
-                walkers[1],
-                (start_idx, 0, 0),
-                (batch_size, walkers[1].shape[1], walkers[1].shape[2]),
             )
             walkers_new_1 = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"][1], vhs, walker_batch_1
             )
             return carry, [walkers_new_0, walkers_new_1]
 
-        _, walkers_new = lax.scan(scanned_fun, None, jnp.arange(self.n_batch))
+        _, walkers_new = lax.scan(
+            scanned_fun,
+            None,
+            (
+                fields.reshape(self.n_batch, batch_size, -1),
+                walkers[0].reshape(
+                    self.n_batch, batch_size, walkers[0].shape[1], walkers[0].shape[2]
+                ),
+                walkers[1].reshape(
+                    self.n_batch, batch_size, walkers[1].shape[1], walkers[1].shape[2]
+                ),
+            ),
+        )
         walkers = [
             walkers_new[0].reshape(n_walkers, walkers[0].shape[1], walkers[0].shape[2]),
             walkers_new[1].reshape(n_walkers, walkers[1].shape[1], walkers[1].shape[2]),
         ]
-        return walkers
-
-        vhs = (
-            1.0j
-            * jnp.sqrt(self.dt)
-            * fields.dot(ham_data["chol"]).reshape(
-                walkers[0].shape[0], walkers[0].shape[1], walkers[0].shape[1]
-            )
-        )
-        walkers[0] = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
-            ham_data["exp_h1"][0], vhs, walkers[0]
-        )
-        walkers[1] = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
-            ham_data["exp_h1"][1], vhs, walkers[1]
-        )
         return walkers
 
     @partial(jit, static_argnums=(0,))
