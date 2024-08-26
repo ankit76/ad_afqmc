@@ -282,10 +282,14 @@ class wave_function(ABC):
         natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
         natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
         if restricted:
-            if self.nelec[0] >= self.nelec[1]:
+            if self.nelec[0] == self.nelec[1]:
                 return jnp.array([natorbs_up + 0.0j] * n_walkers)
             else:
-                return jnp.array([natorbs_dn + 0.0j] * n_walkers)
+                # bring the dn orbital projection onto up space to the front
+                dn_proj = natorbs_up.T.conj() @ natorbs_dn
+                proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
+                orbs = natorbs_up @ proj_orbs
+                return jnp.array([orbs + 0.0j] * n_walkers)
         else:
             return [
                 jnp.array([natorbs_up + 0.0j] * n_walkers),
