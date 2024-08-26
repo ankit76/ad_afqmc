@@ -18,12 +18,15 @@ def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
         path = os.path.abspath(__file__)
         dir_path = os.path.dirname(path)
         script = f"{dir_path}/mpi_jax.py"
-    if mpi_prefix is None:
-        mpi_prefix = "mpirun "
-    if nproc is not None:
-        mpi_prefix += f"-np {nproc} "
     use_gpu = config.afqmc_config["use_gpu"]
     gpu_flag = "--use_gpu" if use_gpu else ""
+    if mpi_prefix is None:
+        if use_gpu:
+            mpi_prefix = ""
+        else:
+            mpi_prefix = "mpirun "
+    if nproc is not None:
+        mpi_prefix += f"-np {nproc} "
     os.system(
         f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script} {gpu_flag}"
     )
