@@ -8,6 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 import scipy
 from pyscf import __config__, ao2mo, df, dft, lib, mcscf, scf
+from pyscf.cc.ccsd import CCSD
+from pyscf.cc.uccsd import UCCSD
 
 print = partial(print, flush=True)
 
@@ -48,7 +50,7 @@ def modified_cholesky(mat: np.ndarray, max_error: float = 1e-6) -> np.ndarray:
 
 # prepare phaseless afqmc with mf trial
 def prep_afqmc(
-    mf: Union[scf.uhf.UHF, scf.rhf.RHF],
+    mf_or_cc: Union[scf.uhf.UHF, scf.rhf.RHF, CCSD, UCCSD],
     basis_coeff: Optional[np.ndarray] = None,
     norb_frozen: int = 0,
     chol_cut: float = 1e-5,
@@ -65,6 +67,41 @@ def prep_afqmc(
     """
 
     print("#\n# Preparing AFQMC calculation")
+
+    if isinstance(mf_or_cc, (CCSD, UCCSD)):
+        # raise warning about mpi
+        print(
+            "# If you import pyscf cc modules and use MPI for AFQMC in the same script, finalize MPI before calling the AFQMC driver."
+        )
+        mf = mf_or_cc._scf
+        cc = mf_or_cc
+        norb_frozen = cc.frozen
+        if isinstance(cc, UCCSD):
+            ci2aa = cc.t2[0] + 2 * np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[0])
+            ci2aa = (ci2aa - ci2aa.transpose(0, 1, 3, 2)) / 2
+            ci2aa = ci2aa.transpose(0, 2, 1, 3)
+            ci2bb = cc.t2[2] + 2 * np.einsum("ia,jb->ijab", cc.t1[1], cc.t1[1])
+            ci2bb = (ci2bb - ci2bb.transpose(0, 1, 3, 2)) / 2
+            ci2bb = ci2bb.transpose(0, 2, 1, 3)
+            ci2ab = cc.t2[1] + np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[1])
+            ci2ab = ci2ab.transpose(0, 2, 1, 3)
+            ci1a = cc.t1[0]
+            ci1b = cc.t1[1]
+            np.savez(
+                "amplitudes.npz",
+                ci1a=ci1a,
+                ci1b=ci1b,
+                ci2aa=ci2aa,
+                ci2ab=ci2ab,
+                ci2bb=ci2bb,
+            )
+        else:
+            ci2 = cc.t2 + np.einsum("ia,jb->ijab", cc.t1, cc.t1)
+            ci2 = ci2.transpose(0, 2, 1, 3)
+            ci1 = cc.t1
+            np.savez("amplitudes.npz", ci1=ci1, ci2=ci2)
+    else:
+        mf = mf_or_cc
 
     mol = mf.mol
     # choose the orbital basis
@@ -142,24 +179,32 @@ def prep_afqmc(
     if isinstance(mf, (scf.uhf.UHF, scf.rohf.ROHF)):
         uhfCoeffs = np.empty((nbasis, 2 * nbasis))
         if isinstance(mf, scf.uhf.UHF):
-            q, r = np.linalg.qr(basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[0][:, norb_frozen:]))
+            q, r = np.linalg.qr(
+                basis_coeff[:, norb_frozen:]
+                .T.dot(overlap)
+                .dot(mf.mo_coeff[0][:, norb_frozen:])
+            )
             sgn = np.sign(r.diagonal())
-            q = np.einsum('ij,j->ij', q, sgn)
-            #q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[0][:, norb_frozen:])
-            #print("max err a", np.max(abs(q-q2)))
-            #q, _ = np.linalg.qr(
+            q = np.einsum("ij,j->ij", q, sgn)
+            # q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[0][:, norb_frozen:])
+            # print("max err a", np.max(abs(q-q2)))
+            # q, _ = np.linalg.qr(
             #    basis_coeff[:, norb_frozen:]
             #    .T.dot(overlap)
             #    .dot(mf.mo_coeff[0][:, norb_frozen:])
-            #)
+            # )
             uhfCoeffs[:, :nbasis] = q
-            q, r = np.linalg.qr(basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[1][:, norb_frozen:]))
+            q, r = np.linalg.qr(
+                basis_coeff[:, norb_frozen:]
+                .T.dot(overlap)
+                .dot(mf.mo_coeff[1][:, norb_frozen:])
+            )
             sgn = np.sign(r.diagonal())
-            q = np.einsum('ij,j->ij', q, sgn)
-            #q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[1][:, norb_frozen:])
-            #print("max err b", np.max(abs(q-q2)))
-            #import pdb
-            #pdb.set_trace()
+            q = np.einsum("ij,j->ij", q, sgn)
+            # q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[1][:, norb_frozen:])
+            # print("max err b", np.max(abs(q-q2)))
+            # import pdb
+            # pdb.set_trace()
             # q, _ = np.linalg.qr(
             #     basis_coeff[:, norb_frozen:]
             #     .T.dot(overlap)
@@ -173,7 +218,7 @@ def prep_afqmc(
                 .dot(mf.mo_coeff[:, norb_frozen:])
             )
             sgn = np.sign(r.diagonal())
-            q = np.einsum('ij,j->ij', q, sgn)
+            q = np.einsum("ij,j->ij", q, sgn)
             uhfCoeffs[:, :nbasis] = q
             uhfCoeffs[:, nbasis:] = q
 
