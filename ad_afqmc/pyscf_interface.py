@@ -75,7 +75,8 @@ def prep_afqmc(
         )
         mf = mf_or_cc._scf
         cc = mf_or_cc
-        norb_frozen = cc.frozen
+        if cc.frozen is not None:
+            norb_frozen = cc.frozen
         if isinstance(cc, UCCSD):
             ci2aa = cc.t2[0] + 2 * np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[0])
             ci2aa = (ci2aa - ci2aa.transpose(0, 1, 3, 2)) / 2
