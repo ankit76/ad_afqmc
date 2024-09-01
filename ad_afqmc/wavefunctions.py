@@ -1885,6 +1885,50 @@ class UCISD(wave_function_auto):
 
 
 @dataclass
+class GCISD(wave_function_auto):
+    """This class contains functions for the GCISD wavefunction
+    |0> + c(ia) |ia> + c(ia jb) |ia jb>
+    The wave_data need to store the coefficients C(ia) and C(ia jb) and the GHF mo coefficients
+    """
+
+    norb: int
+    nelec: Tuple[int, int]
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+    n_batch: int = 1
+
+    @partial(jit, static_argnums=0)
+    def _calc_green(self, walker: jnp.ndarray) -> jnp.ndarray:
+        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap(
+        self, walker_up: jnp.ndarray, walker_dn: jnp.ndarray, wave_data: dict
+    ) -> complex:
+        nocc, ci1, ci2 = (
+            self.nelec[0] + self.nelec[1],
+            wave_data["ci1"],
+            wave_data["ci2"],
+        )
+        walker = jnp.block(
+            [
+                [walker_up, jnp.zeros_like(walker_dn)],
+                [jnp.zeros_like(walker_up), walker_dn],
+            ]
+        )
+        walker = wave_data["mo_coeff"].T @ walker
+        GF = self._calc_green(walker)
+        o0 = jnp.linalg.det(walker[: walker.shape[1], :])
+        o1 = jnp.einsum("ia,ia", ci1, GF[:, nocc:])
+        o2 = jnp.einsum("iajb, ia, jb", ci2, GF[:, nocc:], GF[:, nocc:]) - jnp.einsum(
+            "iajb, ib, ja", ci2, GF[:, nocc:], GF[:, nocc:]
+        )
+        return (1.0 + o1 + o2 / 4.0) * o0
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
 class CISD_THC(wave_function_auto):
     """This class contains functions for the CISD wavefunction
     |0> + c(ia) |ia> + c(ia jb) |ia jb>
