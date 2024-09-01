@@ -1975,3 +1975,149 @@ class CISD_THC(wave_function_auto):
 
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class cisd(wave_function):
+    """A manual implementation of the CISD wave function."""
+
+    norb: int
+    nelec: Tuple[int, int]
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_restricted(self, walker: jnp.ndarray, wave_data: dict) -> complex:
+        nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
+        GF = (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+        o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
+        o1 = jnp.einsum("ia,ia", ci1, GF[:, nocc:])
+        o2 = 2 * jnp.einsum(
+            "iajb, ia, jb", ci2, GF[:, nocc:], GF[:, nocc:]
+        ) - jnp.einsum("iajb, ib, ja", ci2, GF[:, nocc:], GF[:, nocc:])
+        return (1.0 + 2 * o1 + o2) * o0
+
+    @partial(jit, static_argnums=0)
+    def _calc_force_bias_restricted(
+        self, walker: jnp.ndarray, ham_data: dict, wave_data: dict
+    ) -> jnp.ndarray:
+        """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker >"""
+        ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
+        nocc = self.nelec[0]
+        green = (walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
+        green_occ = green[:, nocc:].copy()
+        greenp = jnp.vstack((green_occ, -jnp.eye(self.norb - nocc)))
+
+        chol = ham_data["chol"].reshape(-1, self.norb, self.norb)
+        rot_chol = ham_data["rot_chol"]
+        lg = jnp.einsum("gpj,pj->g", rot_chol, green, optimize="optimal")
+
+        # ref
+        fb_0 = 2 * lg
+
+        # single excitations
+        ci1g = jnp.einsum("pt,pt->", ci1, green_occ, optimize="optimal")
+        ci1gp = jnp.einsum("pt,it->pi", ci1, greenp, optimize="optimal")
+        gci1gp = jnp.einsum("pj,pi->ij", green, ci1gp, optimize="optimal")
+        fb_1_1 = 4 * ci1g * lg
+        fb_1_2 = -2 * jnp.einsum("gij,ij->g", chol, gci1gp, optimize="optimal")
+        fb_1 = fb_1_1 + fb_1_2
+
+        # double excitations
+        ci2g_c = jnp.einsum("ptqu,pt->qu", ci2, green_occ)
+        ci2g_e = jnp.einsum("ptqu,pu->qt", ci2, green_occ)
+        cisd_green_c = (greenp @ ci2g_c.T) @ green
+        cisd_green_e = (greenp @ ci2g_e.T) @ green
+        cisd_green = -4 * cisd_green_c + 2 * cisd_green_e
+        ci2g = 4 * ci2g_c - 2 * ci2g_e
+        gci2g = jnp.einsum("qu,qu->", ci2g, green_occ, optimize="optimal")
+        fb_2_1 = lg * gci2g
+        fb_2_2 = jnp.einsum("gij,ij->g", chol, cisd_green, optimize="optimal")
+        fb_2 = fb_2_1 + fb_2_2
+
+        # overlap
+        overlap_1 = jnp.einsum("ia,ia", ci1, green_occ)
+        overlap_2 = gci2g / 2.0
+        overlap = 1.0 + 2 * overlap_1 + overlap_2
+
+        return (fb_0 + fb_1 + fb_2) / overlap
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy_restricted(
+        self, walker: jnp.ndarray, ham_data: dict, wave_data: dict
+    ) -> complex:
+        ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
+        nocc = self.nelec[0]
+        green = (walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
+        green_occ = green[:, nocc:].copy()
+        greenp = jnp.vstack((green_occ, -jnp.eye(self.norb - nocc)))
+
+        chol = ham_data["chol"].reshape(-1, self.norb, self.norb)
+        rot_chol = ham_data["rot_chol"]
+        h1 = (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
+        hg = jnp.einsum("pj,pj->", h1[:nocc, :], green)
+
+        # 0 body energy
+        e0 = ham_data["h0"]
+
+        # 1 body energy
+        # ref
+        e1_0 = 2 * hg
+
+        # single excitations
+        ci1g = jnp.einsum("pt,pt->", ci1, green_occ, optimize="optimal")
+        e1_1_1 = 4 * ci1g * hg
+        ci1_green = (greenp @ ci1.T) @ green
+        e1_1_2 = -2 * jnp.einsum("ij,ij->", h1, ci1_green, optimize="optimal")
+        e1_1 = e1_1_1 + e1_1_2
+
+        # double excitations
+        ci2g_c = jnp.einsum("ptqu,pt->qu", ci2, green_occ)
+        ci2g_e = jnp.einsum("ptqu,pu->qt", ci2, green_occ)
+        ci2_green_c = (greenp @ ci2g_c.T) @ green
+        ci2_green_e = (greenp @ ci2g_e.T) @ green
+        ci2_green = 2 * ci2_green_c - ci2_green_e
+        ci2g = 2 * ci2g_c - ci2g_e
+        gci2g = jnp.einsum("qu,qu->", ci2g, green_occ, optimize="optimal")
+        e1_2_1 = 2 * hg * gci2g
+        e1_2_2 = -2 * jnp.einsum("ij,ij->", h1, ci2_green, optimize="optimal")
+        e1_2 = e1_2_1 + e1_2_2
+        e1 = e1_0 + e1_1 + e1_2
+
+        # two body energy
+        # ref
+        lg = jnp.einsum("gpj,pj->g", rot_chol, green, optimize="optimal")
+        lg1 = jnp.einsum("gpj,pk->gjk", rot_chol, green, optimize="optimal")
+        e2_0_1 = 2 * lg @ lg
+        e2_0_2 = -jnp.sum(vmap(lambda x: x * x.T)(lg1))
+        e2_0 = e2_0_1 + e2_0_2
+
+        # single excitations
+        e2_1_1 = 2 * e2_0 * ci1g
+        lci1g = jnp.einsum("gij,ij->g", chol, ci1_green, optimize="optimal")
+        e2_1_2 = -2 * (lci1g @ lg)
+        lci1g1 = jnp.einsum("gij,jk->gik", chol, ci1_green, optimize="optimal")
+        e2_1_3 = jnp.einsum("gij,gji->", lg1, lci1g1, optimize="optimal")
+        e2_1 = e2_1_1 + 2 * (e2_1_2 + e2_1_3)
+
+        # double excitations
+        e2_2_1 = e2_0 * gci2g
+        lci2g = jnp.einsum("gij,ij->g", chol, ci2_green, optimize="optimal")
+        e2_2_2_1 = -lci2g @ lg
+        lci2g1 = jnp.einsum("gij,jk->gik", chol, ci2_green, optimize="optimal")
+        e2_2_2_2 = 0.5 * jnp.einsum("gij,gji->", lg1, lci2g1, optimize="optimal")
+        e2_2_2 = 4 * (e2_2_2_1 + e2_2_2_2)
+        glgp = jnp.einsum("pi,gij,jt->gpt", green, chol, greenp, optimize="optimal")
+        l2 = jnp.einsum("gpt,gqu->ptqu", glgp, glgp, optimize="optimal")
+        l2ci2_1 = jnp.einsum("ptqu,ptqu->", l2, ci2, optimize="optimal")
+        l2ci2_2 = jnp.einsum("puqt,ptqu->", l2, ci2, optimize="optimal")
+        e2_2_3 = 2 * l2ci2_1 - l2ci2_2
+        e2_2 = e2_2_1 + e2_2_2 + e2_2_3
+        e2 = e2_0 + e2_1 + e2_2
+
+        # overlap
+        overlap_1 = jnp.einsum("ia,ia", ci1, green_occ)
+        overlap_2 = gci2g
+        overlap = 1.0 + 2 * overlap_1 + overlap_2
+        return (e1 + e2) / overlap + e0
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
