@@ -2113,18 +2113,39 @@ class cisd(wave_function):
         e2_2_1 = e2_0 * gci2g
         lci2g = jnp.einsum("gij,ij->g", chol, ci2_green, optimize="optimal")
         e2_2_2_1 = -lci2g @ lg
+
         # lci2g1 = jnp.einsum("gij,jk->gik", chol, ci2_green, optimize="optimal")
-        lci2_green = jnp.einsum("gpi,ji->gpj", rot_chol, ci2_green, optimize="optimal")
-        e2_2_2_2 = 0.5 * jnp.einsum("gpi,gpi->", gl, lci2_green, optimize="optimal")
+        # lci2_green = jnp.einsum("gpi,ji->gpj", rot_chol, ci2_green, optimize="optimal")
+        # e2_2_2_2 = 0.5 * jnp.einsum("gpi,gpi->", gl, lci2_green, optimize="optimal")
+        def scanned_fun(carry, x):
+            gl_i, rot_chol_i = x
+            lci2_green_i = jnp.einsum(
+                "pi,ji->pj", rot_chol_i, ci2_green, optimize="optimal"
+            )
+            carry[0] += 0.5 * jnp.einsum(
+                "pi,pi->", gl_i, lci2_green_i, optimize="optimal"
+            )
+            glgp_i = jnp.einsum("pi,it->pt", gl_i, greenp, optimize="optimal")
+            l2ci2_1 = jnp.einsum(
+                "pt,qu,ptqu->", glgp_i, glgp_i, ci2, optimize="optimal"
+            )
+            l2ci2_2 = jnp.einsum(
+                "pu,qt,ptqu->", glgp_i, glgp_i, ci2, optimize="optimal"
+            )
+            carry[1] += 2 * l2ci2_1 - l2ci2_2
+            return carry, 0.0
+
+        [e2_2_2_2, e2_2_3], _ = lax.scan(scanned_fun, [0.0, 0.0], (gl, rot_chol))
         e2_2_2 = 4 * (e2_2_2_1 + e2_2_2_2)
         # glgp = jnp.einsum("pi,gij,jt->gpt", green, chol, greenp, optimize="optimal")
-        glgp = jnp.einsum("gpi,it->gpt", gl, greenp, optimize="optimal")
         # l2 = jnp.einsum("gpt,gqu->ptqu", glgp, glgp, optimize="optimal")
         # l2ci2_1 = jnp.einsum("ptqu,ptqu->", l2, ci2, optimize="optimal")
         # l2ci2_2 = jnp.einsum("puqt,ptqu->", l2, ci2, optimize="optimal")
-        l2ci2_1 = jnp.einsum("gpt,gqu,ptqu->g", glgp, glgp, ci2, optimize="optimal")
-        l2ci2_2 = jnp.einsum("gpu,gqt,ptqu->g", glgp, glgp, ci2, optimize="optimal")
-        e2_2_3 = 2 * l2ci2_1.sum() - l2ci2_2.sum()
+
+        # glgp = jnp.einsum("gpi,it->gpt", gl, greenp, optimize="optimal")
+        # l2ci2_1 = jnp.einsum("gpt,gqu,ptqu->g", glgp, glgp, ci2, optimize="optimal")
+        # l2ci2_2 = jnp.einsum("gpu,gqt,ptqu->g", glgp, glgp, ci2, optimize="optimal")
+        # e2_2_3 = 2 * l2ci2_1.sum() - l2ci2_2.sum()
         e2_2 = e2_2_1 + e2_2_2 + e2_2_3
 
         e2 = e2_0 + e2_1 + e2_2
