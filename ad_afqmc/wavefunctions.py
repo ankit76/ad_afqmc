@@ -1983,6 +1983,7 @@ class cisd(wave_function):
 
     norb: int
     nelec: Tuple[int, int]
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def _calc_overlap_restricted(self, walker: jnp.ndarray, wave_data: dict) -> complex:
@@ -2007,7 +2008,7 @@ class cisd(wave_function):
         greenp = jnp.vstack((green_occ, -jnp.eye(self.norb - nocc)))
 
         chol = ham_data["chol"].reshape(-1, self.norb, self.norb)
-        rot_chol = ham_data["rot_chol"]
+        rot_chol = chol[:, : self.nelec[0], :]
         lg = jnp.einsum("gpj,pj->g", rot_chol, green, optimize="optimal")
 
         # ref
