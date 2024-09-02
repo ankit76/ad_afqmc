@@ -126,7 +126,7 @@ def _prep_afqmc(options=None):
         ci2 = jnp.array(amplitudes["ci2"])
         trial_wave_data = {"ci1": ci1, "ci2": ci2}
         wave_data.update(trial_wave_data)
-        trial = wavefunctions.CISD(norb, nelec_sp, n_batch=options["n_batch"])
+        trial = wavefunctions.cisd(norb, nelec_sp, n_batch=options["n_batch"])
     elif options["trial"] == "ucisd":
         amplitudes = np.load("amplitudes.npz")
         ci1a = jnp.array(amplitudes["ci1a"])
