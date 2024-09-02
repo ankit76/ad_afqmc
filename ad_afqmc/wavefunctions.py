@@ -2125,12 +2125,22 @@ class cisd(wave_function):
             carry[0] += 0.5 * jnp.einsum(
                 "pi,pi->", gl_i, lci2_green_i, optimize="optimal"
             )
-            glgp_i = jnp.einsum("pi,it->pt", gl_i, greenp, optimize="optimal")
+            glgp_i = jnp.einsum("pi,it->pt", gl_i, greenp, optimize="optimal").astype(
+                jnp.complex64
+            )
             l2ci2_1 = jnp.einsum(
-                "pt,qu,ptqu->", glgp_i, glgp_i, ci2, optimize="optimal"
+                "pt,qu,ptqu->",
+                glgp_i,
+                glgp_i,
+                ci2.astype(jnp.float32),
+                optimize="optimal",
             )
             l2ci2_2 = jnp.einsum(
-                "pu,qt,ptqu->", glgp_i, glgp_i, ci2, optimize="optimal"
+                "pu,qt,ptqu->",
+                glgp_i,
+                glgp_i,
+                ci2.astype(jnp.float32),
+                optimize="optimal",
             )
             carry[1] += 2 * l2ci2_1 - l2ci2_2
             return carry, 0.0
