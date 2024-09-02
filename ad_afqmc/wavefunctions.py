@@ -2099,7 +2099,6 @@ class cisd(wave_function):
         lci1g = jnp.einsum("gij,ij->g", chol, ci1_green, optimize="optimal")
         e2_1_2 = -2 * (lci1g @ lg)
         # lci1g1 = jnp.einsum("gij,jk->gik", chol, ci1_green, optimize="optimal")
-        gl = jnp.einsum("pj,gji->gpi", green, chol, optimize="optimal")
         # glgpci1 = jnp.einsum(("gpi,iq->gpq"), gl, gpci1, optimize="optimal")
         ci1g1 = ci1 @ green_occ.T
         # e2_1_3 = jnp.einsum("gpq,gpq->", glgpci1, lg1, optimize="optimal")
@@ -2118,7 +2117,8 @@ class cisd(wave_function):
         # lci2_green = jnp.einsum("gpi,ji->gpj", rot_chol, ci2_green, optimize="optimal")
         # e2_2_2_2 = 0.5 * jnp.einsum("gpi,gpi->", gl, lci2_green, optimize="optimal")
         def scanned_fun(carry, x):
-            gl_i, rot_chol_i = x
+            chol_i, rot_chol_i = x
+            gl_i = jnp.einsum("pj,ji->pi", green, chol_i, optimize="optimal")
             lci2_green_i = jnp.einsum(
                 "pi,ji->pj", rot_chol_i, ci2_green, optimize="optimal"
             )
@@ -2135,7 +2135,7 @@ class cisd(wave_function):
             carry[1] += 2 * l2ci2_1 - l2ci2_2
             return carry, 0.0
 
-        [e2_2_2_2, e2_2_3], _ = lax.scan(scanned_fun, [0.0, 0.0], (gl, rot_chol))
+        [e2_2_2_2, e2_2_3], _ = lax.scan(scanned_fun, [0.0, 0.0], (chol, rot_chol))
         e2_2_2 = 4 * (e2_2_2_1 + e2_2_2_2)
         # glgp = jnp.einsum("pi,gij,jt->gpt", green, chol, greenp, optimize="optimal")
         # l2 = jnp.einsum("gpt,gqu->ptqu", glgp, glgp, optimize="optimal")
