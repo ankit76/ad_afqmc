@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Sequence
 
+import jax
 import jax.numpy as jnp
 from jax import jit
 
@@ -21,7 +21,7 @@ class hamiltonian:
     norb: int
 
     @partial(jit, static_argnums=(0,))
-    def rotate_orbs(self, ham_data: dict, mo_coeff: Sequence) -> dict:
+    def rotate_orbs(self, ham_data: dict, mo_coeff: jax.Array) -> dict:
         """Rotate the Hamiltonian to the molecular orbital basis defined by mo_coeff.
 
         Args:

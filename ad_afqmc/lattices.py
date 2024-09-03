@@ -1,10 +1,7 @@
-import os
-
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 from jax import jit, lax
@@ -104,9 +101,9 @@ class lattice(ABC):
 @register_pytree_node_class
 class one_dimensional_chain(lattice):
     n_sites: int
-    shape: tuple = None
-    sites: Sequence = None
-    bonds: Sequence = None
+    shape: Optional[tuple] = None
+    sites: Optional[Sequence] = None
+    bonds: Optional[Sequence] = None
     hop_signs: Sequence = (1.0, -1.0)
     coord_num: int = 2
 
@@ -270,12 +267,12 @@ class one_dimensional_chain(lattice):
 class two_dimensional_grid(lattice):
     l_x: int
     l_y: int
-    shape: tuple = None
-    shell_distances: Sequence = None
-    bond_shell_distances: Sequence = None
-    sites: Sequence = None
-    bonds: Sequence = None
-    n_sites: int = None
+    shape: Optional[tuple] = None
+    shell_distances: Optional[Sequence] = None
+    bond_shell_distances: Optional[Sequence] = None
+    sites: Optional[Sequence] = None
+    bonds: Optional[Sequence] = None
+    n_sites: Optional[int] = None
     hop_signs: Sequence = (-1.0, -1.0, 1.0, 1.0)
     coord_num: int = 4
 
@@ -326,6 +323,7 @@ class two_dimensional_grid(lattice):
 
     def make_polaron_basis(self, max_n_phonons):
         phonon_basis = make_phonon_basis(self.l_x * self.l_y, max_n_phonons)
+        assert self.sites is not None
         polaron_basis = tuple(
             [site, phonon_state.reshape((self.l_y, self.l_x))]
             for site in self.sites
@@ -539,9 +537,9 @@ class two_dimensional_grid(lattice):
 class triangular_grid(lattice):
     l_x: int  # height
     l_y: int  # width
-    shape: tuple = None
-    sites: Sequence = None
-    n_sites: int = None
+    shape: Optional[tuple] = None
+    sites: Optional[Sequence] = None
+    n_sites: Optional[int] = None
     coord_num: int = 6
 
     def __post_init__(self):
@@ -611,11 +609,11 @@ class three_dimensional_grid(lattice):
     l_x: int
     l_y: int
     l_z: int
-    shape: tuple = None
-    shell_distances: Sequence = None
-    sites: Sequence = None
-    bonds: Sequence = None
-    n_sites: int = None
+    shape: Optional[tuple] = None
+    shell_distances: Optional[Sequence] = None
+    sites: Optional[Sequence] = None
+    bonds: Optional[Sequence] = None
+    n_sites: Optional[int] = None
     coord_num: int = 6
 
     def __post_init__(self):
@@ -645,6 +643,7 @@ class three_dimensional_grid(lattice):
 
     def make_polaron_basis(self, max_n_phonons):
         phonon_basis = make_phonon_basis(self.l_x * self.l_y * self.l_z, max_n_phonons)
+        assert self.sites is not None
         polaron_basis = tuple(
             [site, phonon_state.reshape((self.l_x, self.l_y, self.l_z))]
             for site in self.sites
@@ -654,6 +653,7 @@ class three_dimensional_grid(lattice):
 
     def make_polaron_basis_n(self, n_bands, max_n_phonons):
         phonon_basis = make_phonon_basis(self.l_x * self.l_y * self.l_z, max_n_phonons)
+        assert self.sites is not None
         electronic_basis = tuple(
             [(n, site) for n in range(n_bands) for site in self.sites]
         )
@@ -744,18 +744,3 @@ class three_dimensional_grid(lattice):
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         return cls(*aux_data)
-
-
-if __name__ == "__main__":
-    # lattice = one_dimensional_chain(4)
-    # bond = (1,)
-    # site = (0,)
-    # print(lattice.get_bond_site_distance(bond, site))
-    # lattice = three_dimensional_grid(2, 2, 2)
-    # basis = lattice.make_polaron_basis_n(2, 1)
-    # basis = make_phonon_basis(30, 1)
-    # print(basis)
-    lattice = two_dimensional_grid(3, 3)
-    mode = jnp.array((1, 0, 0))
-    bond = jnp.array((1, 0, 1))
-    print(lattice.get_bond_mode_distance(bond, mode))

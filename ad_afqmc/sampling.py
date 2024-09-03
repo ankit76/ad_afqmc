@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Sequence, Tuple
+from typing import Any, Tuple
 
+import jax
 import jax.numpy as jnp
 from jax import checkpoint, jit, lax, random
 
@@ -22,12 +23,12 @@ class sampler:
     def _step_scan(
         self,
         prop_data: dict,
-        fields: jnp.ndarray,
+        fields: jax.Array,
         ham_data: dict,
         prop: propagator,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[dict, jnp.ndarray]:
+    ) -> Tuple[dict, jax.Array]:
         """Phaseless propagation scan function over steps."""
         prop_data = prop.propagate(trial, ham_data, prop_data, fields, wave_data)
         return prop_data, fields
@@ -36,12 +37,12 @@ class sampler:
     def _step_scan_free(
         self,
         prop_data: dict,
-        fields: jnp.ndarray,
+        fields: jax.Array,
         ham_data: dict,
         prop: propagator,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[dict, jnp.ndarray]:
+    ) -> Tuple[dict, jax.Array]:
         """Free propagation scan function over steps."""
         prop_data = prop.propagate_free(trial, ham_data, prop_data, fields, wave_data)
         return prop_data, fields
@@ -55,7 +56,7 @@ class sampler:
         prop: propagator,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[dict, Tuple[jnp.ndarray, jnp.ndarray]]:
+    ) -> Tuple[dict, Tuple[jax.Array, jax.Array]]:
         """Block scan function. Propagation and energy calculation."""
         prop_data["key"], subkey = random.split(prop_data["key"])
         fields = random.normal(
@@ -100,7 +101,7 @@ class sampler:
         prop: propagator,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[dict, Tuple[dict, jnp.ndarray, jnp.ndarray]]:
+    ) -> Tuple[dict, Tuple[dict, jax.Array, jax.Array]]:
         """Block scan function for free propagation."""
         prop_data["key"], subkey = random.split(prop_data["key"])
         fields = random.normal(
@@ -132,7 +133,7 @@ class sampler:
         prop: propagator,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[dict, Tuple[jnp.ndarray, jnp.ndarray]]:
+    ) -> Tuple[dict, Tuple[jax.Array, jax.Array]]:
         _block_scan_wrapper = lambda x, y: self._block_scan(
             x, y, ham_data, prop, trial, wave_data
         )
@@ -151,7 +152,7 @@ class sampler:
         prop: propagator,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[dict, Tuple[jnp.ndarray, jnp.ndarray]]:
+    ) -> Tuple[dict, Tuple[jax.Array, jax.Array]]:
         _sr_block_scan_wrapper = lambda x, y: self._sr_block_scan(
             x, y, ham_data, prop, trial, wave_data
         )
@@ -176,12 +177,12 @@ class sampler:
         ham: hamiltonian,
         ham_data: dict,
         coupling: float,
-        observable_op: Sequence,
+        observable_op: jax.Array,
         prop: propagator,
         prop_data: dict,
         trial: wave_function,
         wave_data: Any,
-    ) -> Tuple[jnp.ndarray, dict]:
+    ) -> Tuple[jax.Array, dict]:
         ham_data["h1"] = ham_data["h1"] + coupling * observable_op
         wave_data = trial.optimize(ham_data, wave_data)
         # ham_data = ham.rot_orbs(ham_data, wave_data)
@@ -200,7 +201,7 @@ class sampler:
         ham: hamiltonian,
         ham_data: dict,
         coupling: float,
-        observable_op: Sequence,
+        observable_op: jax.Array,
         prop: propagator,
         prop_data: dict,
         trial: wave_function,
@@ -215,7 +216,7 @@ class sampler:
         ) / 4.0
         norb = ham.norb
         ham_data["chol"] = linalg_utils.modified_cholesky(
-            observable_op.reshape(norb**2, norb**2), norb, ham.nchol
+            observable_op.reshape(norb**2, norb**2), norb, ham_data["chol"].shape[0]
         )
         wave_data = trial.optimize(ham_data, wave_data)
         # ham_data = ham.rot_orbs(ham_data, wave_data)
@@ -233,12 +234,12 @@ class sampler:
         ham: hamiltonian,
         ham_data: dict,
         coupling: float,
-        observable_op: Sequence,
+        observable_op: jax.Array,
         prop: propagator,
         prop_data: dict,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[jnp.ndarray, dict]:
+    ) -> Tuple[jax.Array, dict]:
         ham_data["h1"] = ham_data["h1"] + coupling * observable_op
         wave_data = trial.optimize(ham_data, wave_data)
         # ham_data = ham.rot_orbs(ham_data, wave_data)
@@ -268,12 +269,12 @@ class sampler:
         ham: hamiltonian,
         ham_data: dict,
         coupling: float,
-        observable_op: Sequence,
+        observable_op: jax.Array,
         prop: propagator,
         prop_data: dict,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[jnp.ndarray, dict]:
+    ) -> Tuple[jax.Array, dict]:
         ham_data["h1"] = ham_data["h1"] + coupling * observable_op
         ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
         ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
@@ -289,15 +290,15 @@ class sampler:
         ham: hamiltonian,
         ham_data: dict,
         coupling: float,
-        observable_op: Sequence,
+        observable_op: jax.Array,
         prop: propagator,
         prop_data: dict,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[jnp.ndarray, dict]:
+    ) -> Tuple[jax.Array, dict]:
         ham_data["h1"] = ham_data["h1"] + coupling * observable_op
-        ham_data = ham.rot_ham(ham_data, wave_data)
-        ham_data = ham.prop_ham(ham_data, prop.dt, trial, wave_data)
+        ham_data = ham.build_measurement_intermediates(ham_data, wave_data)
+        ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 
         def _block_scan_wrapper(x, y):
             return self._block_scan(x, y, ham_data, prop, trial, wave_data)
@@ -325,7 +326,7 @@ class sampler:
         prop_data: dict,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[jnp.ndarray, dict]:
+    ) -> Tuple[jax.Array, dict]:
         def _sr_block_scan_wrapper(x, y):
             return self._sr_block_scan(x, y, ham_data, prop, trial, wave_data)
 
@@ -349,7 +350,7 @@ class sampler:
         prop_data: dict,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[jnp.ndarray, dict]:
+    ) -> Tuple:
         def _block_scan_free_wrapper(x, y):
             return self._block_scan_free(x, y, ham_data, prop, trial, wave_data)
 

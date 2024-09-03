@@ -27,14 +27,14 @@ mycc.run()
 et = mycc.ccsd_t()
 print(mycc.e_corr + et)
 
-ci2 = mycc.t2 + np.einsum("ia,jb->ijab", mycc.t1, mycc.t1)
+ci2 = mycc.t2 + np.einsum("ia,jb->ijab", np.array(mycc.t1), np.array(mycc.t1))
 ci2 = ci2.transpose(0, 2, 1, 3)
-ci1 = mycc.t1
+ci1 = np.array(mycc.t1)
 
 # THC decompose the ci coefficients
 ncore = mycc.frozen
-nocc = mycc.t1.shape[0]
-nvirt = mycc.t1.shape[1]
+nocc = np.array(mycc.t1).shape[0]
+nvirt = np.array(mycc.t1).shape[1]
 Xocc, Xvirt = pyscf_interface.getCollocationMatrices(
     mol,
     grid_level=0,

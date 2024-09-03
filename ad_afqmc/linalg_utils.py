@@ -1,7 +1,5 @@
-import os
 from functools import partial
 
-# os.environ['JAX_DISABLE_JIT'] = 'True'
 import jax.numpy as jnp
 import numpy as np
 from jax import custom_jvp, jit, lax, vmap
@@ -34,13 +32,8 @@ def _eigh_jvp(primals, tangents):
 
     deg_thresh = 1.0e-5
     eji = w[..., np.newaxis, :] - w[..., np.newaxis]
-    # idx = abs(eji) < deg_thresh
-    # eji = eji.at[idx].set(1.e200)
-    eji = jnp.where(eji == 0.0, 1.0, eji)
+    eji = jnp.array(jnp.where(eji == 0.0, 1.0, eji))
     eji = jnp.where(abs(eji) < deg_thresh, 1.0e200, eji)
-    # eji = eji.at[jnp.diag_indices_from(eji)].set(1.)
-    # eji = eji.at[idx].set(1.e200)
-    # eji = eji.at[np.diag_indices_from(eji)].set(1.)
     eye_n = jnp.eye(a.shape[-1])
     Fmat = jnp.reciprocal(eji) - eye_n
     dw, dv = _eigh_jvp_jitted_nob(v, Fmat, at)

@@ -1,8 +1,9 @@
 import pickle
 import time
 from functools import partial
-from typing import Optional, Sequence
+from typing import List, Optional, Union
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import dtypes, jvp, random, vjp
@@ -22,7 +23,7 @@ def afqmc(
     observable,
     options: dict,
     MPI,
-    init_walkers: Optional[Sequence] = None,
+    init_walkers: Optional[Union[List, jax.Array]] = None,
 ):
     init = time.time()
     comm = MPI.COMM_WORLD
@@ -287,6 +288,7 @@ def afqmc(
                 global_block_rdm1s[n * size : (n + 1) * size] = gather_rdm1s
             elif options["ad_mode"] == "2rdm":
                 global_block_rdm2s[n * size : (n + 1) * size] = gather_rdm2s
+            assert gather_weights is not None
             block_energy_n = np.sum(gather_weights * gather_energies) / np.sum(
                 gather_weights
             )
@@ -366,6 +368,9 @@ def afqmc(
     comm.Barrier()
     e_afqmc, e_err_afqmc = None, None
     if rank == 0:
+        assert global_block_weights is not None
+        assert global_block_energies is not None
+        assert global_block_observables is not None
         np.savetxt(
             "samples_raw.dat",
             np.stack(
@@ -438,6 +443,7 @@ def afqmc(
                 print(f"AFQMC observable: {obs_afqmc}\n", flush=True)
             if options["ad_mode"] == "reverse":
                 # avg_rdm1 = np.einsum('i,i...->...', global_block_weights, global_block_rdm1s) / np.sum(global_block_weights)
+                assert global_block_rdm1s is not None
                 norms_rdm1 = np.array(list(map(np.linalg.norm, global_block_rdm1s)))
                 samples_clean, idx = stat_utils.reject_outliers(
                     np.stack((global_block_weights, norms_rdm1)).T, 1
@@ -456,6 +462,7 @@ def afqmc(
                 )
                 np.savez("rdm1_afqmc.npz", rdm1=avg_rdm1)
             elif options["ad_mode"] == "2rdm":
+                assert global_block_rdm2s is not None
                 norms_rdm2 = np.array(list(map(np.linalg.norm, global_block_rdm2s)))
                 samples_clean, idx = stat_utils.reject_outliers(
                     np.stack((global_block_weights, norms_rdm2)).T, 1
@@ -494,7 +501,7 @@ def fp_afqmc(
     observable,
     options: dict,
     MPI,
-    init_walkers=None,
+    init_walkers: Optional[Union[List, jax.Array]] = None,
 ):
     init = time.time()
     comm = MPI.COMM_WORLD
@@ -509,7 +516,7 @@ def fp_afqmc(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    prop_data = propagator.init_prop_data(trial, wave_data, ham, ham_data, init_walkers)
+    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
     prop_data["key"] = random.PRNGKey(seed + rank)
 
     comm.Barrier()

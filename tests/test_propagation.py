@@ -75,13 +75,13 @@ fields = random.normal(
     random.PRNGKey(seed), shape=(prop_handler.n_walkers, ham_data["chol"].shape[0])
 )
 
-prop_handler_cpmc = propagation.propagator_cpmc(n_walkers=7)
-prop_handler_cpmc_slow = propagation.propagator_cpmc_slow(n_walkers=7)
+prop_handler_cpmc = propagation.propagator_cpmc(n_walkers=10)
+prop_handler_cpmc_slow = propagation.propagator_cpmc_slow(n_walkers=10)
 
 neighbors = tuple((i, (i + 1) % norb) for i in range(norb))
-prop_handler_cpmc_nn = propagation.propagator_cpmc_nn(n_walkers=7, neighbors=neighbors)
+prop_handler_cpmc_nn = propagation.propagator_cpmc_nn(n_walkers=10, neighbors=neighbors)
 prop_handler_cpmc_nn_slow = propagation.propagator_cpmc_nn_slow(
-    n_walkers=7, neighbors=neighbors
+    n_walkers=10, neighbors=neighbors
 )
 
 

@@ -40,6 +40,11 @@ def _prep_afqmc(options=None):
         h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
         chol = jnp.array(fh5.get("chol")).reshape(-1, nmo, nmo)
 
+    assert type(ms) is np.int64
+    assert type(nelec) is np.int64
+    assert type(nmo) is np.int64
+    assert type(nchol) is np.int64
+    ms, nelec, nmo, nchol = int(ms), int(nelec), int(nmo), int(nchol)
     nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
 
     norb = nmo
@@ -210,6 +215,7 @@ if __name__ == "__main__":
     ham_data, ham, prop, trial, wave_data, sampler, observable, options, _ = (
         _prep_afqmc()
     )
+    assert trial is not None
     init = time.time()
     comm.Barrier()
     e_afqmc, err_afqmc = 0.0, 0.0

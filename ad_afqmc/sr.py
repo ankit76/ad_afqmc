@@ -75,6 +75,7 @@ def stochastic_reconfiguration_mpi(walkers, weights, zeta, comm):
     comm.Gather(weights, global_buffer_weights, root=0)
 
     if rank == 0:
+        assert global_buffer_weights is not None
         cumulative_weights = np.cumsum(np.abs(global_buffer_weights))
         total_weight = cumulative_weights[-1]
         average_weight = total_weight / nwalkers / size
@@ -132,6 +133,7 @@ def stochastic_reconfiguration_mpi_uhf(walkers, weights, zeta, comm):
     comm.Gather(weights, global_buffer_weights, root=0)
 
     if rank == 0:
+        assert global_buffer_weights is not None
         cumulative_weights = np.cumsum(np.abs(global_buffer_weights))
         total_weight = cumulative_weights[-1]
         average_weight = total_weight / nwalkers / size

@@ -86,8 +86,8 @@ def prep_afqmc(
             ci2bb = ci2bb.transpose(0, 2, 1, 3)
             ci2ab = cc.t2[1] + np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[1])
             ci2ab = ci2ab.transpose(0, 2, 1, 3)
-            ci1a = cc.t1[0]
-            ci1b = cc.t1[1]
+            ci1a = np.array(cc.t1[0])
+            ci1b = np.array(cc.t1[1])
             np.savez(
                 "amplitudes.npz",
                 ci1a=ci1a,
@@ -97,9 +97,9 @@ def prep_afqmc(
                 ci2bb=ci2bb,
             )
         else:
-            ci2 = cc.t2 + np.einsum("ia,jb->ijab", cc.t1, cc.t1)
+            ci2 = cc.t2 + np.einsum("ia,jb->ijab", np.array(cc.t1), np.array(cc.t1))
             ci2 = ci2.transpose(0, 2, 1, 3)
-            ci1 = cc.t1
+            ci1 = np.array(cc.t1)
             np.savez("amplitudes.npz", ci1=ci1, ci2=ci2)
     else:
         mf = mf_or_cc
@@ -142,7 +142,7 @@ def prep_afqmc(
     else:
         DFbas = None
         if getattr(mf, "with_df", None) is not None:
-            DFbas = mf.with_df.auxmol.basis
+            DFbas = mf.with_df.auxmol.basis  # type: ignore
         h1e, chol, nelec, enuc = generate_integrals(
             mol, mf.get_hcore(), basis_coeff, chol_cut, DFbas=DFbas
         )
@@ -156,11 +156,11 @@ def prep_afqmc(
             mc = mcscf.CASSCF(
                 mf, mol.nao - norb_frozen, mol.nelectron - 2 * norb_frozen
             )
-            nelec = mc.nelecas
-            mc.mo_coeff = basis_coeff
-            h1e, enuc = mc.get_h1eff()
+            nelec = mc.nelecas  # type: ignore
+            mc.mo_coeff = basis_coeff  # type: ignore
+            h1e, enuc = mc.get_h1eff()  # type: ignore
             chol = chol.reshape((-1, nbasis, nbasis))
-            chol = chol[:, mc.ncore : mc.ncore + mc.ncas, mc.ncore : mc.ncore + mc.ncas]
+            chol = chol[:, mc.ncore : mc.ncore + mc.ncas, mc.ncore : mc.ncore + mc.ncas]  # type: ignore
 
     print("# Finished calculating Cholesky integrals\n#")
 
@@ -274,7 +274,7 @@ def getCollocationMatrices(
             X(a,P) = phi_a(r_P) w_p^\alpha
     """
 
-    grids = dft.gen_grid.Grids(mol)
+    grids = dft.gen_grid.Grids(mol)  # type: ignore
     grids.level = 0
     grids.build()
 
@@ -584,14 +584,14 @@ def finite_difference_properties(
             mf.kernel(dm)
         if hf_type == "uhf":
             mo1 = mf.stability(external=True)[0]
-            mf = mf.newton().run(mo1, mf.mo_occ)
-            mo1 = mf.stability(external=True)[0]
-            mf = mf.newton().run(mo1, mf.mo_occ)
-        mf_coeff = mf.mo_coeff.copy()
-        mf_occ = mf.mo_occ.copy()
+            mf = mf.newton().run(mo1, mf.mo_occ)  # type: ignore
+            mo1 = mf.stability(external=True)[0]  # type: ignore
+            mf = mf.newton().run(mo1, mf.mo_occ)  # type: ignore
+        mf_coeff = mf.mo_coeff.copy()  # type: ignore
+        mf_occ = mf.mo_occ.copy()  # type: ignore
 
     h1e = mf.get_hcore() - epsilon * observable
-    mf.get_hcore = lambda *args: h1e
+    mf.get_hcore = lambda *args: h1e  # type: ignore
     mf.verbose = 1
     if relaxed:
         if dm is None:
@@ -599,15 +599,15 @@ def finite_difference_properties(
         else:
             mf.kernel(dm)
         if hf_type == "uhf":
-            mo1 = mf.stability(external=True)[0]
-            mf = mf.newton().run(mo1, mf.mo_occ)
-            mo1 = mf.stability(external=True)[0]
-            mf = mf.newton().run(mo1, mf.mo_occ)
+            mo1 = mf.stability(external=True)[0]  # type: ignore
+            mf = mf.newton().run(mo1, mf.mo_occ)  # type: ignore
+            mo1 = mf.stability(external=True)[0]  # type: ignore
+            mf = mf.newton().run(mo1, mf.mo_occ)  # type: ignore
     emf_m = mf.e_tot - epsilon * observable_constant
     mycc = cc.CCSD(mf)
     mycc.frozen = norb_frozen
     mycc.kernel()
-    emp2_m = mycc.e_hf + mycc.emp2 - epsilon * observable_constant
+    emp2_m = mycc.e_hf + mycc.emp2 - epsilon * observable_constant  # type: ignore
     eccsd_m = mycc.e_tot - epsilon * observable_constant
     et = mycc.ccsd_t()
     eccsdpt_m = mycc.e_tot + et - epsilon * observable_constant
@@ -618,10 +618,10 @@ def finite_difference_properties(
         mf = scf.UHF(mol)
     if not relaxed:
         mf.verbose = 1
-        mf.mo_coeff = mf_coeff
+        mf.mo_coeff = mf_coeff  # type: ignore
         mf.mo_occ = mf_occ
     h1e = mf.get_hcore() + epsilon * observable
-    mf.get_hcore = lambda *args: h1e
+    mf.get_hcore = lambda *args: h1e  # type: ignore
     mf.verbose = 1
     if relaxed:
         if dm is None:
@@ -629,15 +629,15 @@ def finite_difference_properties(
         else:
             mf.kernel(dm)
         if hf_type == "uhf":
-            mo1 = mf.stability(external=True)[0]
-            mf = mf.newton().run(mo1, mf.mo_occ)
-            mo1 = mf.stability(external=True)[0]
-            mf = mf.newton().run(mo1, mf.mo_occ)
+            mo1 = mf.stability(external=True)[0]  # type: ignore
+            mf = mf.newton().run(mo1, mf.mo_occ)  # type: ignore
+            mo1 = mf.stability(external=True)[0]  # type: ignore
+            mf = mf.newton().run(mo1, mf.mo_occ)  # type: ignore
     emf_p = mf.e_tot + epsilon * observable_constant
     mycc = cc.CCSD(mf)
     mycc.frozen = norb_frozen
     mycc.kernel()
-    emp2_p = mycc.e_hf + mycc.emp2 + epsilon * observable_constant
+    emp2_p = mycc.e_hf + mycc.emp2 + epsilon * observable_constant  # type: ignore
     eccsd_p = mycc.e_tot + epsilon * observable_constant
     et = mycc.ccsd_t()
     eccsdpt_p = mycc.e_tot + et + epsilon * observable_constant
@@ -677,7 +677,7 @@ def get_fci_state(fci: Any, ndets: Optional[int] = None, tol: float = 1.0e-4) ->
     norb = fci.norb
     nelec = fci.nelec
     if ndets is None:
-        ndets = ci_coeffs.size
+        ndets = int(ci_coeffs.size)
     coeffs, occ_a, occ_b = zip(
         *fci.large_ci(ci_coeffs, norb, nelec, tol=tol, return_strs=False)
     )
@@ -834,7 +834,7 @@ def read_dets(
         ndets_all = struct.unpack("i", f.read(4))[0]
         norbs = struct.unpack("i", f.read(4))[0]
         if ndets is None:
-            ndets = ndets_all
+            ndets = int(ndets_all)
         for _ in range(ndets):
             coeff = struct.unpack("d", f.read(8))[0]
             det = [[0 for _ in range(norbs)], [0 for _ in range(norbs)]]
@@ -873,4 +873,4 @@ def parity(d0: np.ndarray, cre: Sequence, des: Sequence) -> float:
         parity *= 1.0 - 2.0 * ((np.sum(d[I + 1 : A])) % 2)
         d[C[i]] = 0
         d[D[i]] = 1
-    return parity
+    return float(parity)
