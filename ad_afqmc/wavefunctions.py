@@ -2030,9 +2030,9 @@ class cisd(wave_function):
         fb_2 = fb_2_1 + fb_2_2
 
         # overlap
-        overlap_1 = jnp.einsum("ia,ia", ci1, green_occ)
+        overlap_1 = 2 * ci1g
         overlap_2 = gci2g / 2.0
-        overlap = 1.0 + 2 * overlap_1 + overlap_2
+        overlap = 1.0 + overlap_1 + overlap_2
 
         return (fb_0 + fb_1 + fb_2) / overlap
 
