@@ -202,15 +202,43 @@ class wave_function(ABC):
 
     @calc_energy.register
     def _(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
-        return vmap(self._calc_energy, in_axes=(0, 0, None, None))(
-            walkers[0], walkers[1], ham_data, wave_data
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, walker_batch):
+            walker_batch_0, walker_batch_1 = walker_batch
+            energy_batch = vmap(self._calc_energy, in_axes=(0, 0, None, None))(
+                walker_batch_0, walker_batch_1, ham_data, wave_data
+            )
+            return carry, energy_batch
+
+        _, energies = lax.scan(
+            scanned_fun,
+            None,
+            (
+                walkers[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                walkers[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+            ),
         )
+        return energies.reshape(n_walkers)
 
     @calc_energy.register
     def _(self, walkers: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
-        return vmap(self._calc_energy_restricted, in_axes=(0, None, None))(
-            walkers, ham_data, wave_data
+        n_walkers = walkers.shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, walker_batch):
+            energy_batch = vmap(self._calc_energy_restricted, in_axes=(0, None, None))(
+                walker_batch, ham_data, wave_data
+            )
+            return carry, energy_batch
+
+        _, energies = lax.scan(
+            scanned_fun,
+            None,
+            walkers.reshape(self.n_batch, batch_size, self.norb, -1),
         )
+        return energies.reshape(n_walkers)
 
     @partial(jit, static_argnums=0)
     def _calc_energy_restricted(
