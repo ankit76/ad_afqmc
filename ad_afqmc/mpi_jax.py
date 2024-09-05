@@ -148,7 +148,7 @@ def _prep_afqmc(options=None):
             "mo_coeff": mo_coeff,
         }
         wave_data.update(trial_wave_data)
-        trial = wavefunctions.UCISD(norb, nelec_sp, n_batch=options["n_batch"])
+        trial = wavefunctions.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
     else:
         try:
             with open("trial.pkl", "rb") as f:
