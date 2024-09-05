@@ -52,6 +52,8 @@ def setup_jax():
     config.update("jax_enable_x64", True)
     if afqmc_config["use_gpu"] == True:
         config.update("jax_platform_name", "gpu")
+        os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+        os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
         # TODO: add gpu performance xla flags
         hostname = socket.gethostname()
         system_type = platform.system()
