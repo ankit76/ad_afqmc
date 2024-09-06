@@ -310,7 +310,33 @@ class wave_function(ABC):
         natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
         if restricted:
             if self.nelec[0] == self.nelec[1]:
-                return jnp.array([natorbs_up + 0.0j] * n_walkers)
+                det_overlap = np.linalg.det(
+                    natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
+                )
+                if (
+                    np.abs(det_overlap) > 1e-3
+                ):  # probably should scale this threshold with number of electrons
+                    return jnp.array([natorbs_up + 0.0j] * n_walkers)
+                else:
+                    overlaps = np.array(
+                        [
+                            natorbs_up[:, i].T @ natorbs_dn[:, i]
+                            for i in range(self.nelec[0])
+                        ]
+                    )
+                    new_vecs = natorbs_up[:, : self.nelec[0]] + np.einsum(
+                        "ij,j->ij", natorbs_dn[:, : self.nelec[1]], np.sign(overlaps)
+                    )
+                    new_vecs = np.linalg.qr(new_vecs)[0]
+                    det_overlap = np.linalg.det(
+                        new_vecs.T @ natorbs_up[:, : self.nelec[0]]
+                    ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
+                    if np.abs(det_overlap) > 1e-3:
+                        return jnp.array([new_vecs + 0.0j] * n_walkers)
+                    else:
+                        raise ValueError(
+                            "Cannot find a set of RHF orbitals with good trial overlap."
+                        )
             else:
                 # bring the dn orbital projection onto up space to the front
                 dn_proj = natorbs_up.T.conj() @ natorbs_dn
