@@ -126,29 +126,35 @@ def _prep_afqmc(options=None):
             norb, nelec_sp, ci_coeffs_dets[0].size, n_batch=options["n_batch"]
         )
     elif options["trial"] == "cisd":
-        amplitudes = np.load("amplitudes.npz")
-        ci1 = jnp.array(amplitudes["ci1"])
-        ci2 = jnp.array(amplitudes["ci2"])
-        trial_wave_data = {"ci1": ci1, "ci2": ci2}
-        wave_data.update(trial_wave_data)
-        trial = wavefunctions.cisd(norb, nelec_sp, n_batch=options["n_batch"])
+        try:
+            amplitudes = np.load("amplitudes.npz")
+            ci1 = jnp.array(amplitudes["ci1"])
+            ci2 = jnp.array(amplitudes["ci2"])
+            trial_wave_data = {"ci1": ci1, "ci2": ci2}
+            wave_data.update(trial_wave_data)
+            trial = wavefunctions.cisd(norb, nelec_sp, n_batch=options["n_batch"])
+        except:
+            raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
     elif options["trial"] == "ucisd":
-        amplitudes = np.load("amplitudes.npz")
-        ci1a = jnp.array(amplitudes["ci1a"])
-        ci1b = jnp.array(amplitudes["ci1b"])
-        ci2aa = jnp.array(amplitudes["ci2aa"])
-        ci2ab = jnp.array(amplitudes["ci2ab"])
-        ci2bb = jnp.array(amplitudes["ci2bb"])
-        trial_wave_data = {
-            "ci1A": ci1a,
-            "ci1B": ci1b,
-            "ci2AA": ci2aa,
-            "ci2AB": ci2ab,
-            "ci2BB": ci2bb,
-            "mo_coeff": mo_coeff,
-        }
-        wave_data.update(trial_wave_data)
-        trial = wavefunctions.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
+        try:
+            amplitudes = np.load("amplitudes.npz")
+            ci1a = jnp.array(amplitudes["ci1a"])
+            ci1b = jnp.array(amplitudes["ci1b"])
+            ci2aa = jnp.array(amplitudes["ci2aa"])
+            ci2ab = jnp.array(amplitudes["ci2ab"])
+            ci2bb = jnp.array(amplitudes["ci2bb"])
+            trial_wave_data = {
+                "ci1A": ci1a,
+                "ci1B": ci1b,
+                "ci2AA": ci2aa,
+                "ci2AB": ci2ab,
+                "ci2BB": ci2bb,
+                "mo_coeff": mo_coeff,
+            }
+            wave_data.update(trial_wave_data)
+            trial = wavefunctions.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
+        except:
+            raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
     else:
         try:
             with open("trial.pkl", "rb") as f:
