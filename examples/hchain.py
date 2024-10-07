@@ -27,8 +27,6 @@ h1 = mf.mo_coeff.T.dot(mf.get_hcore()).dot(mf.mo_coeff)
 cisolver = fci.FCI(mf)
 fci_ene, fci_vec = cisolver.kernel()
 print(f"fci_ene: {fci_ene}", flush=True)
-dm1 = cisolver.make_rdm1(fci_vec, mol.nao, mol.nelec)
-print(f"1e ene: {np.trace(np.dot(dm1, h1))}")
 
 # ad afqmc
 pyscf_interface.prep_afqmc(umf)
@@ -41,9 +39,14 @@ options = {
     "seed": 98,
     "trial": "uhf",
     "walker_type": "uhf",
-    "ad_mode": "reverse",
 }
+
 # serial run
-# driver.run_afqmc(options=options, mpi_prefix='')
+# run_afqmc.run_afqmc(options=options, mpi_prefix='')
+
 # mpi run
+from mpi4py import MPI
+
+MPI.Finalize()
 run_afqmc.run_afqmc(options=options, nproc=4)
+
