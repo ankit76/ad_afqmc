@@ -80,9 +80,8 @@ class sampler:
             trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
         )
         energy_samples = jnp.where(
-            jnp.abs(energy_samples - prop_data["pop_control_ene_shift"])
-            > jnp.sqrt(2.0 / prop.dt),
-            prop_data["pop_control_ene_shift"],
+            jnp.abs(energy_samples - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt),
+            prop_data["e_estimate"],
             energy_samples,
         )
         block_weight = jnp.sum(prop_data["weights"])
