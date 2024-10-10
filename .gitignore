@@ -1,0 +1,9 @@
+*/.ipynb_checkpoints/
+*/__pycache__/
+
+*.sw*
+*.bin
+*.dat*
+*.npz*
+*FCIDUMP*
+
