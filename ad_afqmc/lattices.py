@@ -541,6 +541,7 @@ class triangular_grid(lattice):
     sites: Optional[Sequence] = None
     n_sites: Optional[int] = None
     coord_num: int = 6
+    open_x: bool = False
 
     def __post_init__(self):
         self.shape = (self.l_y, self.l_x)
@@ -554,12 +555,23 @@ class triangular_grid(lattice):
 
     # @partial(jit, static_argnums=(0,))
     def get_nearest_neighbors(self, pos):
-        n1 = (pos[0], (pos[1] + 1) % self.l_y)
+        if self.open_x:
+            n1 = (pos[0], (pos[1] + 1))
+            n3 = (pos[0], (pos[1] - 1))
+            if pos[0] % 2 == 1:
+                n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1))
+                n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1))
+            else:
+                n5 = ((pos[0] + 1) % self.l_x, (pos[1] - 1))
+                n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1))
+        else:
+            n1 = (pos[0], (pos[1] + 1) % self.l_y)
+            n3 = (pos[0], (pos[1] - 1) % self.l_y)
+            n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
+            n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1) % self.l_y)
+
         n2 = ((pos[0] + 1) % self.l_x, pos[1])
-        n3 = (pos[0], (pos[1] - 1) % self.l_y)
         n4 = ((pos[0] - 1) % self.l_x, pos[1])
-        n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
-        n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1) % self.l_y)
         return jnp.array([n1, n2, n3, n4, n5, n6])
 
     def create_adjacency_matrix(self):
