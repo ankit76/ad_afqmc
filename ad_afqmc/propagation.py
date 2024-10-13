@@ -312,13 +312,11 @@ class propagator_restricted(propagator):
             optimize="optimal",
         )
         h1_mod = (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0 - v0
-        h1_mod = h1_mod - jnp.real(
-            1.0j
-            * jnp.einsum(
-                "g,gik->ik",
-                ham_data["mf_shifts"],
-                ham_data["chol"].reshape(-1, trial.norb, trial.norb),
-            )
+        mf_shifts_r = (1.0j * ham_data["mf_shifts"]).real
+        h1_mod = h1_mod - jnp.einsum(
+            "g,gik->ik",
+            mf_shifts_r,
+            ham_data["chol"].reshape(-1, trial.norb, trial.norb),
         )
         ham_data["exp_h1"] = jsp.linalg.expm(-self.dt * h1_mod / 2.0)
         return ham_data
@@ -490,13 +488,11 @@ class propagator_unrestricted(propagator_restricted):
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
             optimize="optimal",
         )
-        v1 = jnp.real(
-            1.0j
-            * jnp.einsum(
-                "g,gik->ik",
-                ham_data["mf_shifts"],
-                ham_data["chol"].reshape(-1, trial.norb, trial.norb),
-            )
+        mf_shifts_r = (1.0j * ham_data["mf_shifts"]).real
+        v1 = jnp.einsum(
+            "g,gik->ik",
+            mf_shifts_r,
+            ham_data["chol"].reshape(-1, trial.norb, trial.norb),
         )
         h1_mod = ham_data["h1"] - jnp.array([v0 + v1, v0 + v1])
         ham_data["exp_h1"] = jnp.array(
