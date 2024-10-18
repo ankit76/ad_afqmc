@@ -568,7 +568,7 @@ class triangular_grid(lattice):
             n1 = (pos[0], (pos[1] + 1) % self.l_y)
             n3 = (pos[0], (pos[1] - 1) % self.l_y)
             n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
-            n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1) % self.l_y)
+            n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1) % self.l_y)
 
         n2 = ((pos[0] + 1) % self.l_x, pos[1])
         n4 = ((pos[0] - 1) % self.l_x, pos[1])
