@@ -9,6 +9,20 @@ seed = 98
 
 __test__ = False
 
+def test_energy_mpi():
+    options = {
+        "n_eql": 1,
+        "n_ene_blocks": 1,
+        "n_sr_blocks": 10,
+        "n_blocks": 10,
+        "n_walkers": 50,
+        "seed": seed,
+        "trial": "uhf",
+        "walker_type": "uhf",
+    }
+    ene, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="mpirun ", nproc=2)
+    assert np.isclose(ene, -3.239302058353345, atol=1e-5)
+
 
 def test_vjp_rdm():
     options = {
@@ -46,5 +60,6 @@ def test_energy():
 
 
 if __name__ == "__main__":
+    test_energy_mpi()
     test_vjp_rdm()
     test_energy()
