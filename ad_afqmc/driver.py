@@ -30,7 +30,6 @@ def afqmc(
     size = comm.Get_size()
     rank = comm.Get_rank()
     seed = options["seed"]
-    neql = options["n_eql"]
 
     if observable is not None:
         observable_op = jnp.array(observable[0])
@@ -88,9 +87,17 @@ def afqmc(
         print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
-    sampler_eq = sampling.sampler(n_prop_steps=50, n_ene_blocks=5, n_sr_blocks=10)
+    n_ene_blocks_eql = options["n_ene_blocks_eql"]
+    n_sr_blocks_eql = options["n_sr_blocks_eql"]
+    neql = options["n_eql"]
+    sampler_eq = sampling.sampler(
+        n_prop_steps=50,
+        n_ene_blocks=n_ene_blocks_eql,
+        n_sr_blocks=n_sr_blocks_eql,
+        n_blocks=neql,
+    )
 
-    for n in range(1, neql + 1):
+    for n in range(1, sampler_eq.n_blocks + 1):
         block_energy_n, prop_data = sampler_eq.propagate_phaseless(
             ham, ham_data, propagator, prop_data, trial, wave_data
         )
@@ -126,10 +133,11 @@ def afqmc(
 
         comm.Barrier()
         if rank == 0:
-            print(
-                f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ",
-                flush=True,
-            )
+            if n % (max(sampler_eq.n_blocks // 10, 1)) == 0:
+                print(
+                    f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ",
+                    flush=True,
+                )
         comm.Barrier()
 
     local_large_deviations = np.array(0)
