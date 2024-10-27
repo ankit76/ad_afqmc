@@ -159,7 +159,6 @@ def spin_collinearity_test(psi0, ao_ovlp, debug=False):
     if debug: return epsilon0, mu, evals, evecs, A
     return epsilon0, mu, spin_axis
 
-# TODO: test.
 def get_spin_rotation_matrix(nbsf, v):
     """
     Returns the spin rotation matrix that rotates the spin axis along vector
@@ -168,16 +167,21 @@ def get_spin_rotation_matrix(nbsf, v):
     Sv = v[0]*PAULI_X + v[1]*PAULI_Y + v[2]*PAULI_Z
     Sv *= 0.5
     _, Uspin = np.linalg.eigh(Sv)
+
+    # Fix gauge s.t. the real part of the first element in each eigenvector is positive.
+    for icol in range(Uspin.shape[1]):
+        evec = Uspin[:, icol]
+        if evec[0].real < 0: Uspin[:, icol] *= -1
+    
     Uspin = Uspin[:, ::-1]
     U = np.kron(Uspin, np.eye(nbsf))
 
     # Check if unitary.
-    np.testing.assert_allclose(U @ U.T.conj(), np.eye(nbsf), atol=1e-14)
-    np.testing.assert_allclose(U.T.conj() @ U, np.eye(nbsf), atol=1e-14)
+    np.testing.assert_allclose(U @ U.T.conj(), np.eye(2*nbsf), atol=1e-14)
+    np.testing.assert_allclose(U.T.conj() @ U, np.eye(2*nbsf), atol=1e-14)
 
     return U
 
-# TODO: test.
 def align_spin_axis(psi, v):
     """
     Rotate the spin axis of state psi from the vector v to the z-axis.
