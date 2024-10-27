@@ -269,7 +269,7 @@ def test_align_spin_axis():
     # -------------------------------------------------------------------------
     # Test 4: Rotated UHF generic spin.
     print('\n# ------')
-    print('# Test 5')
+    print('# Test 4')
     print('# ------')
     nelec = (5, 1)
     nocc = np.sum(nelec)
