@@ -531,7 +531,125 @@ class two_dimensional_grid(lattice):
     def tree_unflatten(cls, aux_data, children):
         return cls(*aux_data)
 
+@dataclass
+@register_pytree_node_class
+class triangular_grid(lattice):
+    l_x: int  # width
+    l_y: int  # height
+    shape: Optional[tuple] = None
+    sites: Optional[Sequence] = None
+    n_sites: Optional[int] = None
+    coord_num: int = 6
+    open_x: bool = False
 
+    def __post_init__(self):
+        self.shape = (self.l_x, self.l_y)
+        self.n_sites = self.l_x * self.l_y
+        # Counting along the y-axis.
+        self.sites = tuple(
+            [(i // self.l_y, i % self.l_y) for i in range(self.n_sites)]
+        )
+
+    def get_site_num(self, pos):
+        return pos[1] + self.l_y * pos[0]
+    
+    def get_site_coordinate_from_num(self, num):
+        pos = np.array([num // self.l_y, num % self.l_y])
+        return self.get_site_coordinate(pos)
+
+    def get_site_coordinate(self, pos):
+        """
+        Returns the real space coordinate of the site specified by `pos`,
+        assuming a primitive lattice vector of unit length.
+        """
+        theta = np.pi / 3.
+        lattice_vecs = np.array([[1., np.cos(theta)],
+                                 [0., np.sin(theta)]])
+        if self.open_x:
+            L1, L2 = lattice_vecs.T
+            L3 = L2 - L1
+            Ly = [L2, L3]
+            coords = np.zeros(2)
+
+            for i in range(1, pos[1]+1):
+                coords += Ly[(i-1) % 2]
+
+            coords += pos[0] * L1
+            
+        else:
+            coords = pos @ lattice_vecs.T
+
+        return coords
+
+    # @partial(jit, static_argnums=(0,))
+    def get_nearest_neighbors(self, pos):
+        """
+        Assumes the lattice vectors
+            L1 = [1,         0],
+            L2 = [cos(pi/3), sin(pi/3)]
+        """
+        if self.open_x:
+            # Treat each staggered vertical stripe as parallel to the y-axis.
+            # The x-axis is the usual.
+            n1 = ((pos[0] + 1), pos[1])
+            n3 = ((pos[0] - 1), pos[1])
+            if pos[1] % 2 == 1:
+                n5 = ((pos[0] + 1), (pos[1] + 1) % self.l_y)
+                n6 = ((pos[0] + 1), (pos[1] - 1) % self.l_y)
+            else:
+                n5 = ((pos[0] - 1), (pos[1] + 1) % self.l_y)
+                n6 = ((pos[0] - 1), (pos[1] - 1) % self.l_y)
+        else:
+            n1 = ((pos[0] + 1) % self.l_x, pos[1])
+            n3 = ((pos[0] - 1) % self.l_x, pos[1])
+            n5 = ((pos[0] + 1) % self.l_x, (pos[1] - 1) % self.l_y)
+            n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1) % self.l_y)
+
+        n2 = (pos[0], (pos[1] + 1) % self.l_y)
+        n4 = (pos[0], (pos[1] - 1) % self.l_y)
+        return jnp.array([n1, n2, n3, n4, n5, n6])
+
+    def create_adjacency_matrix(self):
+        width, height = self.l_x, self.l_y
+        size = width * height
+        h = np.zeros((size, size), dtype=int)
+
+        for q in range(width):
+            for r in range(height):
+                i = q * width + r
+                neighbors = self.get_nearest_neighbors((q, r))
+                for nq, nr in neighbors:
+                    if 0 <= nq < width and 0 <= nr < height:  # Check bounds
+                        j = nq * width + nr
+                        h[i, j] = 1
+                        h[j, i] = 1
+        return h
+
+    def __hash__(self):
+        return hash(
+            (
+                self.l_x,
+                self.l_y,
+                self.shape,
+                self.sites,
+                self.coord_num,
+            )
+        )
+
+    def tree_flatten(self):
+        return (), (
+            self.l_x,
+            self.l_y,
+            self.shape,
+            self.sites,
+            self.coord_num,
+        )
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        return cls(*aux_data)
+
+"""
 @dataclass
 @register_pytree_node_class
 class triangular_grid(lattice):
@@ -613,7 +731,7 @@ class triangular_grid(lattice):
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         return cls(*aux_data)
-
+"""
 
 @dataclass
 @register_pytree_node_class

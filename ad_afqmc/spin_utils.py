@@ -5,6 +5,38 @@ PAULI_X = np.array([[0., 1.], [1., 0.]])
 PAULI_Y = np.array([[0., -1.j], [1.j, 0.]])
 PAULI_Z = np.array([[1., 0.], [0., -1.]])
 
+
+def get_spin_average(psi0a, psi0b, ao_ovlp):
+    """
+    Computes the expectation value <S> = [ <Sx>, <Sy>, <Sz> ].
+
+    Args
+        psi0a : np.ndarray
+            alpha spin coefficient matrix with shape (nbsf, nocca).
+        psi0b : np.ndarray
+            beta spin coefficient matrix with shape (nbsf, noccb).
+        ao_ovlp : np.ndarray
+            AO overlap matrix with shape (nbsf, nsbf).
+
+    Returns
+        The expectation value of the spin vector operator.
+    """
+    nocc = psi0a.shape[1]
+    mo_ovlp_aa = psi0a.T.conj() @ ao_ovlp @ psi0a
+    mo_ovlp_ab = psi0a.T.conj() @ ao_ovlp @ psi0b
+    mo_ovlp_bb = psi0b.T.conj() @ ao_ovlp @ psi0b
+
+    Sz, Sp, Sm = 0., 0., 0. # Sz, S+, S-.
+
+    for i in range(nocc):
+        Sz += 0.5 * (mo_ovlp_aa[i, i] - mo_ovlp_bb[i, i])
+        Sp += mo_ovlp_ab[i, i]
+        Sm += mo_ovlp_ab[i, i].conj()
+
+    Sx = 0.5 * np.real(Sp + Sm)
+    Sy = 0.5 * np.imag(Sp - Sm)
+    return np.array([Sx, Sy, Sz])
+
 def get_spin_covariance(psi0a, psi0b, ao_ovlp):
     """
     Computes the matrix A as defined in Eq (11) of 10.197.16.115 and the
@@ -26,24 +58,11 @@ def get_spin_covariance(psi0a, psi0b, ao_ovlp):
         The matrix A and the spin covariance matrix.
     """
     nbsf, nocc = psi0a.shape
-
     mo_ovlp_aa = psi0a.T.conj() @ ao_ovlp @ psi0a
     mo_ovlp_ab = psi0a.T.conj() @ ao_ovlp @ psi0b
     mo_ovlp_ba = mo_ovlp_ab.T.conj()
     mo_ovlp_bb = psi0b.T.conj() @ ao_ovlp @ psi0b
 
-    # One-electron expectation values.
-    Sz, Sp, Sm = 0., 0., 0. # Sz, S+, S-.
-
-    for i in range(nocc):
-        Sz += 0.5 * (mo_ovlp_aa[i, i] - mo_ovlp_bb[i, i])
-        Sp += mo_ovlp_ab[i, i]
-        Sm += mo_ovlp_ab[i, i].conj()
-
-    Sx = 0.5 * np.real(Sp + Sm)
-    Sy = 0.5 * np.imag(Sp - Sm)
-
-    # Two-electron expectation values.
     SpSp = 0.
     SmSm = 0.
     SpSm = 0.
@@ -85,16 +104,58 @@ def get_spin_covariance(psi0a, psi0b, ao_ovlp):
     SzSx = np.conj(SxSz)
     SzSy = np.conj(SySz)
 
-    A = np.real([[Sx2 - Sx*Sx,  SxSy - Sx*Sy, SxSz - Sx*Sz],
-                 [SySx - Sy*Sx, Sy2 - Sy*Sy,  SySz - Sy*Sz],
-                 [SzSx - Sz*Sx, SzSy - Sz*Sy, Sz2 - Sz*Sz]])
     spin_cov = np.array([[Sx2,  SxSy, SxSz],
                          [SySx, Sy2,  SySz],
                          [SzSx, SzSy, Sz2]])
-    return A, spin_cov
+    return spin_cov
 
+def get_mo_spin_average(psi0a, psi0b, ao_ovlp):
+    nocc = psi0a.shape[1]
+    mo_ovlp_aa = psi0a.T.conj() @ ao_ovlp @ psi0a
+    mo_ovlp_ab = psi0a.T.conj() @ ao_ovlp @ psi0b
+    mo_ovlp_bb = psi0b.T.conj() @ ao_ovlp @ psi0b
 
-def spin_collinearity_test(psi0, ao_ovlp, debug=False):
+    Sz = np.zeros(nocc)
+    Sp = np.zeros(nocc) # S+
+    Sm = np.zeros(nocc) # S-
+
+    for i in range(nocc):
+        Sz[i] = 0.5 * (mo_ovlp_aa[i, i] - mo_ovlp_bb[i, i])
+        Sp[i] = mo_ovlp_ab[i, i]
+        Sm[i] = mo_ovlp_ab[i, i].conj()
+
+    Sx = 0.5 * np.real(Sp + Sm)
+    Sy = 0.5 * np.imag(Sp - Sm)
+    return np.array([Sx, Sy, Sz])
+
+def get_ao_spin_average(psi0):
+    nbsf = psi0.shape[0] // 2
+    dm = psi0 @ psi0.T.conj()
+    dm_aa = dm[:nbsf, :nbsf]
+    dm_ab = dm[:nbsf, nbsf:]
+    dm_ba = dm[nbsf:, :nbsf]
+    dm_bb = dm[nbsf:, nbsf:]
+
+    Sz = np.zeros(nbsf)
+    Sp = np.zeros(nbsf) # S+
+    Sm = np.zeros(nbsf) # S-
+
+    for i in range(nbsf):
+        Sz[i] = 0.5 * (dm_aa[i, i] - dm_bb[i, i])
+        Sp[i] = dm_ab[i, i]
+        Sm[i] = dm_ab[i, i].conj()
+
+    Sx = 0.5 * np.real(Sp + Sm)
+    Sy = 0.5 * np.imag(Sp - Sm)
+    return np.array([Sx, Sy, Sz])
+    
+def get_A_matrix(psi0a, psi0b, ao_ovlp):
+    spin_avg = get_spin_average(psi0a, psi0b, ao_ovlp)
+    spin_cov = get_spin_covariance(psi0a, psi0b, ao_ovlp)
+    spin_avg2 = np.outer(spin_avg, spin_avg)
+    return np.real(spin_cov - spin_avg2)
+
+def spin_collinearity_test(psi0, ao_ovlp, debug=False, verbose=False):
     """
     Spin collinearity test as introduced in 10.197.16.115
     """
@@ -105,20 +166,7 @@ def spin_collinearity_test(psi0, ao_ovlp, debug=False):
         
     # -------------------------------------------------------------------------
     # Compute <S> = (Sx, Sy, Sz).
-    mo_ovlp_aa = psi0a.T.conj() @ ao_ovlp @ psi0a
-    mo_ovlp_bb = psi0b.T.conj() @ ao_ovlp @ psi0b
-    mo_ovlp_ab = psi0a.T.conj() @ ao_ovlp @ psi0b
-    mo_ovlp_ba = mo_ovlp_ab.T.conj()
-    Sz, Sp, Sm = 0., 0., 0.
-
-    for i in range(nocc):
-        Sz += 0.5 * (mo_ovlp_aa[i, i] - mo_ovlp_bb[i, i])
-        Sp += mo_ovlp_ab[i, i]
-        Sm += mo_ovlp_ab[i, i].conj()
-
-    Sx = np.real(Sp + Sm) / 2.
-    Sy = np.imag(Sp - Sm) / 2.
-    spin = np.array([Sx, Sy, Sz])
+    spin = get_spin_average(psi0a, psi0b, ao_ovlp)
    
     # -------------------------------------------------------------------------
     # Compute the A matrix given in Eq (27) of ref.
@@ -144,17 +192,18 @@ def spin_collinearity_test(psi0, ao_ovlp, debug=False):
     evals, evecs = np.linalg.eigh(A)
     mu = evals[0]
     spin_axis = evecs[:, 0]
+    
+    if verbose:
+        print(f'\n# ----------------------')
+        print(f'# Spin collinearity test')
+        print(f'# ----------------------')
+        print(f'# epsilon0 = {epsilon0}')
+        print(f"# non {'half-' if nocc%2 else ''}integer value indicates non-collinearity")
 
-    print(f'\n# ----------------------')
-    print(f'# Spin collinearity test')
-    print(f'# ----------------------')
-    print(f'# epsilon0 = {epsilon0}')
-    print(f"# non {'half-' if nocc%2 else ''}integer value indicates non-collinearity")
+        print(f'\n# minimum mu = {mu}')
+        print(f'# Value is 0 iff wavefunction is collinear')
 
-    print(f'\n# minimum mu = {mu}')
-    print(f'# Value is 0 iff wavefunction is collinear')
-
-    print(f'\n# If mu = 0, the collinear spin axis is: \n{spin_axis}')
+        print(f'\n# If mu = 0, the collinear spin axis is: \n{spin_axis}')
     
     if debug: return epsilon0, mu, evals, evecs, A
     return epsilon0, mu, spin_axis
@@ -189,3 +238,4 @@ def align_spin_axis(psi, v):
     nbsf = psi.shape[0] // 2
     U = get_spin_rotation_matrix(nbsf, v)
     return U.T.conj() @ psi
+

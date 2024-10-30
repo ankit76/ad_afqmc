@@ -5,7 +5,7 @@ from ad_afqmc import config
 config.setup_jax()
 
 from ad_afqmc.spin_utils import (
-        get_spin_covariance, 
+        get_A_matrix,
         spin_collinearity_test,
         get_spin_rotation_matrix,
         align_spin_axis
@@ -39,7 +39,7 @@ def test_spin_collinearity_test():
     psi0a = psi0[:nbsf] # (nbsf, nocc)
     psi0b = psi0[nbsf:]
 
-    Aref, _ = get_spin_covariance(psi0a, psi0b, ao_ovlp)
+    Aref = get_A_matrix(psi0a, psi0b, ao_ovlp)
     epsilon0, mu, evals, evecs, A = spin_collinearity_test(psi0, ao_ovlp, debug=True)
 
     np.testing.assert_allclose(A, Aref, atol=1e-14)
@@ -63,7 +63,7 @@ def test_spin_collinearity_test():
     psi0a = psi0[:nbsf] # (nbsf, nocc)
     psi0b = psi0[nbsf:]
 
-    Aref, _ = get_spin_covariance(psi0a, psi0b, ao_ovlp)
+    Aref = get_A_matrix(psi0a, psi0b, ao_ovlp)
     epsilon0, mu, evals, evecs, A = spin_collinearity_test(psi0, ao_ovlp, debug=True)
 
     np.testing.assert_allclose(A, Aref, atol=1e-14)
@@ -84,8 +84,6 @@ def test_spin_collinearity_test():
     psi0 = np.zeros((2*nbsf, nocc))
     psi0[:nbsf, :nelec[0]] = Ca[:, :nelec[0]]
     psi0[nbsf:, nelec[0]:] = Cb[:, :nelec[1]]
-    psi0a = psi0[:nbsf] # (nbsf, nocc)
-    psi0b = psi0[nbsf:]
 
     # Rotate spin axis to x-axis.
     theta = np.pi / 2.
@@ -94,8 +92,10 @@ def test_spin_collinearity_test():
                  [np.sin(theta / 2.0), -np.cos(theta / 2.)]])
     U = np.kron(Uspin, np.eye(nbsf))
     psi0 = U.dot(psi0)
+    psi0a = psi0[:nbsf] # (nbsf, nocc)
+    psi0b = psi0[nbsf:]
 
-    Aref, _ = get_spin_covariance(psi0[:nbsf], psi0[nbsf:], ao_ovlp)
+    Aref = get_A_matrix(psi0a, psi0b, ao_ovlp)
     epsilon0, mu, evals, evecs, A = spin_collinearity_test(psi0, ao_ovlp, debug=True)
 
     np.testing.assert_allclose(A, Aref, atol=1e-14)
@@ -118,7 +118,7 @@ def test_spin_collinearity_test():
     psi0a = psi0[:nbsf] # (nbsf, nocc)
     psi0b = psi0[nbsf:]
 
-    Aref, _ = get_spin_covariance(psi0[:nbsf], psi0[nbsf:], ao_ovlp)
+    Aref = get_A_matrix(psi0a, psi0b, ao_ovlp)
     epsilon0, mu, evals, evecs, A = spin_collinearity_test(psi0, ao_ovlp, debug=True)
 
     np.testing.assert_allclose(A, Aref, atol=1e-14)
@@ -138,8 +138,10 @@ def test_spin_collinearity_test():
     P += P.T.conj()
     _, C = np.linalg.eigh(P)
     psi0 = C[:, :nocc]
+    psi0a = psi0[:nbsf] # (nbsf, nocc)
+    psi0b = psi0[nbsf:]
 
-    Aref, _ = get_spin_covariance(psi0[:nbsf], psi0[nbsf:], ao_ovlp)
+    Aref = get_A_matrix(psi0a, psi0b, ao_ovlp)
     epsilon0, mu, evals, evecs, A = spin_collinearity_test(psi0, ao_ovlp, debug=True)
     epsilon0_int = np.rint(epsilon0)
 

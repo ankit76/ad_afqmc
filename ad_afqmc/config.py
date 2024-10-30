@@ -5,8 +5,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-afqmc_config = {"use_gpu": False}
-
+afqmc_config = {
+                "use_gpu": False,
+                "use_mpi": False,
+                }
 
 class not_a_comm:
     def __init__(self):
