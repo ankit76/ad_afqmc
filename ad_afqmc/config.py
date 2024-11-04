@@ -7,7 +7,7 @@ import numpy as np
 
 afqmc_config = {
                 "use_gpu": False,
-                "use_mpi": False,
+                #"use_mpi": False,
                 }
 
 class not_a_comm:

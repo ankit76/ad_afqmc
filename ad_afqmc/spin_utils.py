@@ -128,9 +128,9 @@ def get_mo_spin_average(psi0a, psi0b, ao_ovlp):
     Sy = 0.5 * np.imag(Sp - Sm)
     return np.array([Sx, Sy, Sz])
 
-def get_ao_spin_average(psi0):
+def get_ao_spin_average(psi0, occ):
     nbsf = psi0.shape[0] // 2
-    dm = psi0 @ psi0.T.conj()
+    dm = psi0 @ np.diag(occ) @ psi0.T.conj()
     dm_aa = dm[:nbsf, :nbsf]
     dm_ab = dm[:nbsf, nbsf:]
     dm_ba = dm[nbsf:, :nbsf]

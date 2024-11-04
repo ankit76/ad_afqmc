@@ -48,8 +48,12 @@ def get_ghf_neel_guess(lattice):
     return init_psi
 
 def get_afm_stripe_guess(lattice):
+    """
+    Only for half-filling. Places 1 electron per site with alternating spins
+    between stripes.
+    """
     n_sites = lattice.n_sites
-    init_psi = np.zeros(2*n_sites, n_sites)
+    init_psi = np.zeros((2*n_sites, 2*n_sites))
 
     for i in range(n_sites):
         x = i // lattice.l_y
