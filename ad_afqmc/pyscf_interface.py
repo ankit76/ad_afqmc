@@ -55,6 +55,7 @@ def prep_afqmc(
     norb_frozen: int = 0,
     chol_cut: float = 1e-5,
     integrals: Optional[dict] = None,
+    filetag: Optional[str] = None,
 ):
     """Prepare AFQMC calculation with mean field trial wavefunction. Writes integrals and mo coefficients to disk.
 
@@ -65,6 +66,8 @@ def prep_afqmc(
         chol_cut (float, optional): Cholesky decomposition cutoff.
         integrals (dict, optional): Dictionary of integrals in an orthonormal basis, {"h0": enuc, "h1": h1e, "h2": eri}.
     """
+    if filetag is not None: filetag += "."
+    else: filetag = ""
 
     print("#\n# Preparing AFQMC calculation")
 
@@ -226,7 +229,7 @@ def prep_afqmc(
         trial_coeffs[0] = uhfCoeffs[:, :nbasis]
         trial_coeffs[1] = uhfCoeffs[:, nbasis:]
         # np.savetxt("uhf.txt", uhfCoeffs)
-        np.savez("mo_coeff.npz", mo_coeff=trial_coeffs)
+        np.savez(f"{filetag}mo_coeff.npz", mo_coeff=trial_coeffs)
 
     elif isinstance(mf, scf.rhf.RHF):
         q, _ = np.linalg.qr(
@@ -236,7 +239,18 @@ def prep_afqmc(
         )
         trial_coeffs[0] = q
         trial_coeffs[1] = q
-        np.savez("mo_coeff.npz", mo_coeff=trial_coeffs)
+        np.savez(f"{filetag}mo_coeff.npz", mo_coeff=trial_coeffs)
+    
+    # TODO: Test.
+    elif isinstance(mf, scf.ghf.GHF):
+        basis_coeff_full = scipy.linalg.block_diag(basis_coeff, basis_coeff)
+        q, _ = np.linalg.qr(
+            basis_coeff_full[:, norb_frozen:]
+            .T.dot(overlap)
+            .dot(mf.mo_coeff[:, norb_frozen:])
+        )
+        trial_coeffs = q
+        np.savez(f"{filetag}mo_coeff.npz", mo_coeff=trial_coeffs)
 
     write_dqmc(
         h1e,
@@ -246,7 +260,7 @@ def prep_afqmc(
         nbasis,
         enuc,
         ms=mol.spin,
-        filename="FCIDUMP_chol",
+        filename=f'{filetag}FCIDUMP_chol.h5',
         mo_coeffs=trial_coeffs,
     )
 

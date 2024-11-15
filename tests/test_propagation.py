@@ -67,15 +67,42 @@ ham_data_u = ham_handler.build_measurement_intermediates(
     ham_data_u, trial_u, wave_data_u
 )
 
+nelec_sp = (5, 4)
+nelec = sum(nelec_sp)
+trial_g = wavefunctions.ghf(norb, nelec_sp)
+prop_handler_g = propagation.propagator_general(n_walkers=10)
+
+wave_data_g = {}
+wave_data_g["mo_coeff"] = jnp.array(np.random.rand(2 * norb, nelec))
+wave_data_g["rdm1"] = jnp.array(
+                        wave_data_g["mo_coeff"] @ wave_data_g["mo_coeff"].T)
+
+ham_data_g = {}
+ham_data_g["h0"] = np.random.rand(1,)[0]
+ham_data_g["h1"] = jnp.array(np.random.rand(2, norb, norb))
+ham_data_g["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
+ham_data_g["ene0"] = 0.0
+ham_data_g = ham_handler.build_propagation_intermediates(
+    ham_data_g, prop_handler_g, trial_g, wave_data_g
+)
+ham_data_g = ham_handler.build_measurement_intermediates(
+    ham_data_g, trial_g, wave_data_g
+)
+
 prop_data_u = prop_handler_u.init_prop_data(trial_u, wave_data_u, ham_data_u)
 prop_data_u["key"] = random.PRNGKey(seed)
 prop_data_u["overlaps"] = trial_u.calc_overlap(prop_data_u["walkers"], wave_data_u)
+
+prop_data_g = prop_handler_g.init_prop_data(trial_g, wave_data_g, ham_data_g)
+prop_data_g["key"] = random.PRNGKey(seed)
+prop_data_g["overlaps"] = trial_g.calc_overlap(prop_data_g["walkers"], wave_data_g)
 
 fields = random.normal(
     random.PRNGKey(seed), shape=(prop_handler.n_walkers, ham_data["chol"].shape[0])
 )
 
-prop_handler_cpmc = propagation.propagator_cpmc(n_walkers=10)
+prop_handler_cpmc_u = propagation.propagator_cpmc_unrestricted(n_walkers=10)
+prop_handler_cpmc_g = propagation.propagator_cpmc_general(n_walkers=10)
 prop_handler_cpmc_slow = propagation.propagator_cpmc_slow(n_walkers=10)
 
 neighbors = tuple((i, (i + 1) % norb) for i in range(norb))
@@ -130,10 +157,10 @@ def test_propagate_free_u():
 def test_propagate_cpmc():
     trial_cpmc_u = wavefunctions.uhf_cpmc(norb, nelec_sp)
     ham_data_u["u"] = 4.0
-    prop_data_cpmc = prop_handler_cpmc.init_prop_data(
+    prop_data_cpmc = prop_handler_cpmc_u.init_prop_data(
         trial_cpmc_u, wave_data_u, ham_data_u
     )
-    prop_data_new = prop_handler_cpmc.propagate(
+    prop_data_new = prop_handler_cpmc_u.propagate(
         trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
     )
     assert prop_data_new["walkers"][0].shape == prop_data_u["walkers"][0].shape
@@ -147,6 +174,20 @@ def test_propagate_cpmc():
     assert np.allclose(prop_data_new_slow["walkers"][1], prop_data_new["walkers"][1])
     assert np.allclose(prop_data_new_slow["weights"], prop_data_new["weights"])
     assert np.allclose(prop_data_new_slow["overlaps"], prop_data_new["overlaps"])
+
+
+def test_propagate_cpmc_g():
+    trial_cpmc_g = wavefunctions.ghf_cpmc(norb, nelec_sp)
+    ham_data_g["u"] = 4.0
+    prop_data_cpmc = prop_handler_cpmc_g.init_prop_data(
+        trial_cpmc_g, wave_data_g, ham_data_g
+    )
+    prop_data_new = prop_handler_cpmc_g.propagate(
+        trial_cpmc_g, ham_data_g, prop_data_cpmc, fields, wave_data_g
+    )
+    assert prop_data_new["walkers"].shape == prop_data_g["walkers"].shape
+    assert prop_data_new["weights"].shape == prop_data_g["weights"].shape
+    assert prop_data_new["overlaps"].shape == prop_data_g["overlaps"].shape
 
 
 def test_propagate_cpmc_nn():
@@ -181,4 +222,5 @@ if __name__ == "__main__":
     test_propagate_u()
     test_propagate_free_u()
     test_propagate_cpmc()
+    test_propagate_cpmc_g()
     test_propagate_cpmc_nn()

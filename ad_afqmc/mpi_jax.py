@@ -24,17 +24,21 @@ rank = comm.Get_rank()
 from functools import partial
 
 from jax import numpy as jnp
+from jax import scipy as jsp
 
 from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
 
 print = partial(print, flush=True)
 
 
-def _prep_afqmc(options=None):
+def _prep_afqmc(options=None, filetag=None):
+    if filetag is not None: filetag += "."
+    else: filetag = ""
+
     if rank == 0:
         print(f"# Number of MPI ranks: {size}\n#")
-
-    with h5py.File("FCIDUMP_chol", "r") as fh5:
+    
+    with h5py.File(f"{filetag}FCIDUMP_chol.h5", "r") as fh5:
         [nelec, nmo, ms, nchol] = fh5["header"]
         h0 = jnp.array(fh5.get("energy_core"))
         h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
@@ -80,13 +84,14 @@ def _prep_afqmc(options=None):
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
     options["n_batch"] = options.get("n_batch", 1)
-
     try:
         with h5py.File("observable.h5", "r") as fh5:
             [observable_constant] = fh5["constant"]
             observable_op = np.array(fh5.get("op")).reshape(nmo, nmo)
             if options["walker_type"] == "uhf":
                 observable_op = jnp.array([observable_op, observable_op])
+            elif options["walker_type"] == "ghf":
+                observable_op = jsp.linalg.block_diag(observable_op, observable_op)
             observable = [observable_op, observable_constant]
     except:
         observable = None
@@ -99,13 +104,7 @@ def _prep_afqmc(options=None):
     ham_data["ene0"] = options["ene0"]
 
     wave_data = {}
-    mo_coeff = jnp.array(np.load("mo_coeff.npz")["mo_coeff"])
-    wave_data["rdm1"] = jnp.array(
-        [
-            mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
-            mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
-        ]
-    )
+    mo_coeff = jnp.array(np.load(f"{filetag}mo_coeff.npz")["mo_coeff"])
 
     if options["trial"] == "rhf":
         trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
@@ -116,6 +115,9 @@ def _prep_afqmc(options=None):
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
         ]
+    elif options["trial"] == "ghf":
+        trial = wavefunctions.ghf(norb, nelec_sp, n_batch=options["n_batch"])
+        wave_data["mo_coeff"] = mo_coeff[:, : nelec]
     elif options["trial"] == "noci":
         with open("dets.pkl", "rb") as f:
             ci_coeffs_dets = pickle.load(f)
@@ -170,8 +172,15 @@ def _prep_afqmc(options=None):
                     "# trial.pkl not found, make sure to construct the trial separately."
                 )
             trial = None
-
+    
     if options["walker_type"] == "rhf":
+        wave_data["rdm1"] = jnp.array(
+            [
+                mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
+                mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
+            ]
+        )
+
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
@@ -182,6 +191,13 @@ def _prep_afqmc(options=None):
         )
 
     elif options["walker_type"] == "uhf":
+        wave_data["rdm1"] = jnp.array(
+            [
+                mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
+                mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
+            ]
+        )
+
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
@@ -199,6 +215,13 @@ def _prep_afqmc(options=None):
                 options["n_walkers"],
                 n_batch=options["n_batch"],
             )
+    else:
+        wave_data["rdm1"] = mo_coeff[:, : nelec] @ mo_coeff[:, : nelec].T
+        if rank == 0:
+            print(
+                "# Propagator not constructed. Make sure to construct it separately."
+            )
+        prop = None
 
     sampler = sampling.sampler(
         options["n_prop_steps"],
@@ -215,7 +238,6 @@ def _prep_afqmc(options=None):
             if options[op] is not None:
                 print(f"# {op}: {options[op]}")
         print("#")
-
     return ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
 
 

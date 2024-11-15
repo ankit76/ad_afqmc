@@ -5,7 +5,7 @@ import numpy as np
 from ad_afqmc import config
 
 config.setup_jax()
-from jax import numpy as jnp
+from jax import numpy as jnp, vmap
 
 from ad_afqmc import pyscf_interface, wavefunctions
 
@@ -111,17 +111,31 @@ ghf = wavefunctions.ghf(norb, nelec_sp)
 wave_data_g = {}
 wave_data_g["mo_coeff"] = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1]))
 wave_data_g["rdm1"] = wave_data_u["rdm1"]
+walker_g = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1])) + 1.0j * jnp.array(
+    np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1])
+)
 ham_data_g = {}
 ham_data_g["h0"] = ham_data["h0"]
-ham_data_g["rot_h1"] = jnp.array(np.random.rand(nelec_sp[0] + nelec_sp[1], 2 * norb))
-ham_data_g["rot_chol"] = jnp.array(
-    np.random.rand(nchol, nelec_sp[0] + nelec_sp[1], 2 * norb)
-)
-ham_data_g["h1"] = jnp.array([ham_data["h1"], ham_data["h1"]])
+ham_data_g["h1"] = ham_data["h1"]
 ham_data_g["chol"] = ham_data["chol"]
 ham_data_g["ene0"] = ham_data["ene0"]
+ham_data_g["rot_h1"] = wave_data_g["mo_coeff"].T.conj() @ jnp.block(
+    [
+        [ham_data_g["h1"][0], jnp.zeros_like(ham_data_g["h1"][1])],
+        [jnp.zeros_like(ham_data_g["h1"][0]), ham_data_g["h1"][1]],
+    ]
+)
+ham_data_g["rot_chol"] = vmap(lambda x: jnp.hstack(
+        [
+            wave_data_g["mo_coeff"].T.conj()[:, : norb] @ x,
+            wave_data_g["mo_coeff"].T.conj()[:, norb :] @ x,
+        ]
+    ),
+    in_axes=(0)
+)(ham_data_g["chol"].reshape(-1, norb, norb))
 
 uhf_cpmc = wavefunctions.uhf_cpmc(norb, nelec_sp)
+ghf_cpmc = wavefunctions.ghf_cpmc(norb, nelec_sp)
 
 
 def test_rhf_overlap():
@@ -192,28 +206,70 @@ def test_uhf_optimize_orbs():
 
 
 def test_ghf_overlap():
-    overlap = ghf._calc_overlap(walker_up, walker_dn, wave_data_g)
-    assert np.allclose(jnp.real(overlap), -0.7645032356687913)
+    overlap_u = ghf._calc_overlap(walker_up, walker_dn, wave_data_g)
+    overlap_g = ghf._calc_overlap_general(walker_g, wave_data_g)
+    assert np.allclose(jnp.real(overlap_u), -0.7645032356687913)
+    assert np.allclose(jnp.real(overlap_g), -9.334265002203955)
 
 
 def test_ghf_green():
-    green = ghf._calc_green(walker_up, walker_dn, wave_data_g)
-    assert green.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
+    green_u = ghf._calc_green(walker_up, walker_dn, wave_data_g)
+    green_g = ghf._calc_green_general(walker_g, wave_data_g)
+    assert green_u.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
+    assert green_g.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
 
 
 def test_ghf_force_bias():
-    force_bias = ghf._calc_force_bias(walker_up, walker_dn, ham_data_g, wave_data_g)
-    assert force_bias.shape == (nchol,)
+    force_bias_u = ghf._calc_force_bias(walker_up, walker_dn, ham_data_g, wave_data_g)
+    force_bias_g = ghf._calc_force_bias_general(walker_g, ham_data_g, wave_data_g)
+    assert force_bias_u.shape == (nchol,)
+    assert force_bias_g.shape == (nchol,)
 
 
 def test_ghf_energy():
-    energy = ghf._calc_energy(
-        walker_up,
-        walker_dn,
-        ham_data_g,
-        wave_data_g,
-    )
-    assert np.allclose(jnp.real(energy), 47.91857449460195)
+    def get_ref_energy(walker, walker_type="uhf"):
+        if walker_type == "uhf":
+            walker_up, walker_dn = walker
+            # (2 * norb, nocc).
+            green = ghf._calc_green(walker_up, walker_dn, wave_data_g).T
+        elif walker_type == "ghf":
+            green = ghf._calc_green_general(walker, wave_data_g).T
+        full_green = jnp.einsum('mi,ni->nm', green, wave_data_g["mo_coeff"].conj())
+        dm = full_green.T
+        dmaa = dm[:norb, :norb]
+        dmab = dm[:norb, norb:]
+        dmba = dm[norb:, :norb]
+        dmbb = dm[norb:, norb:]
+        dm_diag = dmaa + dmbb
+        chol_mat = ham_data_g['chol'].reshape((-1, norb, norb))
+        
+        # one-body.
+        e0 = ham_data_g['h0']
+        e1 = jnp.einsum('pq,qp->', ham_data_g['h1'][0], dm_diag)
+        
+        # coulomb.
+        ej = 0.5 * jnp.einsum('Xpq,Xrs,sr,qp->', chol_mat, chol_mat, dm_diag, dm_diag)
+
+        # exchange.
+        Taa = jnp.einsum('sp,Xpq->Xsq', dmaa, chol_mat)
+        Tab = jnp.einsum('sp,Xpq->Xsq', dmab, chol_mat)
+        Tba = jnp.einsum('sp,Xpq->Xsq', dmba, chol_mat)
+        Tbb = jnp.einsum('sp,Xpq->Xsq', dmbb, chol_mat)
+        ek = 0.5 * (
+                jnp.einsum('Xsq,Xqs->', Taa, Taa) + \
+                jnp.einsum('Xsq,Xqs->', Tab, Tba) + \
+                jnp.einsum('Xsq,Xqs->', Tba, Tab) + \
+                jnp.einsum('Xsq,Xqs->', Tbb, Tbb)
+        )
+        energy = e0 + e1 + (ej - ek)
+        return jnp.real(energy)
+
+    energy_u = ghf._calc_energy(walker_up, walker_dn, ham_data_g, wave_data_g)
+    energy_g = ghf._calc_energy_general(walker_g, ham_data_g, wave_data_g)
+    ref_energy_u = get_ref_energy([walker_up, walker_dn], walker_type="uhf")
+    ref_energy_g = get_ref_energy(walker_g, walker_type="ghf")
+    assert np.allclose(jnp.real(energy_u), ref_energy_u)
+    assert np.allclose(jnp.real(energy_g), ref_energy_g)
 
 
 def test_noci_overlap():

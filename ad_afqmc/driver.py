@@ -5,6 +5,7 @@ from typing import List, Optional, Union
 
 import jax
 import jax.numpy as jnp
+import jax.scipy as jsp
 import numpy as np
 from jax import dtypes, jvp, random, vjp
 
@@ -35,7 +36,10 @@ def afqmc(
         observable_op = jnp.array(observable[0])
         observable_constant = observable[1]
     else:
-        observable_op = jnp.array(ham_data["h1"])
+        if options["walker_type"] == "ghf":
+            observable_op = jsp.linalg.block_diag(*ham_data["h1"])
+        else:
+            observable_op = jnp.array(ham_data["h1"])
         observable_constant = 0.0
 
     rdm_op = 0.0 * jnp.array(ham_data["h1"])  # for reverse mode
