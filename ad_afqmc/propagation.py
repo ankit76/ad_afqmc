@@ -495,6 +495,11 @@ class propagator_unrestricted(propagator_restricted):
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
         )
         h1_mod = ham_data["h1"] - jnp.array([v0 + v1, v0 + v1])
+        ham_data["rdm1"] = rdm1
+        ham_data["v0"] = v0
+        ham_data["v1"] = v1
+        ham_data["v0+v1"] = jnp.array([v0 + v1, v0 + v1])
+        ham_data["h1_mod"] = h1_mod
         ham_data["exp_h1"] = jnp.array(
             [
                 jsp.linalg.expm(-self.dt * h1_mod[0] / 2.0),
@@ -648,7 +653,6 @@ class propagator_general(propagator_restricted):
     def _build_propagation_intermediates(
         self, ham_data: dict, trial: wave_function, wave_data: dict
     ) -> dict:
-        nocc = sum(trial.nelec)
         rdm1 = wave_data["rdm1"]
         rdm1 = rdm1[: trial.norb, : trial.norb] + rdm1[trial.norb :, trial.norb :]
         ham_data["mf_shifts"] = 1.0j * vmap(
@@ -686,7 +690,17 @@ class propagator_general(propagator_restricted):
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
         )
         h1_mod = ham_data["h1"] - jnp.array([v0 + v1, v0 + v1])
-        ham_data["exp_h1"] = jsp.linalg.expm(-self.dt * h1_mod / 2.0)
+        ham_data["rdm1"] = rdm1
+        ham_data["v0"] = v0
+        ham_data["v1"] = v1
+        ham_data["v0+v1"] = jnp.array([v0 + v1, v0 + v1])
+        ham_data["h1_mod"] = h1_mod
+        ham_data["exp_h1"] = jnp.array(
+            [
+                jsp.linalg.expm(-self.dt * h1_mod[0] / 2.0),
+                jsp.linalg.expm(-self.dt * h1_mod[1] / 2.0),
+            ]
+        )
         return ham_data
 
     def __hash__(self) -> int:
@@ -713,7 +727,7 @@ class propagator_cpmc_unrestricted(propagator_unrestricted):
         const = jnp.exp(-self.dt * ham_data["u"] / 2)
         prop_data["hs_constant"] = const * jnp.array(
             [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
-        )
+        ) # [[(+1, up), (+1, dn)], [(-1, up), (-1, dn)]].
         return prop_data
 
     @partial(jit, static_argnums=(0, 1))
@@ -800,8 +814,8 @@ class propagator_cpmc_unrestricted(propagator_unrestricted):
             mask = rns < prob_0
             constants = jnp.where(
                 mask.reshape(-1, 1),
-                prop_data["hs_constant"][0],
-                prop_data["hs_constant"][1],
+                prop_data["hs_constant"][0], # x = +1.
+                prop_data["hs_constant"][1], # x = -1.
             )
             new_walkers_up = (
                 carry["walkers"][0].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
@@ -857,7 +871,7 @@ class propagator_cpmc_general(propagator_general):
         const = jnp.exp(-self.dt * ham_data["u"] / 2)
         prop_data["hs_constant"] = const * jnp.array(
             [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
-        )
+        ) # [[(+1, up), (+1, dn)], [(-1, up), (-1, dn)]].
         return prop_data
 
     @partial(jit, static_argnums=(0, 1))
@@ -943,12 +957,12 @@ class propagator_cpmc_general(propagator_general):
             prob_0 /= norm
 
             # update
-            rns = uniform_rns[:, x]
+            rns = uniform_rns[:, x] # (n_walkers,)
             mask = rns < prob_0
             constants = jnp.where(
                 mask.reshape(-1, 1),
-                prop_data["hs_constant"][0],
-                prop_data["hs_constant"][1],
+                prop_data["hs_constant"][0], # x = +1.
+                prop_data["hs_constant"][1], # x = -1.
             )
             new_walkers = carry["walkers"].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
             new_walkers = new_walkers.at[:, x + trial.norb, :].mul(constants[:, 1].reshape(-1, 1))
