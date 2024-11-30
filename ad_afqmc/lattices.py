@@ -537,11 +537,12 @@ class two_dimensional_grid(lattice):
 class triangular_grid(lattice):
     l_x: int  # height
     l_y: int  # width
-    shape: Optional[tuple] = None
-    sites: Optional[Sequence] = None
-    n_sites: Optional[int] = None
+    shape: tuple = ()
+    sites: Sequence = ()
+    n_sites: int = 0
     coord_num: int = 6
     open_x: bool = False
+    open_x_y: bool = False
 
     def __post_init__(self):
         self.shape = (self.l_y, self.l_x)
@@ -564,14 +565,29 @@ class triangular_grid(lattice):
             else:
                 n5 = ((pos[0] + 1) % self.l_x, (pos[1] - 1))
                 n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1))
+            n2 = ((pos[0] + 1) % self.l_x, pos[1])
+            n4 = ((pos[0] - 1) % self.l_x, pos[1])
+        elif self.open_x_y:
+            n1 = (pos[0], (pos[1] + 1))
+            n3 = (pos[0], (pos[1] - 1))
+            if pos[0] % 2 == 1:
+                n5 = ((pos[0] + 1), (pos[1] + 1))
+                n6 = ((pos[0] - 1), (pos[1] + 1))
+            else:
+                n5 = ((pos[0] + 1), (pos[1] - 1))
+                n6 = ((pos[0] - 1), (pos[1] - 1))
+            # n5 = ((pos[0] + 1), (pos[1] + 1))
+            # n6 = ((pos[0] - 1), (pos[1] - 1))
+            n2 = ((pos[0] + 1), pos[1])
+            n4 = ((pos[0] - 1), pos[1])
         else:
             n1 = (pos[0], (pos[1] + 1) % self.l_y)
             n3 = (pos[0], (pos[1] - 1) % self.l_y)
             n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
             n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1) % self.l_y)
+            n2 = ((pos[0] + 1) % self.l_x, pos[1])
+            n4 = ((pos[0] - 1) % self.l_x, pos[1])
 
-        n2 = ((pos[0] + 1) % self.l_x, pos[1])
-        n4 = ((pos[0] - 1) % self.l_x, pos[1])
         return jnp.array([n1, n2, n3, n4, n5, n6])
 
     def create_adjacency_matrix(self):
