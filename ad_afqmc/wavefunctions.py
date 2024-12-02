@@ -357,8 +357,7 @@ class wave_function(ABC):
         rdm1 = self.get_rdm1(wave_data)
 
         if walker_type == "ghf":
-            natorbs_up = jnp.linalg.eigh(rdm1[: self.norb, : self.norb])[1][:, ::-1][:, : self.nelec[0]]
-            natorbs_dn = jnp.linalg.eigh(rdm1[self.norb :, self.norb :])[1][:, ::-1][:, : self.nelec[1]]
+            natorbs = jnp.linalg.eigh(rdm1)[1][:, ::-1][:, : sum(self.nelec)]
         else:
             natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
             natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
@@ -404,10 +403,7 @@ class wave_function(ABC):
                 jnp.array([natorbs_dn + 0.0j] * n_walkers),
             ]
         elif walker_type == "ghf":
-            orbs = jnp.empty((2 * self.norb, sum(self.nelec)))
-            orbs = orbs.at[: self.norb, : self.nelec[0]].set(natorbs_up)
-            orbs = orbs.at[self.norb :, self.nelec[0] :].set(natorbs_dn)
-            return jnp.array([orbs + 0.0j] * n_walkers)
+            return jnp.array([natorbs + 0.0j] * n_walkers)
 
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         """Build intermediates for measurements in ham_data. This method is called by the hamiltonian class.

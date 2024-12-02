@@ -495,11 +495,6 @@ class propagator_unrestricted(propagator_restricted):
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
         )
         h1_mod = ham_data["h1"] - jnp.array([v0 + v1, v0 + v1])
-        ham_data["rdm1"] = rdm1
-        ham_data["v0"] = v0
-        ham_data["v1"] = v1
-        ham_data["v0+v1"] = jnp.array([v0 + v1, v0 + v1])
-        ham_data["h1_mod"] = h1_mod
         ham_data["exp_h1"] = jnp.array(
             [
                 jsp.linalg.expm(-self.dt * h1_mod[0] / 2.0),
@@ -659,7 +654,7 @@ class propagator_general(propagator_restricted):
             lambda x: jnp.sum(x.reshape(trial.norb, trial.norb) * rdm1)
         )(ham_data["chol"])
 
-        # TODO: Check.
+        # TODO: Check. May be incorrect, but we aren't using it for now.
         ham_data["mf_shifts_fp"] = jnp.stack(
             (
                 ham_data["mf_shifts"] / trial.nelec[0] / 2.0,
@@ -670,7 +665,7 @@ class propagator_general(propagator_restricted):
             -ham_data["h0"] - jnp.sum(ham_data["mf_shifts"] ** 2) / 2.0
         )
 
-        # TODO: Check.
+        # TODO: Check. May be incorrect, but we aren't using it for now.
         ham_data["h0_prop_fp"] = jnp.stack(
             (
                 (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0] / 2.0,
@@ -690,11 +685,6 @@ class propagator_general(propagator_restricted):
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
         )
         h1_mod = ham_data["h1"] - jnp.array([v0 + v1, v0 + v1])
-        ham_data["rdm1"] = rdm1
-        ham_data["v0"] = v0
-        ham_data["v1"] = v1
-        ham_data["v0+v1"] = jnp.array([v0 + v1, v0 + v1])
-        ham_data["h1_mod"] = h1_mod
         ham_data["exp_h1"] = jnp.array(
             [
                 jsp.linalg.expm(-self.dt * h1_mod[0] / 2.0),
@@ -804,6 +794,7 @@ class propagator_cpmc_unrestricted(propagator_unrestricted):
             ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1)
 
             # normalize
+            # p'(x) = p(x) * ovlp_ratio(x)
             prob_0 = ratio_0.real / 2.0
             prob_1 = ratio_1.real / 2.0
             norm = prob_0 + prob_1

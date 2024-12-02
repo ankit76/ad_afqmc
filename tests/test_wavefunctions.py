@@ -12,6 +12,10 @@ from ad_afqmc import pyscf_interface, wavefunctions
 seed = 102
 np.random.seed(seed)
 norb, nelec, nchol = 10, (5, 5), 5
+
+# -----------------------------------------------------------------------------
+# RHF.
+# -----------------------------------------------------------------------------
 rhf = wavefunctions.rhf(norb, nelec)
 wave_data = {}
 wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec[0]]
@@ -29,7 +33,6 @@ ham_data["h1"] = jnp.array([np.random.rand(norb, norb)] * 2)
 ham_data["chol"] = jnp.array(np.random.rand(nchol, norb, norb))
 ham_data["ene0"] = 0.0
 
-
 ham_data["normal_ordering_term"] = -0.5 * jnp.einsum(
     "gik,gjk->ij",
     ham_data["chol"].reshape(-1, norb, norb),
@@ -37,6 +40,9 @@ ham_data["normal_ordering_term"] = -0.5 * jnp.einsum(
     optimize="optimal",
 )
 
+# -----------------------------------------------------------------------------
+# Multi-Slater.
+# -----------------------------------------------------------------------------
 multislater = wavefunctions.multislater(norb, nelec, max_excitation=6)
 path = os.path.dirname(os.path.abspath(__file__))
 Acre, Ades, Bcre, Bdes, coeff, ref_det = pyscf_interface.get_excitations(
@@ -52,6 +58,9 @@ wave_data_multislater = {
     "ref_det": ref_det,
 }
 
+# -----------------------------------------------------------------------------
+# UHF.
+# -----------------------------------------------------------------------------
 nelec_sp = (3, 2)
 uhf = wavefunctions.uhf(norb, nelec_sp)
 wave_data_u = {}
@@ -84,6 +93,9 @@ ham_data_u["h1"] = ham_data["h1"]  # jnp.array([ham_data["h1"], ham_data["h1"]])
 ham_data_u["chol"] = ham_data["chol"]
 ham_data_u["ene0"] = ham_data["ene0"]
 
+# -----------------------------------------------------------------------------
+# NOCI.
+# -----------------------------------------------------------------------------
 ndets = 5
 noci = wavefunctions.noci(norb, nelec_sp, ndets)
 dets = [
@@ -105,13 +117,16 @@ ham_data_noci["rot_chol"] = [
     jnp.array(np.random.rand(ndets, nchol, nelec_sp[1], norb)),
 ]
 
-
+# -----------------------------------------------------------------------------
+# GHF.
+# -----------------------------------------------------------------------------
 nelec_sp = (3, 2)
 ghf = wavefunctions.ghf(norb, nelec_sp)
 wave_data_g = {}
 wave_data_g["mo_coeff"] = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1]))
 wave_data_g["rdm1"] = wave_data_u["rdm1"]
-walker_g = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1])) + 1.0j * jnp.array(
+walker_g = jnp.array(
+    np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1])) + 1.0j * jnp.array(
     np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1])
 )
 ham_data_g = {}
@@ -134,6 +149,17 @@ ham_data_g["rot_chol"] = vmap(lambda x: jnp.hstack(
     in_axes=(0)
 )(ham_data_g["chol"].reshape(-1, norb, norb))
 
+# -----------------------------------------------------------------------------
+# GHF walkers from UHF walkers.
+# -----------------------------------------------------------------------------
+walker_g2 = np.zeros(walker_g.shape, dtype=walker_g.dtype)
+walker_g2[: norb, : nelec_sp[0]] = walker_up
+walker_g2[norb :, nelec_sp[0] :] = walker_dn
+walker_g2 = jnp.array(walker_g2)
+
+# -----------------------------------------------------------------------------
+# CPMC.
+# -----------------------------------------------------------------------------
 uhf_cpmc = wavefunctions.uhf_cpmc(norb, nelec_sp)
 ghf_cpmc = wavefunctions.ghf_cpmc(norb, nelec_sp)
 
@@ -208,22 +234,30 @@ def test_uhf_optimize_orbs():
 def test_ghf_overlap():
     overlap_u = ghf._calc_overlap(walker_up, walker_dn, wave_data_g)
     overlap_g = ghf._calc_overlap_general(walker_g, wave_data_g)
+    overlap_g2 = ghf._calc_overlap_general(walker_g2, wave_data_g)
     assert np.allclose(jnp.real(overlap_u), -0.7645032356687913)
     assert np.allclose(jnp.real(overlap_g), -9.334265002203955)
+    assert np.allclose(jnp.real(overlap_g2), -0.7645032356687913)
 
 
 def test_ghf_green():
     green_u = ghf._calc_green(walker_up, walker_dn, wave_data_g)
     green_g = ghf._calc_green_general(walker_g, wave_data_g)
+    green_g2 = ghf._calc_green_general(walker_g2, wave_data_g)
     assert green_u.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
     assert green_g.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
+    assert green_g2.shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
+    assert np.allclose(jnp.real(green_u), jnp.real(green_g2))
 
 
 def test_ghf_force_bias():
     force_bias_u = ghf._calc_force_bias(walker_up, walker_dn, ham_data_g, wave_data_g)
     force_bias_g = ghf._calc_force_bias_general(walker_g, ham_data_g, wave_data_g)
+    force_bias_g2 = ghf._calc_force_bias_general(walker_g2, ham_data_g, wave_data_g)
     assert force_bias_u.shape == (nchol,)
     assert force_bias_g.shape == (nchol,)
+    assert force_bias_g2.shape == (nchol,)
+    assert np.allclose(jnp.real(force_bias_u), jnp.real(force_bias_g2))
 
 
 def test_ghf_energy():
@@ -266,10 +300,14 @@ def test_ghf_energy():
 
     energy_u = ghf._calc_energy(walker_up, walker_dn, ham_data_g, wave_data_g)
     energy_g = ghf._calc_energy_general(walker_g, ham_data_g, wave_data_g)
+    energy_g2 = ghf._calc_energy_general(walker_g2, ham_data_g, wave_data_g)
     ref_energy_u = get_ref_energy([walker_up, walker_dn], walker_type="uhf")
     ref_energy_g = get_ref_energy(walker_g, walker_type="ghf")
+    ref_energy_g2 = get_ref_energy(walker_g2, walker_type="ghf")
     assert np.allclose(jnp.real(energy_u), ref_energy_u)
     assert np.allclose(jnp.real(energy_g), ref_energy_g)
+    assert np.allclose(jnp.real(energy_g2), ref_energy_g2)
+    assert np.allclose(jnp.real(energy_u), jnp.real(energy_g2))
 
 
 def test_noci_overlap():
@@ -325,8 +363,10 @@ def test_uhf_cpmc():
         hs_constant[0] - 1,
     )
     overlap_0 = uhf_cpmc._calc_overlap(walker_up, walker_dn, wave_data_u)
-    new_walker_0 = walker_up.at[3, :].mul(hs_constant[0, 0])
-    new_walker_1 = walker_dn.at[3, :].mul(hs_constant[0, 1])
+    new_walker_0 = walker_up.copy()
+    new_walker_1 = walker_dn.copy()
+    new_walker_0 = new_walker_0.at[3].mul(hs_constant[0, 0])
+    new_walker_1 = new_walker_1.at[3].mul(hs_constant[0, 1])
     ratio = uhf_cpmc._calc_overlap(new_walker_0, new_walker_1, wave_data_u) / overlap_0
     assert np.allclose(ratio, wick_ratio)
 
@@ -338,6 +378,92 @@ def test_uhf_cpmc():
         hs_constant[0] - 1,
     )
     assert np.allclose(new_green, new_green_wick)
+
+
+def test_ghf_cpmc():
+    u = 4.0
+    dt = 0.005
+    gamma = jnp.arccosh(jnp.exp(dt * u / 2))
+    const = jnp.exp(-dt * u / 2)
+    hs_constant = const * jnp.array(
+        [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
+    )
+
+    # UHF walkers.
+    green_u = ghf_cpmc.calc_full_green(walker_up, walker_dn, wave_data_g)
+    assert green_u.shape == (2 * norb, 2 * norb)
+    wick_ratio_u = ghf_cpmc.calc_overlap_ratio(
+        green_u,
+        jnp.array([[0, 3], [1, 3]]),
+        hs_constant[0] - 1,
+    )
+    overlap_0 = ghf_cpmc._calc_overlap(walker_up, walker_dn, wave_data_g)
+    new_walker_0 = walker_up.copy()
+    new_walker_1 = walker_dn.copy()
+    new_walker_0 = new_walker_0.at[3].mul(hs_constant[0, 0])
+    new_walker_1 = new_walker_1.at[3].mul(hs_constant[0, 1])
+    ratio_u = ghf_cpmc._calc_overlap(new_walker_0, new_walker_1, wave_data_g) / overlap_0
+    assert np.allclose(ratio_u, wick_ratio_u)
+
+    new_green_u = ghf_cpmc.calc_full_green(new_walker_0, new_walker_1, wave_data_g)
+    new_green_wick_u = ghf_cpmc.update_greens_function(
+        green_u,
+        ratio_u,
+        jnp.array([[0, 3], [1, 3]]),
+        hs_constant[0] - 1,
+    )
+    assert np.allclose(new_green_u, new_green_wick_u)
+
+    # GHF walkers.
+    green = ghf_cpmc.calc_full_green_general(walker_g, wave_data_g)
+    assert green.shape == (2 * norb, 2 * norb)
+    wick_ratio = ghf_cpmc.calc_overlap_ratio(
+        green,
+        jnp.array([[0, 3], [1, 3]]),
+        hs_constant[0] - 1,
+    )
+    overlap_0 = ghf_cpmc._calc_overlap_general(walker_g, wave_data_g)
+    new_walker = walker_g.copy()
+    new_walker = new_walker.at[3].mul(hs_constant[0, 0])
+    new_walker = new_walker.at[norb + 3].mul(hs_constant[0, 1])
+    ratio = ghf_cpmc._calc_overlap_general(new_walker, wave_data_g) / overlap_0
+    assert np.allclose(ratio, wick_ratio)
+
+    new_green = ghf_cpmc.calc_full_green_general(new_walker, wave_data_g)
+    new_green_wick = ghf_cpmc.update_greens_function(
+        green,
+        ratio,
+        jnp.array([[0, 3], [1, 3]]),
+        hs_constant[0] - 1,
+    )
+    assert np.allclose(new_green, new_green_wick)
+    
+    # Compare with UHF.
+    green = ghf_cpmc.calc_full_green_general(walker_g2, wave_data_g)
+    assert green.shape == (2 * norb, 2 * norb)
+    wick_ratio = ghf_cpmc.calc_overlap_ratio(
+        green,
+        jnp.array([[0, 3], [1, 3]]),
+        hs_constant[0] - 1,
+    )
+    overlap_0 = ghf_cpmc._calc_overlap_general(walker_g2, wave_data_g)
+    new_walker = walker_g2.copy()
+    new_walker = new_walker.at[3].mul(hs_constant[0, 0])
+    new_walker = new_walker.at[norb + 3].mul(hs_constant[0, 1])
+    ratio = ghf_cpmc._calc_overlap_general(new_walker, wave_data_g) / overlap_0
+    assert np.allclose(ratio, wick_ratio)
+    np.testing.assert_allclose(ratio, ratio_u)
+
+    new_green = ghf_cpmc.calc_full_green_general(new_walker, wave_data_g)
+    new_green_wick = ghf_cpmc.update_greens_function(
+        green,
+        ratio,
+        jnp.array([[0, 3], [1, 3]]),
+        hs_constant[0] - 1,
+    )
+    assert np.allclose(new_green, new_green_wick)
+    assert np.allclose(new_green, new_green_u)
+    assert np.allclose(green, green_u)
 
 
 def test_multislater():
@@ -382,4 +508,5 @@ if __name__ == "__main__":
     test_noci_energy()
     test_noci_get_rdm1()
     test_uhf_cpmc()
+    test_ghf_cpmc()
     test_multislater()
