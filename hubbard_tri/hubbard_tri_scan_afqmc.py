@@ -45,6 +45,7 @@ parser.add_argument('--ny', type=int, required=True)
 parser.add_argument('--nwalkers', type=int, required=True)
 
 # Optional.
+parser.add_argument('--apbc', type=int, required=False, nargs='?', default=0)
 parser.add_argument('--open_x', type=int, required=False, nargs='?', default=0)
 parser.add_argument('--run_cpmc', type=int, required=False, nargs='?', default=0)
 parser.add_argument('--load_psi0', type=int, required=False, nargs='?', default=0)
@@ -62,6 +63,7 @@ nx = args.nx
 ny = args.ny
 nwalkers = args.nwalkers
 
+apbc = args.apbc
 open_x = args.open_x
 load_psi0 = args.load_psi0
 in_dir = args.in_dir
@@ -70,12 +72,16 @@ filetag = args.filetag
 run_cpmc = args.run_cpmc
 verbose = args.verbose if rank == 0 else 0
 
+if verbose: print('\n# Using open_x...')
+
 # -----------------------------------------------------------------------------
 # Settings.
 lattice = lattices.triangular_grid(nx, ny, open_x=open_x)
 n_sites = lattice.n_sites
 n_elec = (nup, ndown)
 nocc = sum(n_elec)
+filling = nocc / (2*n_sites)
+if verbose: print(f'\n# Filling factor = {filling}')
 
 # -----------------------------------------------------------------------------
 # Integrals.
@@ -83,6 +89,16 @@ integrals = {}
 integrals["h0"] = 0.0
 
 h1 = -1.0 * lattice.create_adjacency_matrix()
+
+if apbc: # Antiperiodic boundary conditions.
+    if verbose: print('\n# Using APBC...')
+    boundary_pairs = lattice.get_boundary_pairs()
+
+    for i, j in boundary_pairs:
+        assert h1[i, j] == h1[j, i] == -1.
+        h1[i, j] *= -1.
+        h1[j, i] *= -1.
+
 integrals["h1"] = h1
 
 h2 = np.zeros((n_sites, n_sites, n_sites, n_sites))
@@ -132,6 +148,8 @@ else:
     dm_init = 1.0 * umf.init_guess_by_1e()
     dm_init = sp.linalg.block_diag(dm_init[0], dm_init[1])
     noise = 0.5 * np.amax(np.absolute(dm_init))
+    seed = 262
+    np.random.seed(seed)
     dm_init += noise * np.random.randn(*dm_init.shape)
 
     gmf.kernel(dm_init)
@@ -150,16 +168,12 @@ else:
                                 ghf_coeff[:, :nocc], ao_ovlp, verbose=verbose)
 
 # -----------------------------------------------------------------------------
-# FCI.
-if sum(n_elec) < 8:
-    ci = fci.FCI(mol)
-    e, ci_coeffs = ci.kernel(
-        h1e=integrals["h1"], eri=integrals["h2"], norb=n_sites, nelec=n_elec
-    )
-    print(f"fci energy: {e}")
-
-# -----------------------------------------------------------------------------
 # AFQMC.
+jobid = ''
+try: jobid = '.' +  os.environ["SLURM_JOB_ID"]
+except: pass
+filetag += jobid
+
 if rank == 0:
     pyscf_interface.prep_afqmc(
             umf, basis_coeff=np.eye(n_sites), integrals=integrals, filetag=filetag)
@@ -177,6 +191,7 @@ options = {
     "walker_type": "uhf",
     # "trial": "uhf",
     "save_walkers": False,
+    #"do_sr": False
 }
 
 ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI = (
@@ -185,18 +200,28 @@ ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI = (
 
 if run_cpmc:
     if verbose: print(f'\n# Using CPMC propagator...')
-    prop = propagation.propagator_cpmc(
+    prop = propagation.propagator_cpmc_unrestricted(
         dt=options["dt"],
         n_walkers=options["n_walkers"],
     )
 
 trial = wavefunctions.ghf_cpmc(n_sites, n_elec)
-wave_data["mo_coeff"] = ghf_coeff[:, : n_elec[0] + n_elec[1]]
+wave_data["mo_coeff"] = ghf_coeff[:, :nocc]
 wave_data["rdm1"] = jnp.array([ghf_rdm1[:n_sites, :n_sites], ghf_rdm1[n_sites:, n_sites:]])
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 ham_data["u"] = U
 
 e_afqmc, err_afqmc = driver.afqmc(
-    ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
+    ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI,
 )
+
+# -----------------------------------------------------------------------------
+# FCI.
+if sum(n_elec) < 20:
+    ci = fci.FCI(mol)
+    e, ci_coeffs = ci.kernel(
+        h1e=integrals["h1"], eri=integrals["h2"], norb=n_sites, nelec=n_elec
+    )
+    if verbose: print(f"\n# fci energy: {e}")
+

@@ -204,11 +204,17 @@ trial = wavefunctions.ghf_cpmc(n_sites, n_elec)
 wave_data["mo_coeff"] = gmf_coeff[:, :nocc]
 wave_data["rdm1"] = gmf_rdm1
 
+init_walkers = jnp.array([wave_data["mo_coeff"]] * prop.n_walkers)
+omat = wave_data["mo_coeff"].T.conj() @ init_walkers
+ovlp = jsp.linalg.det(omat)
+print(f'ovlp = {ovlp}')
+
 # Overwrite ham_data.
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 ham_data["u"] = U
 
 e_afqmc, err_afqmc = driver.afqmc(
-    ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
+    ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI,
+    init_walkers=jnp.array([wave_data["mo_coeff"]] * prop.n_walkers)
 )

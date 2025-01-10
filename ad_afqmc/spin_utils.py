@@ -1,5 +1,8 @@
 import numpy as np
 
+import jax.numpy as jnp
+from jax import jit
+
 # Pauli matrices.
 PAULI_X = np.array([[0., 1.], [1., 0.]])
 PAULI_Y = np.array([[0., -1.j], [1.j, 0.]])
@@ -36,6 +39,55 @@ def get_spin_average(psi0a, psi0b, ao_ovlp):
     Sx = 0.5 * np.real(Sp + Sm)
     Sy = 0.5 * np.imag(Sp - Sm)
     return np.array([Sx, Sy, Sz])
+
+@jit
+def get_spin_average_from_greens_uhf(Ga, Gb):
+    na = jnp.trace(Gaa)
+    nb = jnp.trace(Gbb)
+    Sz = 0.5 * (na - nb)
+    return Sz
+
+@jit
+def get_spin_square_from_greens_uhf(Ga, Gb):
+    na = jnp.trace(Ga)
+    nb = jnp.trace(Gb)
+    Sz = 0.5 * (na - nb)
+    SpSm = na - jnp.trace(Ga @ Gb)
+    return SpSm - Sz + Sz**2
+
+@jit
+def get_spin_average_from_greens_ghf(G):
+    nbsf =  G.shape[0] // 2
+    Gaa = G[:nbsf, :nbsf]
+    Gab = G[:nbsf, nbsf:]
+    Gba = G[nbsf:, :nbsf]
+    Gbb = G[nbsf:, nbsf:]
+
+    na = jnp.trace(Gaa)
+    nb = jnp.trace(Gbb)
+    Sp = jnp.trace(Gab)
+    Sm = jnp.trace(Gba)
+    Sz = 0.5 * (na - nb)
+    Sx = 0.5 * (Sp + Sm).real
+    Sy = 0.5 * (Sp - Sm).imag
+    return jnp.array([Sx, Sy, Sz])
+
+@jit
+def get_spin_square_from_greens_ghf(G):
+    nbsf =  G.shape[0] // 2
+    Gaa = G[:nbsf, :nbsf]
+    Gab = G[:nbsf, nbsf:]
+    Gba = G[nbsf:, :nbsf]
+    Gbb = G[nbsf:, nbsf:]
+
+    na = jnp.trace(Gaa)
+    nb = jnp.trace(Gbb)
+
+    Sz = 0.5 * (na - nb)
+    SpSm = na - jnp.trace(Gaa @ Gbb) + jnp.trace(Gab) * jnp.trace(Gba)
+    Sz2 = Sz**2 + 0.25 * (
+            (na + nb) + 2.*jnp.trace(Gab @ Gba) - jnp.trace(Gaa @ Gaa) - jnp.trace(Gbb @ Gbb))
+    return SpSm - Sz + Sz2
 
 def get_spin_covariance(psi0a, psi0b, ao_ovlp):
     """
@@ -130,20 +182,20 @@ def get_mo_spin_average(psi0a, psi0b, ao_ovlp):
 
 def get_ao_spin_average(psi0, occ):
     nbsf = psi0.shape[0] // 2
-    dm = psi0 @ np.diag(occ) @ psi0.T.conj()
-    dm_aa = dm[:nbsf, :nbsf]
-    dm_ab = dm[:nbsf, nbsf:]
-    dm_ba = dm[nbsf:, :nbsf]
-    dm_bb = dm[nbsf:, nbsf:]
+    G = psi0 @ np.diag(occ) @ psi0.T.conj()
+    Gaa = G[:nbsf, :nbsf]
+    Gab = G[:nbsf, nbsf:]
+    Gba = G[nbsf:, :nbsf]
+    Gbb = G[nbsf:, nbsf:]
 
     Sz = np.zeros(nbsf)
     Sp = np.zeros(nbsf) # S+
     Sm = np.zeros(nbsf) # S-
 
     for i in range(nbsf):
-        Sz[i] = 0.5 * (dm_aa[i, i] - dm_bb[i, i])
-        Sp[i] = dm_ab[i, i]
-        Sm[i] = dm_ab[i, i].conj()
+        Sz[i] = 0.5 * (Gaa[i, i] - Gbb[i, i])
+        Sp[i] = Gab[i, i]
+        Sm[i] = Gab[i, i].conj()
 
     Sx = 0.5 * np.real(Sp + Sm)
     Sy = 0.5 * np.imag(Sp - Sm)
@@ -177,7 +229,7 @@ def spin_collinearity_test(psi0, ao_ovlp, debug=False, verbose=False):
     O_mats = np.array([psi0.T.conj() @ np.kron(spin_mat, ao_ovlp) @ psi0 for spin_mat in spin_mats])
     
     # Generate lower triangular matrix.
-    tril = np.zeros((3, 3))
+    tril = np.zeros((3, 3), dtype=np.complex128)
 
     for i in range(3):
         for j in range(i+1):

@@ -580,6 +580,21 @@ class triangular_grid(lattice):
             coords = pos @ lattice_vecs.T
 
         return coords
+    
+    def get_boundary_pairs(self):
+        """
+        Returns an array of lattice sites pairs connected by the periodic boundary
+        condition.
+        """
+        l_x, l_y = self.l_x, self.l_y
+        bottom_sites = np.arange(l_x) * l_x
+        left_sites = np.arange(l_y)
+        top_sites = bottom_sites + (l_y-1)
+        right_sites = left_sites + (l_x-1) * l_y
+        boundary_pairs_x = list(zip(bottom_sites, top_sites))
+        boundary_pairs_y = list(zip(left_sites, right_sites))
+        boundary_pairs = np.vstack([boundary_pairs_x, boundary_pairs_y])
+        return boundary_pairs
 
     # @partial(jit, static_argnums=(0,))
     def get_nearest_neighbors(self, pos):
@@ -648,90 +663,6 @@ class triangular_grid(lattice):
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         return cls(*aux_data)
-
-"""
-@dataclass
-@register_pytree_node_class
-class triangular_grid(lattice):
-    l_x: int  # height
-    l_y: int  # width
-    shape: Optional[tuple] = None
-    sites: Optional[Sequence] = None
-    n_sites: Optional[int] = None
-    coord_num: int = 6
-    open_x: bool = False
-
-    def __post_init__(self):
-        self.shape = (self.l_y, self.l_x)
-        self.n_sites = self.l_x * self.l_y
-        self.sites = tuple(
-            [(i // self.l_y, i % self.l_y) for i in range(self.l_x * self.l_y)]
-        )
-
-    def get_site_num(self, pos):
-        return pos[1] + self.l_y * pos[0]
-
-    # @partial(jit, static_argnums=(0,))
-    def get_nearest_neighbors(self, pos):
-        if self.open_x:
-            n1 = (pos[0], (pos[1] + 1))
-            n3 = (pos[0], (pos[1] - 1))
-            if pos[0] % 2 == 1:
-                n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1))
-                n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1))
-            else:
-                n5 = ((pos[0] + 1) % self.l_x, (pos[1] - 1))
-                n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1))
-        else:
-            n1 = (pos[0], (pos[1] + 1) % self.l_y)
-            n3 = (pos[0], (pos[1] - 1) % self.l_y)
-            n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
-            n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1) % self.l_y)
-
-        n2 = ((pos[0] + 1) % self.l_x, pos[1])
-        n4 = ((pos[0] - 1) % self.l_x, pos[1])
-        return jnp.array([n1, n2, n3, n4, n5, n6])
-
-    def create_adjacency_matrix(self):
-        width, height = self.l_y, self.l_x
-        size = width * height
-        h = np.zeros((size, size), dtype=int)
-
-        for r in range(width):
-            for q in range(height):
-                i = q * width + r
-                neighbors = self.get_nearest_neighbors((q, r))
-                for nq, nr in neighbors:
-                    if 0 <= nq < height and 0 <= nr < width:  # Check bounds
-                        j = nq * width + nr
-                        h[i, j] = 1
-                        h[j, i] = 1
-        return h
-
-    def __hash__(self):
-        return hash(
-            (
-                self.l_x,
-                self.l_y,
-                self.shape,
-                self.sites,
-                self.coord_num,
-            )
-        )
-
-    def tree_flatten(self):
-        return (), (
-            self.l_x,
-            self.l_y,
-            self.shape,
-            self.sites,
-            self.coord_num,
-        )
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        return cls(*aux_data)
-"""
 
 @dataclass
 @register_pytree_node_class
