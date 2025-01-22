@@ -42,10 +42,14 @@ options = {
     "seed": 98,
     "walker_type": "uhf",
     "ad_mode": "2rdm",
+    "trial": "uhf"
 }
 # serial run
 #driver.run_afqmc(options=options, mpi_prefix='')
 # mpi run
+from mpi4py import MPI
+
+MPI.Finalize()
 run_afqmc.run_afqmc(options=options, nproc=4)
 
 rdm2_afqmc = np.load("rdm2_afqmc.npz")["rdm2"]
