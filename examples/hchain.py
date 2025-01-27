@@ -44,9 +44,5 @@ options = {
 # serial run
 # run_afqmc.run_afqmc(options=options, mpi_prefix='')
 
-# mpi run
-from mpi4py import MPI
-
-MPI.Finalize()
 run_afqmc.run_afqmc(options=options, nproc=4)
 

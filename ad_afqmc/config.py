@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-afqmc_config = {"use_gpu": False}
+afqmc_config = {"use_gpu": False, "use_mpi": None}
 
 
 class not_a_comm:
@@ -45,6 +45,9 @@ class not_MPI:
     SUM = None
     COMM_WORLD = not_a_comm()
 
+    def Finalize(self):
+        pass
+
 
 def setup_jax():
     from jax import config
@@ -80,11 +83,8 @@ def setup_jax():
 
 
 def setup_comm():
-    if "use_mpi" not in afqmc_config:
-        if afqmc_config["use_gpu"] == True:
-            afqmc_config["use_mpi"] = False
-        else:
-            afqmc_config["use_mpi"] = True
+    if afqmc_config["use_gpu"] == True:
+        afqmc_config["use_mpi"] = False
     if afqmc_config["use_mpi"] == True:
         from mpi4py import MPI
     else:

@@ -64,9 +64,5 @@ options = {
     "ad_mode": "forward",
     "trial": "rhf",
 }
-# mpi run
-from mpi4py import MPI
-
-MPI.Finalize()
 run_afqmc.run_afqmc(options=options, nproc=4)
 

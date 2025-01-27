@@ -9,29 +9,50 @@ from ad_afqmc import config
 print = partial(print, flush=True)
 
 
-def run_afqmc(options=None, script=None, mpi_prefix=None, nproc=None):
+def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
+    if tmpdir is None:
+        try:
+            with open("tmpdir.txt", "r") as f:
+                tmpdir = f.read().strip()
+        except:
+            tmpdir = "."
     if options is None:
         options = {}
-    with open("options.bin", "wb") as f:
+    with open(tmpdir + "/options.bin", "wb") as f:
         pickle.dump(options, f)
-    if script is None:
-        path = os.path.abspath(__file__)
-        dir_path = os.path.dirname(path)
-        script = f"{dir_path}/mpi_jax.py"
+    path = os.path.abspath(__file__)
+    dir_path = os.path.dirname(path)
+    script = f"{dir_path}/mpi_jax.py"
     use_gpu = config.afqmc_config["use_gpu"]
+    use_mpi = config.afqmc_config["use_mpi"]
+    if not use_gpu and config.afqmc_config["use_mpi"] is not False:
+        try:
+            from mpi4py import MPI
+
+            MPI.Finalize()
+            use_mpi = True
+            print(f"# mpi4py found, using MPI.")
+            if nproc is None:
+                print(f"# Number of MPI ranks not specified, using 1 by default.")
+        except ImportError:
+            use_mpi = False
+            print(f"# Unable to import mpi4py, not using MPI.")
+        # use_mpi = False
     gpu_flag = "--use_gpu" if use_gpu else ""
+    mpi_flag = "--use_mpi" if use_mpi else ""
     if mpi_prefix is None:
-        if use_gpu:
-            mpi_prefix = ""
-        else:
+        if use_mpi:
             mpi_prefix = "mpirun "
-    if nproc is not None:
-        mpi_prefix += f"-np {nproc} "
+            if nproc is not None:
+                mpi_prefix += f"-np {nproc} "
+
+        else:
+            mpi_prefix = ""
     os.system(
-        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script} {gpu_flag}"
+        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script} {tmpdir} {gpu_flag} {mpi_flag}"
     )
     try:
-        ene_err = np.loadtxt("ene_err.txt")
+        ene_err = np.loadtxt(tmpdir + "/ene_err.txt")
     except:
         print("AFQMC did not execute correctly.")
         ene_err = 0.0, 0.0

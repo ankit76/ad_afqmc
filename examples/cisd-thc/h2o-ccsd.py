@@ -41,8 +41,4 @@ options = {
     "trial": "cisd",
 }
 
-# pyscf cc initializes mpi so we need to finalize it before running afqmc
-from mpi4py import MPI
-
-MPI.Finalize()
-run_afqmc.run_afqmc(options, nproc=4)
+run_afqmc.run_afqmc(options=options, nproc=4)

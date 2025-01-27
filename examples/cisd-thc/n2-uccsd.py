@@ -12,8 +12,8 @@ print = partial(print, flush=True)
 
 r = 3.0
 mol = gto.M(atom=
-            f''' N 0 0 0 
-            N 0 0 {r}''', 
+            f''' N 0 0 0
+            N 0 0 {r}''',
                   basis="cc-pvdz", verbose=4, symmetry=0,unit='B')
 mf = scf.UHF(mol)
 mf.kernel()
@@ -71,9 +71,6 @@ options = {
     "walker_type": "uhf",
 }
 
-from mpi4py import MPI
-
-MPI.Finalize()
 run_afqmc.run_afqmc(options, nproc=1)
 
 

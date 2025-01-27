@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ad_afqmc"
+version = "0.1.0"
+description = "Differentiable Auxiliary-Field Quantum Monte Carlo"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "scipy",
+    "jax",
+    "jaxlib",
+]
+
+[project.optional-dependencies]
+mpi = ["mpi4py"]
+gpu = ["jaxlib[cuda]"] 
+
+[tool.setuptools]
+packages = ["ad_afqmc"]
+
+[tool.pyright]
+reportGeneralTypeIssues = false
+reportOptionalSubscript = false

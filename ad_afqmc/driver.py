@@ -24,6 +24,7 @@ def afqmc(
     options: dict,
     MPI,
     init_walkers: Optional[Union[List, jax.Array]] = None,
+    tmpdir: str = ".",
 ):
     init = time.time()
     comm = MPI.COMM_WORLD
@@ -351,7 +352,7 @@ def afqmc(
                             flush=True,
                         )
                 np.savetxt(
-                    "samples_raw.dat",
+                    tmpdir + "/samples_raw.dat",
                     np.stack(
                         (
                             global_block_weights[: (n + 1) * size],
@@ -380,7 +381,7 @@ def afqmc(
         assert global_block_energies is not None
         assert global_block_observables is not None
         np.savetxt(
-            "samples_raw.dat",
+            tmpdir + "/samples_raw.dat",
             np.stack(
                 (global_block_weights, global_block_energies, global_block_observables)
             ).T,
@@ -411,7 +412,7 @@ def afqmc(
         print(
             f"# Number of outliers in post: {global_block_weights.size - samples_clean.shape[0]} "
         )
-        np.savetxt("samples.dat", samples_clean)
+        np.savetxt(tmpdir + "/samples.dat", samples_clean)
         global_block_weights = samples_clean[:, 0]
         global_block_energies = samples_clean[:, 1]
         global_block_observables = samples_clean[:, 2]
