@@ -12,6 +12,7 @@ dependencies = [
     "scipy",
     "jax",
     "jaxlib",
+    "h5py"
 ]
 
 [project.optional-dependencies]
