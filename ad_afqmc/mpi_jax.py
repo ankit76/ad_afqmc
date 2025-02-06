@@ -107,12 +107,18 @@ def _prep_afqmc(options=None):
 
     wave_data = {}
     mo_coeff = jnp.array(np.load(tmpdir + "/mo_coeff.npz")["mo_coeff"])
-    wave_data["rdm1"] = jnp.array(
-        [
-            mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
-            mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
-        ]
-    )
+    try:
+        rdm1 = jnp.array(np.load(tmpdir + "/rdm1.npz")["rdm1"])
+        assert rdm1.shape == (2, norb, norb)
+        wave_data["rdm1"] = rdm1
+        print(f"# Read RDM1 from disk")
+    except:
+        wave_data["rdm1"] = jnp.array(
+            [
+                mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
+                mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
+            ]
+        )
 
     if options["trial"] == "rhf":
         trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
