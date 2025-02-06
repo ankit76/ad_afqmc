@@ -305,6 +305,116 @@ def test_multislater():
     assert np.allclose(jnp.real(energy), 204.41045113133066)
 
 
+def test_cisd():
+    norb, nocc, nchol = 10, 3, 20
+    nelec = (nocc, nocc)
+    ci1 = jnp.array(np.random.randn(nocc, norb - nocc))
+    walker = jnp.array(np.random.randn(norb, nocc)) + 0.0j
+    trial = wavefunctions.cisd(norb, nelec)
+    trial_auto = wavefunctions.CISD(norb, nelec)
+    ci2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
+    ci2 = (ci2 + ci2.transpose(2, 3, 0, 1)) / 2.0
+    wave_data = {"ci1": ci1, "ci2": ci2}
+    h0 = jnp.array(np.random.randn(1))
+    h1 = jnp.array(np.random.randn(norb, norb))
+    h1 = (h1 + h1.T) / 2.0
+    chol = jnp.array(np.random.randn(nchol, norb, norb)) / jnp.sqrt(norb)
+    chol = (chol + chol.transpose(0, 2, 1)) / 2.0
+    ham_data = {"h0": h0, "h1": jnp.array([h1, h1]), "chol": chol}
+    ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
+    ham_data = trial_auto._build_measurement_intermediates(ham_data, wave_data)
+    assert np.allclose(
+        trial._calc_energy_restricted(walker, ham_data, wave_data),
+        trial_auto._calc_energy_restricted(walker, ham_data, wave_data),
+    )
+    assert np.allclose(
+        trial._calc_force_bias_restricted(walker, ham_data, wave_data),
+        trial_auto._calc_force_bias_restricted(walker, ham_data, wave_data),
+        atol=1.0e-5,
+    )
+
+
+def test_ucisd():
+    norb, nocc_a, nocc_b, nchol = 10, 3, 5, 20
+    nelec = (nocc_a, nocc_b)
+    ci1_a = jnp.array(np.random.randn(nocc_a, norb - nocc_a)) / (
+        (norb - nocc_a) * nocc_a
+    )
+    ci1_b = jnp.array(np.random.randn(nocc_b, norb - nocc_b)) / (
+        (norb - nocc_b) * nocc_b
+    )
+    walker_up = jnp.array(np.random.randn(norb, nocc_a)) / (norb * nocc_a) + 0.0j
+    walker_dn = jnp.array(np.random.randn(norb, nocc_b)) / (norb * nocc_b) + 0.0j
+    trial = wavefunctions.ucisd(norb, nelec)
+    trial_auto = wavefunctions.UCISD(norb, nelec)
+    ci2_aa = jnp.array(np.random.randn(nocc_a, norb - nocc_a, nocc_a, norb - nocc_a))
+    ci2_aa = (ci2_aa + ci2_aa.transpose(2, 3, 0, 1)) / 2.0
+    ci2_aa = (ci2_aa - ci2_aa.transpose(0, 3, 2, 1)) / 2.0 / ci2_aa.size
+    ci2_bb = jnp.array(np.random.randn(nocc_b, norb - nocc_b, nocc_b, norb - nocc_b))
+    ci2_bb = (ci2_bb + ci2_bb.transpose(2, 3, 0, 1)) / 2.0
+    ci2_bb = (ci2_bb - ci2_bb.transpose(0, 3, 2, 1)) / 2.0 / ci2_bb.size
+    ci2_ab = jnp.array(np.random.randn(nocc_a, norb - nocc_a, nocc_b, norb - nocc_b))
+    mo_coeff_b = jnp.linalg.qr(jnp.array(np.random.randn(norb, norb)))[0]
+    mo_coeff = jnp.array([np.eye(norb, norb), mo_coeff_b])
+    wave_data = {
+        "ci1A": ci1_a,
+        "ci1B": ci1_b,
+        "ci2AA": ci2_aa,
+        "ci2BB": ci2_bb,
+        "ci2AB": ci2_ab,
+        "mo_coeff": mo_coeff,
+    }
+    h0 = jnp.array(np.random.randn(1))
+    h1 = jnp.array(np.random.randn(norb, norb))
+    h1 = (h1 + h1.T) / 2.0 / h1.size
+    chol = jnp.array(np.random.randn(nchol, norb, norb))
+    chol = (chol + chol.transpose(0, 2, 1)) / 2.0 / chol.size
+    ham_data = {"h0": h0, "h1": jnp.array([h1, h1]), "chol": chol}
+    ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
+    ham_data = trial_auto._build_measurement_intermediates(ham_data, wave_data)
+    assert np.allclose(
+        trial._calc_energy(walker_up, walker_dn, ham_data, wave_data),
+        trial_auto._calc_energy(walker_up, walker_dn, ham_data, wave_data),
+    )
+    assert np.allclose(
+        trial._calc_force_bias(walker_up, walker_dn, ham_data, wave_data),
+        trial_auto._calc_force_bias(walker_up, walker_dn, ham_data, wave_data),
+        atol=1.0e-6,
+    )
+
+
+def test_cisd_eom_t():
+    norb, nocc, nchol = 10, 3, 20
+    nelec = (nocc, nocc)
+    ci1 = jnp.array(np.random.randn(nocc, norb - nocc))
+    r1 = jnp.array(np.random.randn(nocc, norb - nocc))
+    walker = jnp.array(np.random.randn(norb, nocc)) + 0.0j
+    trial = wavefunctions.cisd_eom_t(norb, nelec)
+    trial_auto = wavefunctions.cisd_eom_t_auto(norb, nelec)
+    ci2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
+    ci2 = (ci2 + ci2.transpose(2, 3, 0, 1)) / 2.0
+    r2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
+    r2 = (r2 + r2.transpose(2, 3, 0, 1)) / 2.0
+    wave_data = {"ci1": ci1, "ci2": ci2, "r1": r1, "r2": r2}
+    h0 = jnp.array(np.random.randn(1))
+    h1 = jnp.array(np.random.randn(norb, norb))
+    h1 = (h1 + h1.T) / 2.0
+    chol = jnp.array(np.random.randn(nchol, norb, norb)) / jnp.sqrt(norb)
+    chol = (chol + chol.transpose(0, 2, 1)) / 2.0
+    ham_data = {"h0": h0, "h1": jnp.array([h1, h1]), "chol": chol}
+    ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
+    ham_data = trial_auto._build_measurement_intermediates(ham_data, wave_data)
+    assert np.allclose(
+        trial._calc_energy_restricted(walker, ham_data, wave_data),
+        trial_auto._calc_energy_restricted(walker, ham_data, wave_data),
+    )
+    assert np.allclose(
+        trial._calc_force_bias_restricted(walker, ham_data, wave_data),
+        trial_auto._calc_force_bias_restricted(walker, ham_data, wave_data),
+        atol=1.0e-5,
+    )
+
+
 if __name__ == "__main__":
     test_rhf_overlap()
     test_rhf_green()
@@ -327,3 +437,6 @@ if __name__ == "__main__":
     test_noci_get_rdm1()
     test_uhf_cpmc()
     test_multislater()
+    test_cisd()
+    test_ucisd()
+    test_cisd_eom_t()
