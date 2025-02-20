@@ -3465,6 +3465,9 @@ class cisd_eom_t(wave_function):
         overlap = r1g + r1c1 + r2g2 + r2c1 + r1c2  # + r2c2
         return (e1 + e2) / overlap + e0
 
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
+
 
 @dataclass
 class cisd_eom(wave_function):
