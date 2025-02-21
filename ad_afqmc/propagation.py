@@ -234,7 +234,7 @@ class propagator_restricted(propagator):
     def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration(
+        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_restricted(
             prop_data["walkers"], prop_data["weights"], zeta
         )
         return prop_data
@@ -242,7 +242,7 @@ class propagator_restricted(propagator):
     def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_mpi(
+        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_mpi_restricted(
             prop_data["walkers"], prop_data["weights"], zeta, comm
         )
         return prop_data

@@ -22,7 +22,7 @@ def stochastic_reconfiguration_np(walkers, weights, zeta):
 
 # @checkpoint
 @jit
-def stochastic_reconfiguration(walkers, weights, zeta):
+def stochastic_reconfiguration_restricted(walkers, weights, zeta):
     nwalkers = walkers.shape[0]
     cumulative_weights = jnp.cumsum(jnp.abs(weights))
     total_weight = cumulative_weights[-1]
@@ -49,7 +49,7 @@ def stochastic_reconfiguration_unrestricted(walkers, weights, zeta):
 
 
 # this uses numpy but is only called once after each block
-def stochastic_reconfiguration_mpi(walkers, weights, zeta, comm):
+def stochastic_reconfiguration_mpi_restricted(walkers, weights, zeta, comm):
     size = comm.Get_size()
     rank = comm.Get_rank()
     nwalkers = walkers.shape[0]
