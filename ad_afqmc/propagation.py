@@ -21,11 +21,13 @@ class propagator(ABC):
     Attributes:
         dt: time step
         n_walkers: number of walkers
+        phaseless_epsilon: the minimum overlap with trail allowed
     """
 
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
+    phaseless_epsilon: float = 0.
 
     @abstractmethod
     def init_prop_data(
@@ -133,7 +135,7 @@ class propagator(ABC):
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         #####
         overlaps_new = jnp.where(
-            jnp.abs(overlaps_new) < 5.0e-2, 0.0, overlaps_new
+            jnp.abs(overlaps_new) < self.phaseless_epsilon, 0.0, overlaps_new
         )
         ###
         imp_fun = (

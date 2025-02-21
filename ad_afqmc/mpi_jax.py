@@ -63,6 +63,7 @@ def _prep_afqmc(options=None):
         except:
             options = {}
 
+    options["phaseless_epsilon"] = options.get("phaseless_epsilon", 0.)
     options["dt"] = options.get("dt", 0.01)
     options["n_walkers"] = options.get("n_walkers", 50)
     options["n_prop_steps"] = options.get("n_prop_steps", 50)
@@ -190,8 +191,11 @@ def _prep_afqmc(options=None):
         else:
             ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
 
+        import pdb
+        pdb.set_trace()
         prop = propagation.propagator_restricted(
-            options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+            options["dt"], options["n_walkers"], n_batch=options["n_batch"],
+            phaseless_epsilon = options["phaseless_epsilon"]
         )
 
     elif options["walker_type"] == "uhf":
@@ -211,6 +215,8 @@ def _prep_afqmc(options=None):
                 options["dt"],
                 options["n_walkers"],
                 n_batch=options["n_batch"],
+                phaseless_epsilon = options["phaseless_epsilon"]
+
             )
 
     sampler = sampling.sampler(
