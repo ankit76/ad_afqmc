@@ -191,8 +191,7 @@ def _prep_afqmc(options=None):
         else:
             ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
 
-        import pdb
-        pdb.set_trace()
+
         prop = propagation.propagator_restricted(
             options["dt"], options["n_walkers"], n_batch=options["n_batch"],
             phaseless_epsilon = options["phaseless_epsilon"]

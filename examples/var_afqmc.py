@@ -42,8 +42,6 @@ ovlpB = trial.calc_overlap(walkerB, wave_data)
 wtsA = wtsA / ovlpA
 wtsB = wtsB / ovlpB
 
-import pdb
-pdb.set_trace()
 
 ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
 
@@ -78,23 +76,32 @@ calc_energy = vmap(_calc_energy, in_axes=(None,None,0))
 calc_energy12 = vmap(vmap(_calc_energy, in_axes=(None,None,0)), in_axes=(0,None,None))
 
 
-ni, nj = 250, 250
+stepi, stepj = 50, 50
+ni, nj = nwalkers//stepi, nwalkers//stepj
+ni, nj = 20,20
 
 num, den = 0., 0.
 numArr, denArr = jnp.asarray([]), jnp.asarray([])
 for i in range(ni):
-    startA, stopA = i * (nwalkers//2//ni), min( (i+1) * (nwalkers//2//ni), nwalkers//2 )
+    startA, stopA = i * stepi, min( (i+1) * stepi, nwalkers//2 )
     for j in range(nj):
-        startB, stopB = j * (nwalkers//2//nj), min( (j+1) * (nwalkers//2//nj), nwalkers//2 )
+        startB, stopB = j * stepj, min( (j+1) * stepj, nwalkers//2 )
 
         ovlp12 = calc_overlap12(walkerA[startA:stopA], walkerB[startB:stopB])
         ene12 = calc_energy12(walkerA[startA:stopA], ham_data, walkerB[startB:stopB])
-        numij = jnp.einsum('i,ij,j', wtsA[startA:stopA].conj(), ene12*ovlp12, wtsB[startB:stopB], optimize='optimal')
-        denij = jnp.einsum('i,ij,j', wtsA[startA:stopA].conj(), ovlp12, wtsB[startB:stopB], optimize='optimal')
-        num += numij
-        den += denij
-        print( (numij/denij).real, (num/den).real)
+        numij = jnp.einsum('i,ij,j->ij', wtsA[startA:stopA].conj(), ene12*ovlp12, wtsB[startB:stopB], optimize='optimal')
+        denij = jnp.einsum('i,ij,j->ij', wtsA[startA:stopA].conj(), ovlp12, wtsB[startB:stopB], optimize='optimal')
+        numArr = jnp.append(numArr, numij.flatten())
+        denArr = jnp.append(denArr, denij.flatten())
+
+        numVal = jnp.sum(numij)
+        denVal = jnp.sum(denij)
+        num += jnp.sum(numij)
+        den += jnp.sum(denij)
+        print( (numVal/denVal).real, (num/den).real)
 
 print("final energy", num/den)
 
+jackknife = stat_utils.jackknife_ratios(numArr, denArr)
+print(jackknife[0].real, jackknife[1])
 
