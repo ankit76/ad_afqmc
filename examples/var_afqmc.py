@@ -16,13 +16,9 @@ ham_data, ham, prop, trial, wave_data, sampler, observable, options, _ = (
     mpi_jax._prep_afqmc()
 )
 
-n_blocks = options["n_blocks"]
-walkers = []
-weights = []
-for i in range(n_blocks):
-    a = np.load("block_"+str(i)+".npz", allow_pickle=True)
-    extract(a, "prop_data", "walkers", walkers) 
-    extract(a, "prop_data", "weights", weights) 
+a = np.load("block.npz", allow_pickle=True)
+walkers = a["walkers"]
+weights = a["weights"]
 
 
 norb = trial.norb

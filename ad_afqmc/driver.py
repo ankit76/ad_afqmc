@@ -213,6 +213,7 @@ def afqmc(
         block_rdm2_n = np.zeros_like(rdm_2_op)
     block_observable_n = 0.0
 
+    walkers, weights = [], []
     for n in range(sampler.n_blocks):
         if options["ad_mode"] == "forward":
             coupling = 0.0
@@ -303,30 +304,9 @@ def afqmc(
             )
 
         ###################################################################
-        import h5py
-        with h5py.File(tmpdir + "/FCIDUMP_chol", "r") as fh5:
-            [nelec, nmo, ms, nchol] = fh5["header"]
-            h0 = jnp.array(fh5.get("energy_core"))
-            h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
-            chol = jnp.array(fh5.get("chol")).reshape(-1, nmo, nmo)
 
-        assert type(ms) is np.int64
-        assert type(nelec) is np.int64
-        assert type(nmo) is np.int64
-        assert type(nchol) is np.int64
-        ms, nelec, nmo, nchol = int(ms), int(nelec), int(nmo), int(nchol)
-        nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
-        norb = nmo
-
-        jnp.savez(
-        "block_"+str(n),
-            prop_data = prop_data,
-#            ham_data = ham_data,
-#            wave_data = wave_data,
-#            norb = norb,
-#            nelec_sp = nelec_sp,
-            allow_pickle=True
-        )
+        walkers.append(prop_data["walkers"])
+        weights.append(prop_data["weights"])
         ###################################################################
 
         block_energy_n = comm.bcast(block_energy_n, root=0)
@@ -389,6 +369,19 @@ def afqmc(
                     ).T,
                 )
             comm.Barrier()
+
+    import pdb
+    pdb.set_trace()
+    weights = jnp.asarray(weights).flatten()
+    walkers = jnp.asarray(walkers)
+    walkers = walkers.reshape(-1, walkers.shape[-2], walkers.shape[-1])
+
+    jnp.savez(
+    "block.npz",
+        weights = weights,
+        walkers = walkers,
+        allow_pickle=True
+    )
 
     global_large_deviations = np.array(0)
     comm.Reduce(
