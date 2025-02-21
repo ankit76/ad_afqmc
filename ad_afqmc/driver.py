@@ -302,6 +302,33 @@ def afqmc(
                 gather_weights
             )
 
+        ###################################################################
+        import h5py
+        with h5py.File(tmpdir + "/FCIDUMP_chol", "r") as fh5:
+            [nelec, nmo, ms, nchol] = fh5["header"]
+            h0 = jnp.array(fh5.get("energy_core"))
+            h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
+            chol = jnp.array(fh5.get("chol")).reshape(-1, nmo, nmo)
+
+        assert type(ms) is np.int64
+        assert type(nelec) is np.int64
+        assert type(nmo) is np.int64
+        assert type(nchol) is np.int64
+        ms, nelec, nmo, nchol = int(ms), int(nelec), int(nmo), int(nchol)
+        nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
+        norb = nmo
+
+        jnp.savez(
+        "block_"+str(n),
+            prop_data = prop_data,
+#            ham_data = ham_data,
+#            wave_data = wave_data,
+#            norb = norb,
+#            nelec_sp = nelec_sp,
+            allow_pickle=True
+        )
+        ###################################################################
+
         block_energy_n = comm.bcast(block_energy_n, root=0)
         prop_data = propagator.orthonormalize_walkers(prop_data)
 

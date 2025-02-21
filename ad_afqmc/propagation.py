@@ -131,6 +131,11 @@ class propagator(ABC):
         )
 
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
+        #####
+        overlaps_new = jnp.where(
+            jnp.abs(overlaps_new) < 5.0e-2, 0.0, overlaps_new
+        )
+        ###
         imp_fun = (
             jnp.exp(
                 -jnp.sqrt(self.dt) * shift_term
