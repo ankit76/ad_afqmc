@@ -2482,6 +2482,8 @@ class ucisd(wave_function):
     norb: int
     nelec: Tuple[int, int]
     n_batch: int = 1
+    mixed_real_dtype: DTypeLike = jnp.float32
+    mixed_complex_dtype: DTypeLike = jnp.complex64
 
     @partial(jit, static_argnums=0)
     def _calc_overlap(
@@ -2729,29 +2731,29 @@ class ucisd(wave_function):
             )
             glgp_a_i = jnp.einsum(
                 "pi,it->pt", gl_a_i, greenp_a, optimize="optimal"
-            ).astype(jnp.complex64)
+            ).astype(self.mixed_complex_dtype)
             glgp_b_i = jnp.einsum(
                 "pi,it->pt", gl_b_i, greenp_b, optimize="optimal"
-            ).astype(jnp.complex64)
+            ).astype(self.mixed_complex_dtype)
             l2ci2_a = 0.5 * jnp.einsum(
                 "pt,qu,ptqu->",
                 glgp_a_i,
                 glgp_a_i,
-                ci2_aa.astype(jnp.float32),
+                ci2_aa.astype(self.mixed_real_dtype),
                 optimize="optimal",
             )
             l2ci2_b = 0.5 * jnp.einsum(
                 "pt,qu,ptqu->",
                 glgp_b_i,
                 glgp_b_i,
-                ci2_bb.astype(jnp.float32),
+                ci2_bb.astype(self.mixed_real_dtype),
                 optimize="optimal",
             )
             l2ci2_ab = jnp.einsum(
                 "pt,qu,ptqu->",
                 glgp_a_i,
                 glgp_b_i,
-                ci2_ab.astype(jnp.float32),
+                ci2_ab.astype(self.mixed_real_dtype),
                 optimize="optimal",
             )
             carry[1] += l2ci2_a + l2ci2_b + l2ci2_ab
@@ -3003,16 +3005,6 @@ class cisd_eom_t(wave_function):
         r2_c1_2 = -4 * jnp.einsum("pq,qp", gr2_g, c1_g)
         r2_c1 = r2_c1_1 + r2_c1_2
 
-        # # r2 c2
-        # r2_c2_1 = r2g2 * c2g2
-        # r2_c2_2 = -8 * jnp.einsum("pq,qp", gr2_g, gc2_g)
-        # r2_int = jnp.einsum("ptqu,rt,su->prqs", r2, green_occ, green_occ)
-        # c2_int = jnp.einsum("ptqu,rt,su->prqs", ci2, green_occ, green_occ)
-        # r2_c2_3 = 2 * jnp.einsum("prqs,rpsq", r2_int, c2_int) - jnp.einsum(
-        #     "prqs,rqsp", r2_int, c2_int
-        # )
-        # r2_c2 = r2_c2_1 + r2_c2_2 + r2_c2_3
-
         overlap_0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
         return (r1_1 + r1_c1 + r1_c2 + r2_1 + r2_c1) * overlap_0
         # return (r1_1 + r1_c1 + r1_c2 + r2_1 + r2_c1 + r2_c2) * overlap_0
@@ -3226,41 +3218,6 @@ class cisd_eom_t(wave_function):
         # 2: spin
         e1_r1c2_2 = -2.0 * jnp.einsum("tp,pt", gp_h_g, r1_c2, optimize="optimal")
         e1_r1c2 = e1_r1c2_1 + e1_r1c2_2
-
-        # # r2 c2
-        # r2c2_c = r2g2 * c2g2
-        # # 2: spin
-        # r2c2_e_1 = -2.0 * jnp.einsum("pq,qp", r2g_g, c2g_g, optimize="optimal")
-        # # 0.5: r2
-        # r2_g = 0.5 * jnp.einsum("ptqu,rt->prqu", r2, green_occ)
-        # r2_g_g = jnp.einsum("prqu,su->prqs", r2_g, green_occ)
-        # # del r2_g
-        # # 0.5: c2
-        # c2_g = 0.5 * jnp.einsum("ptqu,rt->prqu", c2, green_occ)
-        # c2_g_g = jnp.einsum("prqu,su->prqs", c2_g, green_occ)
-        # # del c2_g
-        # # 4: spin, 2: permutation
-        # r2c2_e_2_c = 8.0 * jnp.einsum("prqs,rpsq", r2_g_g, c2_g_g, optimize="optimal")
-        # # 2: spin, 2: permutation
-        # r2c2_e_2_e = -4.0 * jnp.einsum("prqs,rqsp", r2_g_g, c2_g_g, optimize="optimal")
-        # r2c2_e_2 = r2c2_e_2_c + r2c2_e_2_e
-        # r2c2 = r2c2_c + r2c2_e_1 + r2c2_e_2
-        # e1_r2c2_1 = h1g * r2c2
-        # r2_c2 = r2g2 * c2g + r2g * c2g2 - r2g_g @ c2g - c2g_g @ r2g
-        # # 2: spin, 2: permutation
-        # r2_c2 -= 4.0 * jnp.einsum("pr,rpqu->qu", r2g_g, c2_g, optimize="optimal")
-        # r2_c2 -= 4.0 * jnp.einsum("pr,rpqu->qu", c2g_g, r2_g, optimize="optimal")
-        # # 2: permutation
-        # r2_c2 += 2.0 * jnp.einsum("pr,qpru->qu", r2g_g, c2_g, optimize="optimal")
-        # r2_c2 += 2.0 * jnp.einsum("pr,qpru->qu", c2g_g, r2_g, optimize="optimal")
-        # # 2: spin, 4: permutation
-        # r2_c2 += 8.0 * jnp.einsum("pqrs,qpst->rt", r2_g_g, c2_g, optimize="optimal")
-        # r2_c2 += 8.0 * jnp.einsum("pqrs,qpst->rt", c2_g_g, r2_g, optimize="optimal")
-        # # 4: permutation
-        # r2_c2 -= 4.0 * jnp.einsum("pqrs,spqt->rt", r2_g_g, c2_g, optimize="optimal")
-        # r2_c2 -= 4.0 * jnp.einsum("pqrs,spqt->rt", c2_g_g, r2_g, optimize="optimal")
-        # e1_r2c2_2 = -2.0 * jnp.einsum("tp,pt", gp_h_g, r2_c2, optimize="optimal")
-        # e1_r2c2 = e1_r2c2_1 + e1_r2c2_2
 
         e1 = e1_r1 + e1_r1c1 + e1_r2 + e1_r2c1 + e1_r1c2  # + e1_r2c2
 
@@ -4040,7 +3997,7 @@ class cisd_eom(wave_function):
                 gp_l_g_i,
                 gp_l_g_i,
                 r2.astype(self.mixed_real_dtype),
-                c2_g_g.astype(self.mixed_real_dtype),
+                c2_g_g.astype(self.mixed_complex_dtype),
                 optimize="optimal",
             )
             # 2: spin, 0.5: coulomb, 0.5; r2, 4: permutation
@@ -4049,7 +4006,7 @@ class cisd_eom(wave_function):
                 gp_l_g_i,
                 gp_l_g_i,
                 r2.astype(self.mixed_real_dtype),
-                c2_g_g.astype(self.mixed_real_dtype),
+                c2_g_g.astype(self.mixed_complex_dtype),
                 optimize="optimal",
             )
             l2r2c2_3_1_1 = l2r2c2_3_1_1_c + l2r2c2_3_1_1_e
@@ -4059,7 +4016,7 @@ class cisd_eom(wave_function):
                 gp_l_g_i,
                 gp_l_g_i,
                 c2.astype(self.mixed_real_dtype),
-                r2_g_g.astype(self.mixed_real_dtype),
+                r2_g_g.astype(self.mixed_complex_dtype),
                 optimize="optimal",
             )
             # 2: spin, 0.5: coulomb, 0.5: c2, 4: permutation
@@ -4068,7 +4025,7 @@ class cisd_eom(wave_function):
                 gp_l_g_i,
                 gp_l_g_i,
                 c2.astype(self.mixed_real_dtype),
-                r2_g_g.astype(self.mixed_real_dtype),
+                r2_g_g.astype(self.mixed_complex_dtype),
                 optimize="optimal",
             )
             l2r2c2_3_1_2 = l2r2c2_3_1_2_c + l2r2c2_3_1_2_e
@@ -4079,8 +4036,8 @@ class cisd_eom(wave_function):
                 "vq,us,rpsv,prqu",
                 gp_l_g_i,
                 gp_l_g_i,
-                r2_g.astype(self.mixed_real_dtype),
-                c2_g.astype(self.mixed_real_dtype),
+                r2_g.astype(self.mixed_complex_dtype),
+                c2_g.astype(self.mixed_complex_dtype),
                 optimize="optimal",
             )
 
@@ -4089,16 +4046,16 @@ class cisd_eom(wave_function):
                 "vq,us,sprv,prqu",
                 gp_l_g_i,
                 gp_l_g_i,
-                r2_g.astype(self.mixed_real_dtype),
-                c2_g.astype(self.mixed_real_dtype),
+                r2_g.astype(self.mixed_complex_dtype),
+                c2_g.astype(self.mixed_complex_dtype),
                 optimize="optimal",
             )
             l2r2c2_3_3_2 = -8.0 * jnp.einsum(
                 "vq,us,sprv,prqu",
                 gp_l_g_i,
                 gp_l_g_i,
-                c2_g.astype(self.mixed_real_dtype),
-                r2_g.astype(self.mixed_real_dtype),
+                c2_g.astype(self.mixed_complex_dtype),
+                r2_g.astype(self.mixed_complex_dtype),
                 optimize="optimal",
             )
             l2r2c2_3_3 = l2r2c2_3_3_1 + l2r2c2_3_3_2
@@ -4108,8 +4065,8 @@ class cisd_eom(wave_function):
                 "vp,us,sqrv,prqu",
                 gp_l_g_i,
                 gp_l_g_i,
-                r2_g.astype(self.mixed_real_dtype),
-                c2_g.astype(self.mixed_real_dtype),
+                r2_g.astype(self.mixed_complex_dtype),
+                c2_g.astype(self.mixed_complex_dtype),
                 optimize="optimal",
             )
 

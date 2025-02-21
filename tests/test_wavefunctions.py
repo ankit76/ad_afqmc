@@ -390,7 +390,9 @@ def test_cisd_eom_t():
     nelec = (nocc, nocc)
     ci1 = jnp.array(np.random.randn(nocc, norb - nocc))
     r1 = jnp.array(np.random.randn(nocc, norb - nocc))
-    walker = jnp.array(np.random.randn(norb, nocc)) + 0.0j
+    walker = jnp.array(np.random.randn(norb, nocc)) + 1.0j * jnp.array(
+        np.random.randn(norb, nocc)
+    )
     trial = wavefunctions.cisd_eom_t(norb, nelec)
     trial_auto = wavefunctions.cisd_eom_t_auto(norb, nelec)
     ci2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
@@ -423,7 +425,9 @@ def test_cisd_eom():
     nelec = (nocc, nocc)
     ci1 = jnp.array(np.random.randn(nocc, norb - nocc))
     r1 = jnp.array(np.random.randn(nocc, norb - nocc))
-    walker = jnp.array(np.random.randn(norb, nocc)) + 0.0j
+    walker = jnp.array(np.random.randn(norb, nocc)) + 1.0j * jnp.array(
+        np.random.randn(norb, nocc)
+    )
     trial = wavefunctions.cisd_eom(norb, nelec)
     trial_auto = wavefunctions.cisd_eom_auto(norb, nelec)
     ci2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
