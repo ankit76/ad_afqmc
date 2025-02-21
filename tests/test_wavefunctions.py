@@ -390,9 +390,50 @@ def test_cisd_eom_t():
     nelec = (nocc, nocc)
     ci1 = jnp.array(np.random.randn(nocc, norb - nocc))
     r1 = jnp.array(np.random.randn(nocc, norb - nocc))
-    walker = jnp.array(np.random.randn(norb, nocc)) + 0.0j
-    trial = wavefunctions.cisd_eom_t(norb, nelec)
+    walker = jnp.array(np.random.randn(norb, nocc)) + 1.0j * jnp.array(
+        np.random.randn(norb, nocc)
+    )
+    trial = wavefunctions.cisd_eom_t(
+        norb, nelec, mixed_complex_dtype=jnp.complex128, mixed_real_dtype=jnp.float64
+    )
     trial_auto = wavefunctions.cisd_eom_t_auto(norb, nelec)
+    ci2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
+    ci2 = (ci2 + ci2.transpose(2, 3, 0, 1)) / 2.0
+    r2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
+    r2 = (r2 + r2.transpose(2, 3, 0, 1)) / 2.0
+    wave_data = {"ci1": ci1, "ci2": ci2, "r1": r1, "r2": r2}
+    h0 = jnp.array(np.random.randn(1))
+    h1 = jnp.array(np.random.randn(norb, norb))
+    h1 = (h1 + h1.T) / 2.0
+    chol = jnp.array(np.random.randn(nchol, norb, norb)) / jnp.sqrt(norb)
+    chol = (chol + chol.transpose(0, 2, 1)) / 2.0
+    ham_data = {"h0": h0, "h1": jnp.array([h1, h1]), "chol": chol}
+    ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
+    ham_data = trial_auto._build_measurement_intermediates(ham_data, wave_data)
+    assert np.allclose(
+        trial._calc_energy_restricted(walker, ham_data, wave_data),
+        trial_auto._calc_energy_restricted(walker, ham_data, wave_data),
+        atol=1.0e-4,
+    )
+    assert np.allclose(
+        trial._calc_force_bias_restricted(walker, ham_data, wave_data),
+        trial_auto._calc_force_bias_restricted(walker, ham_data, wave_data),
+        atol=1.0e-5,
+    )
+
+
+def test_cisd_eom():
+    norb, nocc, nchol = 10, 3, 20
+    nelec = (nocc, nocc)
+    ci1 = jnp.array(np.random.randn(nocc, norb - nocc))
+    r1 = jnp.array(np.random.randn(nocc, norb - nocc))
+    walker = jnp.array(np.random.randn(norb, nocc)) + 1.0j * jnp.array(
+        np.random.randn(norb, nocc)
+    )
+    trial = wavefunctions.cisd_eom(
+        norb, nelec, mixed_complex_dtype=jnp.complex128, mixed_real_dtype=jnp.float64
+    )
+    trial_auto = wavefunctions.cisd_eom_auto(norb, nelec)
     ci2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
     ci2 = (ci2 + ci2.transpose(2, 3, 0, 1)) / 2.0
     r2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
@@ -443,3 +484,4 @@ if __name__ == "__main__":
     test_cisd()
     test_ucisd()
     test_cisd_eom_t()
+    test_cisd_eom()
