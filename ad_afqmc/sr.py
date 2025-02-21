@@ -35,7 +35,7 @@ def stochastic_reconfiguration(walkers, weights, zeta):
 
 
 @jit
-def stochastic_reconfiguration_uhf(walkers, weights, zeta):
+def stochastic_reconfiguration_unrestricted(walkers, weights, zeta):
     nwalkers = walkers[0].shape[0]
     cumulative_weights = jnp.cumsum(jnp.abs(weights))
     total_weight = cumulative_weights[-1]
@@ -92,7 +92,7 @@ def stochastic_reconfiguration_mpi(walkers, weights, zeta, comm):
     return jnp.array(walkers_new), jnp.array(weights_new)
 
 
-def stochastic_reconfiguration_mpi_uhf(walkers, weights, zeta, comm):
+def stochastic_reconfiguration_mpi_unrestricted(walkers, weights, zeta, comm):
     size = comm.Get_size()
     rank = comm.Get_rank()
     nwalkers = walkers[0].shape[0]

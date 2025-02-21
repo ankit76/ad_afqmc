@@ -61,7 +61,7 @@ class AFQMC:
         do_sr : bool
             Stochastic reconfiguration, relevant for AD.
         walker_type : str
-            Walker type, "rhf" or "uhf".
+            Walker type, "restricted" or "unrestricted".
         symmetry : bool
             Symmetry, relevant for AD.
         save_walkers : bool
@@ -99,7 +99,7 @@ class AFQMC:
         self.ad_mode = None
         self.orbital_rotation = True
         self.do_sr = True
-        self.walker_type = "rhf"
+        self.walker_type = "restricted"
         self.symmetry = False
         self.save_walkers = False
         if isinstance(mf_or_cc, scf.uhf.UHF) or isinstance(mf_or_cc, scf.rohf.ROHF):

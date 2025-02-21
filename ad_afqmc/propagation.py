@@ -248,7 +248,7 @@ class propagator_restricted(propagator):
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"], _ = linalg_utils.qr_vmap(prop_data["walkers"])
+        prop_data["walkers"], _ = linalg_utils.qr_vmap_restricted(prop_data["walkers"])
         return prop_data
 
     @partial(jit, static_argnums=(0,))
@@ -400,7 +400,7 @@ class propagator_unrestricted(propagator_restricted):
     def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_uhf(
+        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_unrestricted(
             prop_data["walkers"], prop_data["weights"], zeta
         )
         return prop_data
@@ -411,17 +411,17 @@ class propagator_unrestricted(propagator_restricted):
         (
             prop_data["walkers"],
             prop_data["weights"],
-        ) = sr.stochastic_reconfiguration_mpi_uhf(
+        ) = sr.stochastic_reconfiguration_mpi_unrestricted(
             prop_data["walkers"], prop_data["weights"], zeta, comm
         )
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"], _ = linalg_utils.qr_vmap_uhf(prop_data["walkers"])
+        prop_data["walkers"], _ = linalg_utils.qr_vmap_unrestricted(prop_data["walkers"])
         return prop_data
 
     def _orthogonalize_walkers(self, prop_data: dict) -> Tuple:
-        prop_data["walkers"], norms = linalg_utils.qr_vmap_uhf(prop_data["walkers"])
+        prop_data["walkers"], norms = linalg_utils.qr_vmap_unrestricted(prop_data["walkers"])
         return prop_data, norms
 
     @partial(jit, static_argnums=(0))
@@ -454,7 +454,7 @@ class propagator_unrestricted(propagator_restricted):
         prop_data["overlaps"] = (
             trial.calc_overlap(prop_data["walkers"], wave_data) * prop_data["norms"]
         )
-        normed_walkers, _ = linalg_utils.qr_vmap_uhf(prop_data["walkers"])
+        normed_walkers, _ = linalg_utils.qr_vmap_unrestricted(prop_data["walkers"])
         prop_data["normed_overlaps"] = trial.calc_overlap(normed_walkers, wave_data)
         return prop_data
 
