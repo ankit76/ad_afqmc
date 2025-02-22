@@ -370,8 +370,6 @@ def afqmc(
                 )
             comm.Barrier()
 
-    import pdb
-    pdb.set_trace()
     weights = jnp.asarray(weights).flatten()
     walkers = jnp.asarray(walkers)
     walkers = walkers.reshape(-1, walkers.shape[-2], walkers.shape[-1])
