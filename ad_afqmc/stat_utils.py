@@ -1,6 +1,8 @@
 from functools import partial
 
 import numpy as np
+import jax.numpy as jnp
+from jax import vmap
 
 print = partial(print, flush=True)
 
@@ -77,10 +79,19 @@ def jackknife_ratios(num: np.ndarray, denom: np.ndarray):
         Standard deviation of the ratio of means.
     """
     n_samples = num.size
-    num_mean = np.mean(num)
-    denom_mean = np.mean(denom)
+    num_mean = jnp.mean(num)
+    denom_mean = jnp.mean(denom)
     mean = num_mean / denom_mean
+
+    idx = jnp.arange(n_samples)
+
+    jacki = lambda i: ((num_mean * n_samples - num[i]) / (denom_mean * n_samples - denom[i])).real
+    jackknife_estimates = vmap(jacki, in_axes=0)(idx)
+    return jnp.mean(jackknife_estimates), jnp.sqrt((n_samples - 1) * np.var(jackknife_estimates))
+
+
     jackknife_estimates = np.zeros(n_samples, dtype=num.dtype)
+
     for i in range(n_samples):
         mean_num_i = (num_mean * n_samples - num[i]) / (n_samples - 1)
         mean_denom_i = (denom_mean * n_samples - denom[i]) / (n_samples - 1)
