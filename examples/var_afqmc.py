@@ -94,7 +94,7 @@ for i in range(ni):
         denVal = jnp.sum(denij)
         num += jnp.sum(numij)
         den += jnp.sum(denij)
-        print( (numVal/denVal).real, (num/den).real)
+        print( (numVal/denVal).real, (num/den).real, flush=True,)
 
 print("final energy", num/den)
 
