@@ -77,7 +77,8 @@ def _prep_afqmc(options=None):
     assert options["ad_mode"] in [None, "forward", "reverse", "2rdm"]
     options["orbital_rotation"] = options.get("orbital_rotation", True)
     options["do_sr"] = options.get("do_sr", True)
-    options["walker_type"] = options.get("walker_type", "rhf")
+    options["walker_type"] = options.get("walker_type", "restricted")
+    assert options["walker_type"] in ["restricted", "unrestricted"]
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
@@ -92,7 +93,7 @@ def _prep_afqmc(options=None):
         with h5py.File(tmpdir + "/observable.h5", "r") as fh5:
             [observable_constant] = fh5["constant"]
             observable_op = np.array(fh5.get("op")).reshape(nmo, nmo)
-            if options["walker_type"] == "uhf":
+            if options["walker_type"] == "unrestricted":
                 observable_op = jnp.array([observable_op, observable_op])
             observable = [observable_op, observable_constant]
     except:
@@ -184,7 +185,7 @@ def _prep_afqmc(options=None):
                 )
             trial = None
 
-    if options["walker_type"] == "rhf":
+    if options["walker_type"] == "restricted":
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
@@ -194,7 +195,7 @@ def _prep_afqmc(options=None):
             options["dt"], options["n_walkers"], n_batch=options["n_batch"]
         )
 
-    elif options["walker_type"] == "uhf":
+    elif options["walker_type"] == "unrestricted":
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:

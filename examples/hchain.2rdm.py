@@ -40,7 +40,7 @@ options = {
     "n_blocks": 40,
     "n_walkers": 50,
     "seed": 98,
-    "walker_type": "uhf",
+    "walker_type": "unrestricted",
     "ad_mode": "2rdm",
     "trial": "uhf"
 }
