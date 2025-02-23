@@ -39,6 +39,14 @@ wtsA = wtsA / ovlpA
 wtsB = wtsB / ovlpB
 
 
+#each sample is walkers coming from a given time slice
+walkerA = walkerA.reshape(-1, options["n_walkers"], walkerA.shape[-2], walkerA.shape[-1])
+walkerB = walkerB.reshape(-1, options["n_walkers"], walkerA.shape[-2], walkerA.shape[-1])
+wtsA = wtsA.reshape(-1, options["n_walkers"])
+wtsB = wtsB.reshape(-1, options["n_walkers"])
+
+
+
 ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
 
 
@@ -72,32 +80,37 @@ calc_energy = vmap(_calc_energy, in_axes=(None,None,0))
 calc_energy12 = vmap(vmap(_calc_energy, in_axes=(None,None,0)), in_axes=(0,None,None))
 
 
-stepi, stepj = 50, 50
-ni, nj = nwalkers//stepi, nwalkers//stepj
-ni, nj = 20,20
+ni, nj = 10,10
 
 num, den = 0., 0.
-numArr, denArr = jnp.asarray([]), jnp.asarray([])
+numArr, denArr = [], []
 for i in range(ni):
-    startA, stopA = i * stepi, min( (i+1) * stepi, nwalkers//2 )
     for j in range(nj):
-        startB, stopB = j * stepj, min( (j+1) * stepj, nwalkers//2 )
+        ovlp12 = calc_overlap12(walkerA[i], walkerB[j])
+        ene12 = calc_energy12(walkerA[i], ham_data, walkerB[j])
+        numij = jnp.einsum('i,ij,j', wtsA[i].conj(), ene12*ovlp12, wtsB[j], optimize='optimal')
+        denij = jnp.einsum('i,ij,j', wtsA[i].conj(), ovlp12, wtsB[j], optimize='optimal')
+        numArr.append(numij)
+        denArr.append(denij)
 
-        ovlp12 = calc_overlap12(walkerA[startA:stopA], walkerB[startB:stopB])
-        ene12 = calc_energy12(walkerA[startA:stopA], ham_data, walkerB[startB:stopB])
-        numij = jnp.einsum('i,ij,j->ij', wtsA[startA:stopA].conj(), ene12*ovlp12, wtsB[startB:stopB], optimize='optimal')
-        denij = jnp.einsum('i,ij,j->ij', wtsA[startA:stopA].conj(), ovlp12, wtsB[startB:stopB], optimize='optimal')
-        numArr = jnp.append(numArr, numij.flatten())
-        denArr = jnp.append(denArr, denij.flatten())
+        num += numij
+        den += denij
+        print(i, j,  (numij/denij).real, (num/den).real, flush=True,)
 
-        numVal = jnp.sum(numij)
-        denVal = jnp.sum(denij)
-        num += jnp.sum(numij)
-        den += jnp.sum(denij)
-        print( (numVal/denVal).real, (num/den).real, flush=True,)
+numArr = jnp.asarray(numArr)
+denArr = jnp.asarray(denArr)
+nd = jnp.mean(numArr*denArr)
+d2 = jnp.mean(denArr*denArr)
+n2 = jnp.mean(numArr*numArr)
+n = jnp.mean(numArr)
+d = jnp.mean(denArr)
+N = 1.*numArr.shape[0]
 
-print("final energy", num/den)
 
-jackknife = stat_utils.jackknife_ratios(numArr, denArr)
-print(jackknife[0].real, jackknife[1])
+Energy = n/d + (- (nd - n*d)/d**2 + n/d**3 * (d2 - d**2) )/(N-1.)
+var = (1./d**2 * (n2 - n**2) + n**2/d**4 * (d2 - d**2) - 2*n/d**3 * (nd - n*d) )/(N-1.)
+# print("final energy", num/den, flush=True)
+
+# jackknife = stat_utils.jackknife_ratios(numArr, denArr)
+print(Energy.real, var.real**0.5)
 
