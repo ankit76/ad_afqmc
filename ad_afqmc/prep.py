@@ -1,46 +1,10 @@
-import argparse
-import pickle
-import time
-
 import h5py
+import pickle
 import numpy as np
-
-from ad_afqmc import config
-
-tmpdir = "."
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("tmpdir")
-    parser.add_argument("--use_gpu", action="store_true")
-    parser.add_argument("--use_mpi", action="store_true")
-    args = parser.parse_args()
-
-    if args.use_gpu:
-        config.afqmc_config["use_gpu"] = True
-    if args.use_mpi:
-        assert config.afqmc_config["use_gpu"] is False, "Inter GPU MPI not supported."
-        config.afqmc_config["use_mpi"] = True
-    tmpdir = args.tmpdir
-
-config.setup_jax()
-MPI = config.setup_comm()
-comm = MPI.COMM_WORLD
-size = comm.Get_size()
-rank = comm.Get_rank()
-
-from functools import partial
-
 from jax import numpy as jnp
+from ad_afqmc import propagation, wavefunctions
 
-from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
-
-print = partial(print, flush=True)
-
-
-def _prep_afqmc(options=None):
-    if rank == 0:
-        print(f"# Number of MPI ranks: {size}\n#")
-
+def read_fcidump(tmpdir):
     with h5py.File(tmpdir + "/FCIDUMP_chol", "r") as fh5:
         [nelec, nmo, ms, nchol] = fh5["header"]
         h0 = jnp.array(fh5.get("energy_core"))
@@ -54,8 +18,9 @@ def _prep_afqmc(options=None):
     ms, nelec, nmo, nchol = int(ms), int(nelec), int(nmo), int(nchol)
     nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
 
-    norb = nmo
+    return h0, h1, chol, ms, nelec, nmo, nchol, nelec_sp
 
+def read_options(options, rank, tmpdir):
     if options is None:
         try:
             with open(tmpdir + "/options.bin", "rb") as f:
@@ -82,6 +47,8 @@ def _prep_afqmc(options=None):
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
+    assert options["trial"] in [None, "rhf", "uhf", "noci", "cisd", "ucisd"]
+    print(options["trial"])
     if options["trial"] is None:
         if rank == 0:
             print(f"# No trial specified in options.")
@@ -89,6 +56,9 @@ def _prep_afqmc(options=None):
     options["free_projection"] = options.get("free_projection", False)
     options["n_batch"] = options.get("n_batch", 1)
 
+    return options
+
+def read_observable(tmpdir):
     try:
         with h5py.File(tmpdir + "/observable.h5", "r") as fh5:
             [observable_constant] = fh5["constant"]
@@ -99,15 +69,8 @@ def _prep_afqmc(options=None):
     except:
         observable = None
 
-    ham = hamiltonian.hamiltonian(nmo)
-    ham_data = {}
-    ham_data["h0"] = h0
-    ham_data["h1"] = jnp.array([h1, h1])
-    ham_data["chol"] = chol.reshape(nchol, -1)
-    ham_data["ene0"] = options["ene0"]
-
+def read_wave_data(mo_coeff, norb, nelec_sp, tmpdir):
     wave_data = {}
-    mo_coeff = jnp.array(np.load(tmpdir + "/mo_coeff.npz")["mo_coeff"])
     try:
         rdm1 = jnp.array(np.load(tmpdir + "/rdm1.npz")["rdm1"])
         assert rdm1.shape == (2, norb, norb)
@@ -120,7 +83,9 @@ def _prep_afqmc(options=None):
                 mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
             ]
         )
+    return wave_data
 
+def set_trial(options, mo_coeff, norb, nelec_sp, wave_data, tmpdir):
     if options["trial"] == "rhf":
         trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
@@ -185,6 +150,9 @@ def _prep_afqmc(options=None):
                 )
             trial = None
 
+    return trial
+
+def set_prop(options, ham_data):
     if options["walker_type"] == "restricted":
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
@@ -213,54 +181,4 @@ def _prep_afqmc(options=None):
                 options["n_walkers"],
                 n_batch=options["n_batch"],
             )
-
-    sampler = sampling.sampler(
-        options["n_prop_steps"],
-        options["n_ene_blocks"],
-        options["n_sr_blocks"],
-        options["n_blocks"],
-    )
-
-    if rank == 0:
-        print(f"# norb: {norb}")
-        print(f"# nelec: {nelec_sp}")
-        print("#")
-        for op in options:
-            if options[op] is not None:
-                print(f"# {op}: {options[op]}")
-        print("#")
-
-    return ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
-
-
-if __name__ == "__main__":
-    ham_data, ham, prop, trial, wave_data, sampler, observable, options, _ = (
-        _prep_afqmc()
-    )
-    assert trial is not None
-    init = time.time()
-    comm.Barrier()
-    e_afqmc, err_afqmc = 0.0, 0.0
-    if options["free_projection"]:
-        driver.fp_afqmc(
-            ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
-        )
-    else:
-        e_afqmc, err_afqmc = driver.afqmc(
-            ham_data,
-            ham,
-            prop,
-            trial,
-            wave_data,
-            sampler,
-            observable,
-            options,
-            MPI,
-            tmpdir=tmpdir,
-        )
-    comm.Barrier()
-    end = time.time()
-    if rank == 0:
-        print(f"ph_afqmc walltime: {end - init}", flush=True)
-        np.savetxt(tmpdir + "/ene_err.txt", np.array([e_afqmc, err_afqmc]))
-    comm.Barrier()
+    return prop, ham_data
