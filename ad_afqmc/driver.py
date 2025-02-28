@@ -307,10 +307,10 @@ def afqmc(
 
         if options["save_walkers"] == True:
             if n > 0:
-                with open(f"prop_data_{rank}.bin", "ab") as f:
+                with open(f"{tmpdir}/prop_data_{rank}.bin", "ab") as f:
                     pickle.dump(prop_data, f)
             else:
-                with open(f"prop_data_{rank}.bin", "wb") as f:
+                with open(f"{tmpdir}/prop_data_{rank}.bin", "wb") as f:
                     pickle.dump(prop_data, f)
 
         prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
