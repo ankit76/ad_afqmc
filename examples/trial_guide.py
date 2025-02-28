@@ -3,7 +3,7 @@ from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions, 
 from jax import numpy as jnp
 import h5py
 import pickle
-from jax import jit, jvp, lax, vjp, vmap
+from jax import jit, jvp, lax, vjp, vmap, random
 
 def extract(a, string1, string2, accu):
     data = a[string1].item()
@@ -33,17 +33,70 @@ nwalkers = walkers.shape[0]
 ovlp = trial.calc_overlap(walkers, wave_data)
 wts = wts / ovlp
 
+
+ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
+
+options["dt"] = 0.01
+dt = options["dt"]
+prop = propagation.propagator_restricted(
+    options["dt"], options["n_walkers"], n_batch=options["n_batch"],
+    phaseless_epsilon = options["phaseless_epsilon"]
+)
+ham_data = prop._build_propagation_intermediates(ham_data, trial, wave_data)
+
+walk = walkers[3000:3001]
+fields = random.normal(random.PRNGKey(0), shape=(1,ham_data["chol"].shape[0]))
+force_bias = trial.calc_force_bias(walk, ham_data, wave_data)
+field_shifts = -jnp.sqrt(dt) * (1.0j * force_bias - ham_data["mf_shifts"])
+shifted_fields = fields - field_shifts
+shift_term = jnp.sum(shifted_fields * ham_data["mf_shifts"], axis=1)
+fb_term = jnp.sum(
+    fields * field_shifts - field_shifts * field_shifts / 2.0, axis=1
+)
+
+walkout = prop._apply_trotprop(
+    ham_data, walk, shifted_fields
+)
+overlap = trial.calc_overlap(walk, wave_data)
+
+overlaps_new = trial.calc_overlap(walkout, wave_data)
+
+loc_energy = trial.calc_energy(walk, ham_data, wave_data)
+imp_fun2 = jnp.exp(-prop.dt * loc_energy )
+# theta = jnp.angle(jnp.exp(-self.dt * loc_energy))
+# imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
+
+imp_fun = (
+    jnp.exp(
+        -jnp.sqrt(prop.dt) * shift_term
+        + fb_term
+        + prop.dt * (ham_data["h0_prop"])
+    )
+    * overlaps_new
+    / overlap
+)
+theta = jnp.angle(
+    jnp.exp(-jnp.sqrt(prop.dt) * shift_term)
+    * overlaps_new
+    / overlap
+)
+imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
+print(imp_fun2, jnp.exp(fb_term), imp_fun)
+
+
+
 ##make HF trial
 hf = np.zeros((norb, nelec_sp[0]))
 hf[:nelec_sp[0], :nelec_sp[0]] = np.eye(nelec_sp[0])
 hf = jnp.asarray(hf)
+
 trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
 wave_data["mo_coeff"] = hf[:, : nelec_sp[0]]
-
 ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
 
 num = trial.calc_energy(walkers, ham_data, wave_data).real
 den = trial.calc_overlap(walkers, wave_data)
+
 
 num = num*den*wts
 den = den*wts

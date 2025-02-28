@@ -80,6 +80,18 @@ calc_energy = vmap(_calc_energy, in_axes=(None,None,0))
 calc_energy12 = vmap(vmap(_calc_energy, in_axes=(None,None,0)), in_axes=(0,None,None))
 
 
+def calc_energy(walkerA, walkerB, wtsA, wtsB): 
+    ovlp12 = calc_overlap12(walkerA, walkerB)
+    ene12 = calc_energy12(walkerA, ham_data, walkerB)
+    numij = jnp.einsum('i,ij,j', wtsA.conj(), ene12*ovlp12, wtsB, optimize='optimal')
+    denij = jnp.einsum('i,ij,j', wtsA.conj(), ovlp12, wtsB, optimize='optimal')
+    return jnp.asarray([numij, denij])
+
+
+for i in range(10):
+    #numArrdenArr = vmap(vmap(calc_energy, in_axes=(0,None, 0, None)), in_axes=(None,0, None, 0))(walkerA[:10], walkerB[:10], wtsA[:10], wtsB[:10])
+    numArrdenArr = vmap(calc_energy, in_axes=(0,None, 0, None))(walkerA[:10], walkerB[i], wtsA[:10], wtsB[i])
+
 ni, nj = 10,10
 
 num, den = 0., 0.

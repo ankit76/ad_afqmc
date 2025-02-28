@@ -133,11 +133,33 @@ class propagator(ABC):
         )
 
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
-        #####
-        overlaps_new = jnp.where(
-            jnp.abs(overlaps_new) < self.phaseless_epsilon, 0.0, overlaps_new
-        )
-        ###
+
+        # #LOCAL ENERGY FORMALISM
+        # loc_energy = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+        # imp_fun = jnp.exp(-self.dt * loc_energy.real  + self.dt * (prop_data["pop_control_ene_shift"]))
+        # #theta = jnp.angle(jnp.exp(-self.dt * loc_energy))
+        # imp_fun_phaseless = imp_fun.real #jnp.abs(imp_fun) * jnp.cos(theta)
+
+        ##SHIFT WITH WFN FORMALISM
+        # shift = jnp.exp(-jnp.sqrt(self.dt) * shift_term/trial.nelec[0]/2.)
+        # prop_data["walkers"] = jnp.einsum('ian,i->ian', prop_data["walkers"], shift)
+        # overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
+        # imp_fun = (
+        #     jnp.exp(#-jnp.sqrt(self.dt) * shift_term
+        #         + fb_term
+        #         + self.dt * (prop_data["pop_control_ene_shift"] + ham_data["h0_prop"])
+        #     )
+        #     * overlaps_new
+        #     / prop_data["overlaps"]
+        # )
+        # theta = jnp.angle(
+        #     #jnp.exp(-jnp.sqrt(self.dt) * shift_term)*
+        #     overlaps_new
+        #     / prop_data["overlaps"]
+        # )
+        # imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
+
+        ##THE ORIGINAL FORMULATION
         imp_fun = (
             jnp.exp(
                 -jnp.sqrt(self.dt) * shift_term
@@ -152,7 +174,9 @@ class propagator(ABC):
             * overlaps_new
             / prop_data["overlaps"]
         )
-        imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
+        #imp_fun_phaseless = imp_fun.real #jnp.abs(imp_fun) * jnp.cos(theta)
+
+
         imp_fun_phaseless = jnp.array(
             jnp.where(jnp.isnan(imp_fun_phaseless), 0.0, imp_fun_phaseless)
         )
