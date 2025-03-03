@@ -52,11 +52,18 @@ def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=Fal
     return meanEnergy, plateauError
 
 
-def reject_outliers(data, obs, m=10.0):
-    d = np.abs(data[:, obs] - np.median(data[:, obs]))
-    mdev = np.median(d) + 1.0e-10
-    s = d / mdev if mdev else 0.0
-    return data[s < m], s < m
+def reject_outliers(data, obs, m=10.0, min_threshold=1e-5):
+    target = data[:, obs]
+    median_val = np.median(target)
+    d = np.abs(target - median_val)
+    mdev = np.median(d)
+    q1, q3 = np.percentile(target, [25, 75])
+    iqr = q3 - q1
+    normalized_iqr = iqr / 1.349
+    dispersion = max(mdev, normalized_iqr, min_threshold)
+    s = d / dispersion
+    mask = s < m
+    return data[mask], mask
 
 
 def jackknife_ratios(num: np.ndarray, denom: np.ndarray):
@@ -80,11 +87,9 @@ def jackknife_ratios(num: np.ndarray, denom: np.ndarray):
     num_mean = np.mean(num)
     denom_mean = np.mean(denom)
     mean = num_mean / denom_mean
-    jackknife_estimates = np.zeros(n_samples, dtype=num.dtype)
-    for i in range(n_samples):
-        mean_num_i = (num_mean * n_samples - num[i]) / (n_samples - 1)
-        mean_denom_i = (denom_mean * n_samples - denom[i]) / (n_samples - 1)
-        jackknife_estimates[i] = (mean_num_i / mean_denom_i).real
+    mean_num_all = (num_mean * n_samples - num) / (n_samples - 1)
+    mean_denom_all = (denom_mean * n_samples - denom) / (n_samples - 1)
+    jackknife_estimates = (mean_num_all / mean_denom_all).real
     mean = np.mean(jackknife_estimates)
     sigma = np.sqrt((n_samples - 1) * np.var(jackknife_estimates))
     return mean, sigma
