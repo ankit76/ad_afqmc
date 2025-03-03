@@ -134,30 +134,6 @@ class propagator(ABC):
 
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
 
-        # #LOCAL ENERGY FORMALISM
-        # loc_energy = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        # imp_fun = jnp.exp(-self.dt * loc_energy.real  + self.dt * (prop_data["pop_control_ene_shift"]))
-        # #theta = jnp.angle(jnp.exp(-self.dt * loc_energy))
-        # imp_fun_phaseless = imp_fun.real #jnp.abs(imp_fun) * jnp.cos(theta)
-
-        ##SHIFT WITH WFN FORMALISM
-        # shift = jnp.exp(-jnp.sqrt(self.dt) * shift_term/trial.nelec[0]/2.)
-        # prop_data["walkers"] = jnp.einsum('ian,i->ian', prop_data["walkers"], shift)
-        # overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
-        # imp_fun = (
-        #     jnp.exp(#-jnp.sqrt(self.dt) * shift_term
-        #         + fb_term
-        #         + self.dt * (prop_data["pop_control_ene_shift"] + ham_data["h0_prop"])
-        #     )
-        #     * overlaps_new
-        #     / prop_data["overlaps"]
-        # )
-        # theta = jnp.angle(
-        #     #jnp.exp(-jnp.sqrt(self.dt) * shift_term)*
-        #     overlaps_new
-        #     / prop_data["overlaps"]
-        # )
-        # imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
 
         ##THE ORIGINAL FORMULATION
         imp_fun = (
@@ -174,8 +150,9 @@ class propagator(ABC):
             * overlaps_new
             / prop_data["overlaps"]
         )
-        #imp_fun_phaseless = imp_fun.real #jnp.abs(imp_fun) * jnp.cos(theta)
-
+        imp_fun_phaseless = 1.*imp_fun.real
+        #imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
+        #imp_fun_phaseless = 1.*imp_fun
 
         imp_fun_phaseless = jnp.array(
             jnp.where(jnp.isnan(imp_fun_phaseless), 0.0, imp_fun_phaseless)
@@ -193,6 +170,107 @@ class propagator(ABC):
         )
         prop_data["overlaps"] = overlaps_new
         return prop_data
+
+    # @partial(jit, static_argnums=(0, 1))
+    # def propagate(
+    #     self,
+    #     trial: wave_function,
+    #     ham_data: dict,
+    #     prop_data: dict,
+    #     fields: jax.Array,
+    #     wave_data: dict,
+    # ) -> dict:
+    #     """Phaseless AFQMC propagation.
+
+    #     Args:
+    #         trial: trial wave function handler
+    #         ham_data: dictionary containing the Hamiltonian data
+    #         prop_data: dictionary containing the propagation data
+    #         fields: auxiliary fields
+    #         wave_data: wave function data
+
+    #     Returns:
+    #         prop_data: dictionary containing the updated propagation data
+    #     """
+    #     force_bias = trial.calc_force_bias(prop_data["walkers"], ham_data, wave_data)
+    #     field_shifts = -jnp.sqrt(self.dt) * (1.0j * force_bias - ham_data["mf_shifts"])
+    #     shifted_fields = fields - field_shifts
+    #     shift_term = jnp.sum(shifted_fields * ham_data["mf_shifts"], axis=1)
+    #     fb_term = jnp.sum(
+    #         fields * field_shifts - field_shifts * field_shifts / 2.0, axis=1
+    #     )
+
+    #     prop_data["walkers"] = self._apply_trotprop(
+    #         ham_data, prop_data["walkers"], shifted_fields
+    #     )
+
+    #     overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
+
+    #     # #LOCAL ENERGY FORMALISM
+    #     # loc_energy = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+    #     # imp_fun = jnp.exp(-self.dt * loc_energy.real  + self.dt * (prop_data["pop_control_ene_shift"]))
+    #     # #theta = jnp.angle(jnp.exp(-self.dt * loc_energy))
+    #     # imp_fun_phaseless = imp_fun.real #jnp.abs(imp_fun) * jnp.cos(theta)
+
+    #     ##SHIFT WITH WFN FORMALISM
+    #     # shift = jnp.exp(-jnp.sqrt(self.dt) * shift_term/trial.nelec[0]/2.)
+    #     # prop_data["walkers"] = jnp.einsum('ian,i->ian', prop_data["walkers"], shift)
+    #     # overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
+    #     # imp_fun = (
+    #     #     jnp.exp(#-jnp.sqrt(self.dt) * shift_term
+    #     #         + fb_term
+    #     #         + self.dt * (prop_data["pop_control_ene_shift"] + ham_data["h0_prop"])
+    #     #     )
+    #     #     * overlaps_new
+    #     #     / prop_data["overlaps"]
+    #     # )
+    #     # theta = jnp.angle(
+    #     #     #jnp.exp(-jnp.sqrt(self.dt) * shift_term)*
+    #     #     overlaps_new
+    #     #     / prop_data["overlaps"]
+    #     # )
+    #     # imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
+
+    #     ##THE ORIGINAL FORMULATION
+    #     imp_fun = (
+    #         jnp.exp(
+    #             -jnp.sqrt(self.dt) * shift_term
+    #             + fb_term
+    #             + self.dt * (prop_data["pop_control_ene_shift"] + ham_data["h0_prop"])
+    #         )
+    #         * overlaps_new
+    #         / prop_data["overlaps"]
+    #     )
+    #     theta = jnp.angle(
+    #         jnp.exp(-jnp.sqrt(self.dt) * shift_term)
+    #         * overlaps_new
+    #         / prop_data["overlaps"]
+    #     )
+    #     imp_fun_phaseless = 1.*imp_fun
+    #     #imp_fun_phaseless = imp_fun.real #jnp.abs(imp_fun) * jnp.cos(theta)
+
+
+    #     imp_fun_phaseless = jnp.array(
+    #         jnp.where(jnp.isnan(imp_fun_phaseless), 0.0, imp_fun_phaseless)
+    #     )
+    #     # imp_fun_phaseless = jnp.where(
+    #     #     imp_fun_phaseless < 1.0e-3, 0.0, imp_fun_phaseless
+    #     # )
+    #     # imp_fun_phaseless = jnp.where(imp_fun_phaseless > 100.0, 0.0, imp_fun_phaseless)
+    #     prop_data["weights"] = imp_fun_phaseless * prop_data["weights"]
+    #     # prop_data["weights"] = jnp.array(
+    #     #     jnp.where(prop_data["weights"] > 100.0, 0.0, prop_data["weights"])
+    #     # )
+    #     prop_data["pop_control_ene_shift"] = (prop_data["e_estimate"].real - 0.1 * jnp.array(
+    #         jnp.log(jnp.sum(prop_data["weights"]).real / self.n_walkers) / self.dt
+    #     )).real
+    #     prop_data["overlaps"] = overlaps_new
+    #     return prop_data
+
+    @partial(jit, static_argnums=(0))
+    def _multiply_constant(self, walkers: jax.Array, constants: jax.Array) -> Sequence:
+        walkers = constants.reshape(-1, 1, 1) * walkers
+        return walkers
 
     def propagate_free(
         self,
@@ -214,9 +292,22 @@ class propagator(ABC):
         Returns:
             prop_data: dictionary containing the updated propagation data
         """
-        raise NotImplementedError(
-            "Free projection not implemented for this propagator."
+        shift_term = jnp.einsum("wg,g->w", fields, ham_data["mf_shifts_fp"])
+        constants = jnp.exp(-jnp.sqrt(self.dt) * shift_term) *\
+            jnp.exp(self.dt * ham_data["h0_prop_fp"][0])
+
+        prop_data["walkers"] = self._apply_trotprop(
+            ham_data, prop_data["walkers"], fields
         )
+        prop_data["walkers"] = self._multiply_constant(prop_data["walkers"], constants)
+        #prop_data, norms = self._orthogonalize_walkers(prop_data)
+        #prop_data["norms"] *= norms[0] * norms[1]
+        # prop_data["overlaps"] = (
+        #     trial.calc_overlap(prop_data["walkers"], wave_data) * prop_data["norms"]
+        # )
+        #normed_walkers, _ = linalg_utils.qr_vmap_uhf(prop_data["walkers"])
+        #prop_data["weights"] = trial.calc_overlap(normed_walkers, wave_data)
+        return prop_data
 
     def _build_propagation_intermediates(
         self, ham_data: dict, trial: wave_function, wave_data: dict
@@ -282,6 +373,10 @@ class propagator_restricted(propagator):
         prop_data["walkers"], _ = linalg_utils.qr_vmap(prop_data["walkers"])
         return prop_data
 
+    def _orthonormalize_walkers(self, prop_data: dict) -> dict:
+        prop_data["walkers"], norm = linalg_utils.qr_vmap(prop_data["walkers"])
+        return prop_data, norm
+
     @partial(jit, static_argnums=(0,))
     def _apply_trotprop(
         self, ham_data: dict, walkers: jax.Array, fields: jax.Array
@@ -333,8 +428,8 @@ class propagator_restricted(propagator):
             -ham_data["h0"] - jnp.sum(ham_data["mf_shifts"] ** 2) / 2.0
         )
         ham_data["h0_prop_fp"] = [
-            (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0],
-            (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0],
+            (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0] / 2.,
+            (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0] / 2.,
         ]
         v0 = 0.5 * jnp.einsum(
             "gik,gjk->ij",
