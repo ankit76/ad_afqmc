@@ -16,7 +16,6 @@ seed = 98
 tmpdir = os.path.dirname(os.path.abspath(__file__))
 
 
-@pytest.mark.skip(reason="This test is skipped during CI")
 def test_energy_mpi():
     options = {
         "n_eql": 1,
@@ -53,7 +52,6 @@ def test_jvp_h1e():
     assert np.isclose(obs_err[0], -11.9139997, atol=1e-5)
 
 
-@pytest.mark.skip(reason="This test is skipped during CI")
 def test_vjp_rdm():
     options = {
         "n_eql": 2,

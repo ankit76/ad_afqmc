@@ -26,6 +26,8 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Setup MPI
       uses: mpi4py/setup-mpi@v1
+      with:
+        mpi: openmpi
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
