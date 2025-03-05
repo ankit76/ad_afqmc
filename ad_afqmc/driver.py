@@ -107,8 +107,8 @@ def afqmc_energy(
     global_block_weights = None
     global_block_energies = None
     if rank == 0:
-        global_block_weights = np.zeros(size * sampler.n_blocks)
-        global_block_energies = np.zeros(size * sampler.n_blocks)
+        global_block_weights = np.zeros(sampler.n_blocks)
+        global_block_energies = np.zeros(sampler.n_blocks)
 
     # Run sampling
     for n in range(sampler.n_blocks):
@@ -129,11 +129,11 @@ def afqmc_energy(
         comm.Gather(block_energy_n, gather_energies, root=0)
         block_energy_n = 0.0
         if rank == 0:
-            global_block_weights[n * size : (n + 1) * size] = gather_weights
-            global_block_energies[n * size : (n + 1) * size] = gather_energies
+            global_block_weights[n] = np.sum(gather_weights)
             block_energy_n = np.sum(gather_weights * gather_energies) / np.sum(
                 gather_weights
             )
+            global_block_energies[n] = block_energy_n
 
         block_energy_n = comm.bcast(block_energy_n, root=0)
         prop_data = propagator.orthonormalize_walkers(prop_data)
@@ -150,7 +150,6 @@ def afqmc_energy(
                 n,
                 global_block_weights,
                 global_block_energies,
-                size,
                 rank,
                 init,
                 comm,
@@ -683,14 +682,14 @@ def _save_walkers(prop_data, n, tmpdir, rank):
 
 
 def _print_progress_energy(
-    n, global_block_weights, global_block_energies, size, rank, init, comm, tmpdir
+    n, global_block_weights, global_block_energies, rank, init, comm, tmpdir
 ):
     """Print progress information for energy calculations"""
     comm.Barrier()
     if rank == 0:
         e_afqmc, energy_error = stat_utils.blocking_analysis(
-            global_block_weights[: (n + 1) * size],
-            global_block_energies[: (n + 1) * size],
+            global_block_weights[: (n + 1)],
+            global_block_energies[: (n + 1)],
             neql=0,
         )
         if energy_error is not None:
@@ -707,8 +706,8 @@ def _print_progress_energy(
             tmpdir + "/samples_raw.dat",
             np.stack(
                 (
-                    global_block_weights[: (n + 1) * size],
-                    global_block_energies[: (n + 1) * size],
+                    global_block_weights[: (n + 1)],
+                    global_block_energies[: (n + 1)],
                 )
             ).T,
         )
