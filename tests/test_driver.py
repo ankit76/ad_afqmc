@@ -33,7 +33,6 @@ def test_energy_mpi():
     assert np.isclose(ene, -3.239302058353345, atol=1e-5)
 
 
-@pytest.mark.skip(reason="This test is skipped during CI")
 def test_jvp_h1e():
     options = {
         "n_eql": 2,
