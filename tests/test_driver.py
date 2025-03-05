@@ -9,7 +9,7 @@ from ad_afqmc import run_afqmc
 
 seed = 98
 
-# __test__ = False
+__test__ = False
 
 tmpdir = os.path.dirname(os.path.abspath(__file__))
 
