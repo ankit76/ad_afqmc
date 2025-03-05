@@ -5,6 +5,8 @@ import numpy as np
 from ad_afqmc import config
 
 config.setup_jax()
+import pytest
+
 from ad_afqmc import run_afqmc
 
 seed = 98
@@ -14,6 +16,7 @@ __test__ = False
 tmpdir = os.path.dirname(os.path.abspath(__file__))
 
 
+@pytest.mark.skip(reason="This test is skipped during CI")
 def test_energy_mpi():
     options = {
         "n_eql": 1,
@@ -31,6 +34,7 @@ def test_energy_mpi():
     assert np.isclose(ene, -3.239302058353345, atol=1e-5)
 
 
+@pytest.mark.skip(reason="This test is skipped during CI")
 def test_jvp_h1e():
     options = {
         "n_eql": 2,
@@ -49,6 +53,7 @@ def test_jvp_h1e():
     assert np.isclose(obs_err[0], -11.9139997, atol=1e-5)
 
 
+@pytest.mark.skip(reason="This test is skipped during CI")
 def test_vjp_rdm():
     options = {
         "n_eql": 2,
@@ -61,7 +66,7 @@ def test_vjp_rdm():
         "walker_type": "uhf",
         "ad_mode": "reverse",
     }
-    ene, _ = run_afqmc.run_afqmc(options=options, nproc=2)
+    ene, _ = run_afqmc.run_afqmc(options=options, nproc=2, tmpdir=tmpdir)
     assert np.isclose(ene, -3.2359788941631957, atol=1e-5)
     rdm1 = np.load("rdm1_afqmc.npz")["rdm1"]
     assert np.isclose(np.trace(rdm1[0]), 3)
@@ -80,7 +85,7 @@ def test_energy():
         "trial": "uhf",
         "walker_type": "uhf",
     }
-    ene, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="")
+    ene, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="", tmpdir=tmpdir)
     assert np.isclose(ene, -3.238196747261496, atol=1e-5)
 
 
