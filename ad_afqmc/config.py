@@ -53,6 +53,9 @@ def setup_jax():
     from jax import config
 
     config.update("jax_enable_x64", True)
+    # breaking change in random number generation in jax v0.5
+    config.update("jax_threefry_partitionable", False)
+
     if afqmc_config["use_gpu"] == True:
         config.update("jax_platform_name", "gpu")
         os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
