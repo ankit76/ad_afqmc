@@ -29,7 +29,8 @@ def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
         try:
             from mpi4py import MPI
 
-            MPI.Finalize()
+            if not MPI.Is_finalized():
+                MPI.Finalize()
             use_mpi = True
             print(f"# mpi4py found, using MPI.")
             if nproc is None:
@@ -37,7 +38,7 @@ def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
         except ImportError:
             use_mpi = False
             print(f"# Unable to import mpi4py, not using MPI.")
-        # use_mpi = False
+
     gpu_flag = "--use_gpu" if use_gpu else ""
     mpi_flag = "--use_mpi" if use_mpi else ""
     if mpi_prefix is None:
@@ -48,6 +49,8 @@ def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
 
         else:
             mpi_prefix = ""
+    elif nproc is not None:
+        mpi_prefix += f"-np {nproc}"
     os.system(
         f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script} {tmpdir} {gpu_flag} {mpi_flag}"
     )
