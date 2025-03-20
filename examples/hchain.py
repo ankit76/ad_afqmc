@@ -38,7 +38,7 @@ options = {
     "n_walkers": 50,
     "seed": 98,
     "trial": "uhf",
-    "walker_type": "uhf",
+    "walker_type": "unrestricted",
 }
 
 # serial run
