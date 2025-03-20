@@ -1,6 +1,6 @@
-# Automatic differentiable AFQMC
+# Automatically differentiable AFQMC
 
-A differentiable auxiliary field quantum Monte Carlo (AFQMC) code using Jax.
+An end-to-end differentiable Auxiliary Field Quantum Monte Carlo (AFQMC) code based on Jax.
 
 ## Usage
 

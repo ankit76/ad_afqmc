@@ -200,7 +200,8 @@ def run_afqmc(
         try:
             from mpi4py import MPI
 
-            MPI.Finalize()
+            if not MPI.Is_finalized():
+                MPI.Finalize()
             use_mpi = True
             print(f"# mpi4py found, using MPI.")
             if nproc is None:
@@ -219,6 +220,8 @@ def run_afqmc(
 
         else:
             mpi_prefix = ""
+    elif nproc is not None:
+        mpi_prefix += f"-np {nproc}"
     env = os.environ.copy()
     env["OMP_NUM_THREADS"] = "1"
     env["MKL_NUM_THREADS"] = "1"

@@ -548,12 +548,25 @@ class rhf(wave_function):
         ene0 = h0
         green_walker_up = self._calc_green(walker_up, wave_data)
         green_walker_dn = self._calc_green(walker_dn, wave_data)
-        green_walker = green_walker_up + green_walker_dn
-        ene1 = jnp.sum(green_walker * rot_h1)
-        f = jnp.einsum("gij,jk->gik", rot_chol, green_walker.T, optimize="optimal")
-        c = vmap(jnp.trace)(f)
-        exc = jnp.sum(vmap(lambda x: x * x.T)(f))
-        ene2 = jnp.sum(c * c) - exc
+        green_walker = [green_walker_up, green_walker_dn]
+        ene1 = jnp.sum((green_walker[0] + green_walker[1]) * rot_h1)
+        f_up = jnp.einsum(
+            "gij,jk->gik", rot_chol, green_walker[0].T, optimize="optimal"
+        )
+        f_dn = jnp.einsum(
+            "gij,jk->gik", rot_chol, green_walker[1].T, optimize="optimal"
+        )
+        c_up = vmap(jnp.trace)(f_up)
+        c_dn = vmap(jnp.trace)(f_dn)
+        exc_up = jnp.sum(vmap(lambda x: x * x.T)(f_up))
+        exc_dn = jnp.sum(vmap(lambda x: x * x.T)(f_dn))
+        ene2 = (
+            jnp.sum(c_up * c_up)
+            + jnp.sum(c_dn * c_dn)
+            + 2.0 * jnp.sum(c_up * c_dn)
+            - exc_up
+            - exc_dn
+        ) / 2.0
         return ene2 + ene1 + ene0
 
     def _calc_rdm1(self, wave_data: dict) -> jax.Array:
