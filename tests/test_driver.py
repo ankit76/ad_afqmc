@@ -42,7 +42,7 @@ def test_jvp_h1e():
         "n_walkers": 50,
         "seed": seed,
         "trial": "uhf",
-        "walker_type": "uhf",
+        "walker_type": "unrestricted",
         "ad_mode": "forward",
     }
     ene, _ = run_afqmc.run_afqmc(options=options, nproc=2, tmpdir=tmpdir)
