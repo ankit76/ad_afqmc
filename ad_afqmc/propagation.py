@@ -521,15 +521,33 @@ class propagator_cpmc(propagator_unrestricted):
         prop_data["walkers"][0] = prop_data["walkers"][0].real
         prop_data["walkers"][1] = prop_data["walkers"][1].real
         prop_data["overlaps"] = prop_data["overlaps"].real
-        prop_data["greens"] = trial.calc_full_green_vmap(
-            prop_data["walkers"], wave_data
-        )
+        try:
+            prop_data["greens"] = trial.calc_full_green_vmap(
+                prop_data["walkers"], wave_data
+            )
+        except:
+            print("# assuming cpmc_slow\n#")
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))
         const = jnp.exp(-self.dt * ham_data["u"] / 2)
         prop_data["hs_constant"] = const * jnp.array(
             [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
         )
+        prop_data["node_crossings"] = 0
         return prop_data
+
+    @partial(jit, static_argnums=(0, 2))
+    def _build_propagation_intermediates(
+        self, ham_data: dict, trial: wave_function, wave_data: dict
+    ) -> dict:
+        ham_data = super()._build_propagation_intermediates(ham_data, trial, wave_data)
+        # no mean field shift
+        ham_data["exp_h1"] = jnp.array(
+            [
+                jsp.linalg.expm(-self.dt * ham_data["h1"][0] / 2.0),
+                jsp.linalg.expm(-self.dt * ham_data["h1"][1] / 2.0),
+            ]
+        )
+        return ham_data
 
     @partial(jit, static_argnums=(0, 1))
     def propagate_one_body(
@@ -710,6 +728,7 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+            carry["node_crossings"] += jnp.sum(jnp.array(ratio_0) == 0.0)
 
             # field 2
             new_walkers_1_up = (
@@ -723,6 +742,7 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
+            carry["node_crossings"] += jnp.sum(jnp.array(ratio_1) == 0.0)
 
             # normalize
             norm = ratio_0 + ratio_1
@@ -859,10 +879,14 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         # one body
         prop_data["walkers"][0] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
-        ) * jnp.exp(self.dt * (prop_data["e_estimate"]) / 2)
+        ) * jnp.exp(
+            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"][0].shape[-1]
+        )
         prop_data["walkers"][1] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
-        ) * jnp.exp(self.dt * (prop_data["e_estimate"]) / 2)
+        ) * jnp.exp(
+            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"][1].shape[-1]
+        )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         # prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
         # prop_data["weights"] = jnp.where(
