@@ -58,7 +58,7 @@ def read_options(options, rank, tmpdir):
 
     return options
 
-def read_observable(tmpdir):
+def read_observable(nmo, options, tmpdir):
     try:
         with h5py.File(tmpdir + "/observable.h5", "r") as fh5:
             [observable_constant] = fh5["constant"]
@@ -85,7 +85,7 @@ def read_wave_data(mo_coeff, norb, nelec_sp, tmpdir):
         )
     return wave_data
 
-def set_trial(options, mo_coeff, norb, nelec_sp, wave_data, tmpdir):
+def set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir):
     if options["trial"] == "rhf":
         trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
