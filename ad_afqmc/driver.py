@@ -59,6 +59,9 @@ def afqmc_energy(
         ham_data, propagator, trial, wave_data
     )
     prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
+    
+    print(prop_data['overlaps'])
+
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
@@ -70,9 +73,9 @@ def afqmc_energy(
     init_time = time.time() - init
     if rank == 0:
         print("# Equilibration sweeps:")
-        print("#   Iter        Block energy      Walltime")
+        print(f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}")
         n = 0
-        print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+        print(f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} ")
     comm.Barrier()
 
     n_ene_blocks_eql = options["n_ene_blocks_eql"]
