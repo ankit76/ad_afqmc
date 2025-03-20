@@ -38,14 +38,11 @@ from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
 print = partial(print, flush=True)
 
 
-def _prep_afqmc(options=None, filetag=None):
-    if filetag is not None: filetag += "."
-    else: filetag = ""
-
+def _prep_afqmc(options=None):
     if rank == 0:
         print(f"# Number of MPI ranks: {size}\n#")
     
-    with h5py.File(f"{filetag}FCIDUMP_chol.h5", "r") as fh5:
+    with h5py.File(tmpdir + "/FCIDUMP_chol", "r") as fh5:
         [nelec, nmo, ms, nchol] = fh5["header"]
         h0 = jnp.array(fh5.get("energy_core"))
         h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
@@ -111,13 +108,19 @@ def _prep_afqmc(options=None, filetag=None):
     ham_data["ene0"] = options["ene0"]
 
     wave_data = {}
-    mo_coeff = jnp.array(np.load(f"{filetag}mo_coeff.npz")["mo_coeff"])
-    wave_data["rdm1"] = jnp.array(
-        [
-            mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
-            mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
-        ]
-    )
+    mo_coeff = jnp.array(np.load(tmpdir + "/mo_coeff.npz")["mo_coeff"])
+    try:
+        rdm1 = jnp.array(np.load(tmpdir + "/rdm1.npz")["rdm1"])
+        assert rdm1.shape == (2, norb, norb)
+        wave_data["rdm1"] = rdm1
+        print(f"# Read RDM1 from disk")
+    except:
+        wave_data["rdm1"] = jnp.array(
+            [
+                mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
+                mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
+            ]
+        )
 
     if options["trial"] == "rhf":
         trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])

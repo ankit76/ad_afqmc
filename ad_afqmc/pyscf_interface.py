@@ -55,7 +55,7 @@ def prep_afqmc(
     norb_frozen: int = 0,
     chol_cut: float = 1e-5,
     integrals: Optional[dict] = None,
-    filetag: Optional[str] = None,
+    tmpdir: str = "./",
 ):
     """Prepare AFQMC calculation with mean field trial wavefunction. Writes integrals and mo coefficients to disk.
 
@@ -67,9 +67,6 @@ def prep_afqmc(
         integrals (dict, optional): Dictionary of integrals in an orthonormal basis, {"h0": enuc, "h1": h1e, "h2": eri}.
         tmpdir (str, optional): Directory to write integrals and mo coefficients. Defaults to "./".
     """
-    if filetag is not None: filetag += "."
-    else: filetag = ""
-
     print("#\n# Preparing AFQMC calculation")
 
     if isinstance(mf_or_cc, (CCSD, UCCSD)):
@@ -230,7 +227,7 @@ def prep_afqmc(
         trial_coeffs[0] = uhfCoeffs[:, :nbasis]
         trial_coeffs[1] = uhfCoeffs[:, nbasis:]
         # np.savetxt("uhf.txt", uhfCoeffs)
-        np.savez(f"{filetag}mo_coeff.npz", mo_coeff=trial_coeffs)
+        np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
 
     elif isinstance(mf, scf.rhf.RHF):
         q, _ = np.linalg.qr(
@@ -240,7 +237,7 @@ def prep_afqmc(
         )
         trial_coeffs[0] = q
         trial_coeffs[1] = q
-        np.savez(f"{filetag}mo_coeff.npz", mo_coeff=trial_coeffs)
+        np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
     
     # TODO: Test.
     elif isinstance(mf, scf.ghf.GHF):
@@ -251,7 +248,7 @@ def prep_afqmc(
             .dot(mf.mo_coeff[:, norb_frozen:])
         )
         trial_coeffs = q
-        np.savez(f"{filetag}mo_coeff.npz", mo_coeff=trial_coeffs)
+        np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
 
     write_dqmc(
         h1e,
@@ -261,7 +258,7 @@ def prep_afqmc(
         nbasis,
         enuc,
         ms=mol.spin,
-        filename=f'{filetag}FCIDUMP_chol.h5',
+        filename=tmpdir + "/FCIDUMP_chol",
         mo_coeffs=trial_coeffs,
     )
 
