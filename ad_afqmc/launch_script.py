@@ -46,7 +46,7 @@ def _prep_afqmc(options=None):
     norb = nmo
 
     options = read_options(options, rank, tmpdir)
-    observable = read_observable(tmpdir)
+    observable = read_observable(nmo, options, tmpdir)
 
     ham = hamiltonian.hamiltonian(nmo)
     ham_data = {}
@@ -58,7 +58,7 @@ def _prep_afqmc(options=None):
     mo_coeff = jnp.array(np.load(tmpdir + "/mo_coeff.npz")["mo_coeff"])
 
     wave_data = read_wave_data(mo_coeff, norb, nelec_sp, tmpdir)
-    trial = set_trial(options, mo_coeff, norb, nelec_sp, wave_data, tmpdir)
+    trial = set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir)
     prop, ham_data = set_prop(options, ham_data)
 
     sampler = sampling.sampler(
