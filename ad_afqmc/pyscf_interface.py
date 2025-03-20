@@ -65,6 +65,7 @@ def prep_afqmc(
         norb_frozen (int, optional): Number of frozen orbitals. Not supported for custom integrals.
         chol_cut (float, optional): Cholesky decomposition cutoff.
         integrals (dict, optional): Dictionary of integrals in an orthonormal basis, {"h0": enuc, "h1": h1e, "h2": eri}.
+        tmpdir (str, optional): Directory to write integrals and mo coefficients. Defaults to "./".
     """
     if filetag is not None: filetag += "."
     else: filetag = ""
@@ -74,7 +75,7 @@ def prep_afqmc(
     if isinstance(mf_or_cc, (CCSD, UCCSD)):
         # raise warning about mpi
         print(
-            "# If you import pyscf cc modules and use MPI for AFQMC in the same script, finalize MPI before calling the AFQMC driver."
+            "# Note that PySCF CC module uses MPI. This could potentially lead to MPI initialization issues in some cases."
         )
         mf = mf_or_cc._scf
         cc = mf_or_cc
@@ -92,7 +93,7 @@ def prep_afqmc(
             ci1a = np.array(cc.t1[0])
             ci1b = np.array(cc.t1[1])
             np.savez(
-                "amplitudes.npz",
+                tmpdir + "/amplitudes.npz",
                 ci1a=ci1a,
                 ci1b=ci1b,
                 ci2aa=ci2aa,
@@ -103,7 +104,7 @@ def prep_afqmc(
             ci2 = cc.t2 + np.einsum("ia,jb->ijab", np.array(cc.t1), np.array(cc.t1))
             ci2 = ci2.transpose(0, 2, 1, 3)
             ci1 = np.array(cc.t1)
-            np.savez("amplitudes.npz", ci1=ci1, ci2=ci2)
+            np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2)
     else:
         mf = mf_or_cc
 
@@ -728,6 +729,8 @@ def get_excitations(
         max_excitation: Maximum excitation level (alpha + beta) to consider.
 
     Returns:
+        Note: Creation and destruction operators are defined relative to a bra state!
+
         Acre: Alpha creation indices.
         Ades: Alpha destruction indices.
         Bcre: Beta creation indices.
@@ -754,27 +757,47 @@ def get_excitations(
             continue
         coeff[nex] = coeff.get(nex, []) + [state[d]]
         if nex[0] > 0 and nex[1] > 0:
+            occ_idx_a_rel = (
+                np.arange(sum(d0a))[
+                    (np.cumsum(d0a) - 1)[np.nonzero((d0a - dia) > 0)[0]]
+                ],
+            )
+            occ_idx_b_rel = (
+                np.arange(sum(d0b))[
+                    (np.cumsum(d0b) - 1)[np.nonzero((d0b - dib) > 0)[0]]
+                ],
+            )
             Acre[nex], Ades[nex], Bcre[nex], Bdes[nex] = (
-                Acre.get(nex, []) + [np.nonzero((d0a - dia) > 0)],
+                Acre.get(nex, []) + [occ_idx_a_rel],
                 Ades.get(nex, []) + [np.nonzero((d0a - dia) < 0)],
-                Bcre.get(nex, []) + [np.nonzero((d0b - dib) > 0)],
+                Bcre.get(nex, []) + [occ_idx_b_rel],
                 Bdes.get(nex, []) + [np.nonzero((d0b - dib) < 0)],
             )
-            coeff[nex][-1] *= parity(d0a, Acre[nex][-1], Ades[nex][-1]) * parity(
-                d0b, Bcre[nex][-1], Bdes[nex][-1]
-            )
+            coeff[nex][-1] *= parity(
+                d0a, np.nonzero((d0a - dia) > 0), Ades[nex][-1]
+            ) * parity(d0b, np.nonzero((d0b - dib) > 0), Bdes[nex][-1])
 
         elif nex[0] > 0 and nex[1] == 0:
-            Acre[nex], Ades[nex] = Acre.get(nex, []) + [
-                np.nonzero((d0a - dia) > 0)
-            ], Ades.get(nex, []) + [np.nonzero((d0a - dia) < 0)]
-            coeff[nex][-1] *= parity(d0a, Acre[nex][-1], Ades[nex][-1])
+            occ_idx_a_rel = (
+                np.arange(sum(d0a))[
+                    (np.cumsum(d0a) - 1)[np.nonzero((d0a - dia) > 0)[0]]
+                ],
+            )
+            Acre[nex], Ades[nex] = Acre.get(nex, []) + [occ_idx_a_rel], Ades.get(
+                nex, []
+            ) + [np.nonzero((d0a - dia) < 0)]
+            coeff[nex][-1] *= parity(d0a, np.nonzero((d0a - dia) > 0), Ades[nex][-1])
 
         elif nex[0] == 0 and nex[1] > 0:
-            Bcre[nex], Bdes[nex] = Bcre.get(nex, []) + [
-                np.nonzero((d0b - dib) > 0)
-            ], Bdes.get(nex, []) + [np.nonzero((d0b - dib) < 0)]
-            coeff[nex][-1] *= parity(d0b, Bcre[nex][-1], Bdes[nex][-1])
+            occ_idx_b_rel = (
+                np.arange(sum(d0b))[
+                    (np.cumsum(d0b) - 1)[np.nonzero((d0b - dib) > 0)[0]]
+                ],
+            )
+            Bcre[nex], Bdes[nex] = Bcre.get(nex, []) + [occ_idx_b_rel], Bdes.get(
+                nex, []
+            ) + [np.nonzero((d0b - dib) < 0)]
+            coeff[nex][-1] *= parity(d0b, np.nonzero((d0b - dib) > 0), Bdes[nex][-1])
 
     coeff[(0, 0)] = np.asarray(coeff[(0, 0)]).reshape(
         -1,
@@ -808,7 +831,7 @@ def get_excitations(
 
         # alpha-beta
         if i != 0:
-            for j in range(1, max_excitation + 1):
+            for j in range(1, max_excitation + 1 - i):
                 if (i, j) in Ades:
                     Ades[(i, j)] = np.asarray(Ades[(i, j)]).reshape(-1, i) + num_core
                     Acre[(i, j)] = np.asarray(Acre[(i, j)]).reshape(-1, i) + num_core
@@ -864,6 +887,55 @@ def read_dets(
             state[tuple(map(tuple, det))] = coeff
 
     return norbs, state, ndets_all
+
+
+def write_dets(state: dict, norbs: int, fname: str = "dets.bin") -> None:
+    """Write determinants to a binary file in Dice format.
+
+    Args:
+        state: Dictionary with determinant (tuple of up and down occupation number tuples) keys
+              and coefficient values.
+        norbs: Number of orbitals.
+        fname: Output binary filename.
+
+    The binary format is:
+    - Number of determinants (4 bytes, integer)
+    - Number of orbitals (4 bytes, integer)
+    For each determinant:
+    - Coefficient (8 bytes, double)
+    - Orbital occupations (1 byte per orbital, character):
+      '0' for empty, 'a' for alpha, 'b' for beta, '2' for double
+    """
+    import struct
+
+    ndets = len(state)
+
+    with open(fname, "wb") as f:
+        # Write number of determinants and orbitals
+        f.write(struct.pack("i", ndets))
+        f.write(struct.pack("i", norbs))
+
+        # Write each determinant
+        for det, coeff in state.items():
+            # Write coefficient
+            f.write(struct.pack("d", coeff))
+
+            # Convert occupation numbers to Dice format and write
+            alpha, beta = det
+            for i in range(norbs):
+                if alpha[i] == 0 and beta[i] == 0:
+                    f.write(struct.pack("c", b"0"))
+                elif alpha[i] == 1 and beta[i] == 0:
+                    f.write(struct.pack("c", b"a"))
+                elif alpha[i] == 0 and beta[i] == 1:
+                    f.write(struct.pack("c", b"b"))
+                elif alpha[i] == 1 and beta[i] == 1:
+                    f.write(struct.pack("c", b"2"))
+                else:
+                    raise ValueError(
+                        f"Invalid occupation numbers at orbital {i}: "
+                        f"alpha={alpha[i]}, beta={beta[i]}"
+                    )
 
 
 def parity(d0: np.ndarray, cre: Sequence, des: Sequence) -> float:

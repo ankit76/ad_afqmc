@@ -6,8 +6,8 @@ config.setup_jax()
 
 from ad_afqmc.lattices import triangular_grid
 
-lattice_4x4 = triangular_grid(4, 4, open_x=False)
-lattice_6x6 = triangular_grid(6, 6, open_x=False)
+lattice_4x4 = triangular_grid(4, 4)
+lattice_6x6 = triangular_grid(6, 6)
 
 def test_get_boundary_pairs():
     ref_4x4 = np.array([[0, 3], [4, 7], [8, 11], [12, 15],

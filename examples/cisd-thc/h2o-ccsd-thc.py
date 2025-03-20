@@ -71,8 +71,4 @@ options = {
     "walker_type": "rhf",
 }
 
-# pyscf cc initializes mpi so we need to finalize it before running afqmc
-from mpi4py import MPI
-
-MPI.Finalize()
 run_afqmc.run_afqmc(options, nproc=4)

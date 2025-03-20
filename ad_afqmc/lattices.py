@@ -534,13 +534,13 @@ class two_dimensional_grid(lattice):
 @dataclass
 @register_pytree_node_class
 class triangular_grid(lattice):
-    l_x: int  # width
-    l_y: int  # height
-    shape: Optional[tuple] = None
-    sites: Optional[Sequence] = None
-    n_sites: Optional[int] = None
+    l_x: int  # height
+    l_y: int  # width
+    shape: tuple = ()
+    sites: Sequence = ()
+    n_sites: int = 0
     coord_num: int = 6
-    open_x: bool = False
+    boundary_condition: str = "pbc"
 
     def __post_init__(self):
         self.shape = (self.l_x, self.l_y)
@@ -565,7 +565,7 @@ class triangular_grid(lattice):
         theta = np.pi / 3.
         lattice_vecs = np.array([[1., np.cos(theta)],
                                  [0., np.sin(theta)]])
-        if self.open_x:
+        if self.boundary_condition == "open_x":
             L1, L2 = lattice_vecs.T
             L3 = L2 - L1
             Ly = [L2, L3]
@@ -576,7 +576,7 @@ class triangular_grid(lattice):
 
             coords += pos[0] * L1
             
-        else:
+        else: # PBC and OPBC.
             coords = pos @ lattice_vecs.T
 
         return coords
@@ -603,25 +603,36 @@ class triangular_grid(lattice):
             L1 = [1,         0],
             L2 = [cos(pi/3), sin(pi/3)]
         """
-        if self.open_x:
-            # Treat each staggered vertical stripe as parallel to the y-axis.
-            # The x-axis is the usual.
-            n1 = ((pos[0] + 1), pos[1])
-            n3 = ((pos[0] - 1), pos[1])
-            if pos[1] % 2 == 1:
-                n5 = ((pos[0] + 1), (pos[1] + 1) % self.l_y)
-                n6 = ((pos[0] + 1), (pos[1] - 1) % self.l_y)
-            else:
-                n5 = ((pos[0] - 1), (pos[1] + 1) % self.l_y)
-                n6 = ((pos[0] - 1), (pos[1] - 1) % self.l_y)
-        else:
-            n1 = ((pos[0] + 1) % self.l_x, pos[1])
-            n3 = ((pos[0] - 1) % self.l_x, pos[1])
-            n5 = ((pos[0] + 1) % self.l_x, (pos[1] - 1) % self.l_y)
-            n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1) % self.l_y)
+        if self.boundary_condition == "opbc":
+            n1 = (pos[0] + 1, pos[1])
+            n2 = (pos[0], pos[1] + 1)
+            n3 = (pos[0] - 1, pos[1])
+            n4 = (pos[0], pos[1] - 1)
+            n5 = (pos[0] + 1, pos[1] - 1)
+            n6 = (pos[0] - 1, pos[1] + 1)
 
-        n2 = (pos[0], (pos[1] + 1) % self.l_y)
-        n4 = (pos[0], (pos[1] - 1) % self.l_y)
+        else:
+            if self.boundary_condition == "open_x":
+                # Treat each staggered vertical stripe as parallel to the y-axis.
+                # The x-axis is the usual.
+                n1 = ((pos[0] + 1), pos[1])
+                n3 = ((pos[0] - 1), pos[1])
+                if pos[1] % 2 == 1:
+                    n5 = ((pos[0] + 1), (pos[1] + 1) % self.l_y)
+                    n6 = ((pos[0] + 1), (pos[1] - 1) % self.l_y)
+                else:
+                    n5 = ((pos[0] - 1), (pos[1] + 1) % self.l_y)
+                    n6 = ((pos[0] - 1), (pos[1] - 1) % self.l_y)
+
+            else: # PBC.
+                n1 = ((pos[0] + 1) % self.l_x, pos[1])
+                n3 = ((pos[0] - 1) % self.l_x, pos[1])
+                n5 = ((pos[0] + 1) % self.l_x, (pos[1] - 1) % self.l_y)
+                n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1) % self.l_y)
+
+            n2 = (pos[0], (pos[1] + 1) % self.l_y)
+            n4 = (pos[0], (pos[1] - 1) % self.l_y)
+
         return jnp.array([n1, n2, n3, n4, n5, n6])
 
     def create_adjacency_matrix(self):
