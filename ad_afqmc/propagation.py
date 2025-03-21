@@ -1022,6 +1022,7 @@ class propagator_cpmc_slow(propagator_unrestricted):
         prop_data["hs_constant"] = const * jnp.array(
             [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
         ) # [[(+1, up), (+1, dn)], [(-1, up), (-1, dn)]].
+        prop_data["node_crossings"] = 0
         return prop_data
 
     @partial(jit, static_argnums=(0, 1))

@@ -59,8 +59,6 @@ def afqmc_energy(
         ham_data, propagator, trial, wave_data
     )
     prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
-    
-    print(prop_data['overlaps'])
 
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
@@ -222,8 +220,6 @@ def afqmc_observable(
         ham_data, propagator, trial, wave_data
     )
     prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
-    
-    print(prop_data['overlaps'])
 
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
@@ -431,7 +427,6 @@ def _run_equilibration(
         block_energy_n, prop_data = sampler_eq.propagate_phaseless(
             ham, ham_data, propagator, prop_data, trial, wave_data
         )
-        print(prop_data['overlaps'])
         block_energy_n = np.array([block_energy_n], dtype="float32")
         block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
         block_weighted_energy_n = np.array(
@@ -779,7 +774,7 @@ def _analyze_energy_results(
     e_afqmc, e_err_afqmc = None, None
     if rank == 0:
         np.savetxt(
-            f"{fietag}.samples_raw.dat",
+            tmpdir + "/samples_raw.dat",
             np.stack((global_block_weights, global_block_energies)).T,
         )
 
