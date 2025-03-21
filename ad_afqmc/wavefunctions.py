@@ -182,7 +182,7 @@ class wave_function(ABC):
         wave_data: dict,
     ) -> jax.Array:
         """Force bias for a single walker."""
-        raise NotImplementedError("Force bias not definedr")
+        raise NotImplementedError("Force bias not defined")
 
     @singledispatchmethod
     def calc_energy(self, walkers, ham_data: dict, wave_data: dict) -> jax.Array:
@@ -443,6 +443,75 @@ class wave_function_cpmc(wave_function):
             green: The updated greens functions.
         """
         pass
+
+
+@dataclass
+class sum_state(wave_function):
+    """Sum of multiple states. wave_data should contain the coeffs in the expansion."""
+
+    norb: int
+    nelec: Tuple[int, int]
+    states: Tuple[wave_function, ...]
+    n_batch: int = 1
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
+        coeffs = wave_data["coeffs"]
+        return jnp.sum(
+            jnp.array(
+                [
+                    state._calc_overlap_restricted(walker, wave_data[f"{i}"])
+                    * coeffs[i]
+                    for i, state in enumerate(self.states)
+                ]
+            )
+        )
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap(
+        self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
+    ) -> jax.Array:
+        coeffs = wave_data["coeffs"]
+        return jnp.sum(
+            jnp.array(
+                [
+                    state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
+                    * coeffs[i]
+                    for i, state in enumerate(self.states)
+                ]
+            )
+        )
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy(self, walker_up, walker_dn, ham_data, wave_data):
+        coeffs = wave_data["coeffs"]
+        energies_i = jnp.array(
+            [
+                state._calc_energy(
+                    walker_up, walker_dn, ham_data[f"{i}"], wave_data[f"{i}"]
+                )
+                for i, state in enumerate(self.states)
+            ]
+        )
+        overlaps_i = jnp.array(
+            [
+                state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
+                for i, state in enumerate(self.states)
+            ]
+        )
+        return jnp.sum(energies_i * overlaps_i * coeffs) / jnp.sum(overlaps_i * coeffs)
+
+    @partial(jit, static_argnums=0)
+    def _build_measurement_intermediates(self, ham_data, wave_data):
+        for i, state in enumerate(self.states):
+            ham_data[f"{i}"] = ham_data.copy()
+            ham_data[f"{i}"] = state._build_measurement_intermediates(
+                ham_data[f"{i}"], wave_data[f"{i}"]
+            )
+        return ham_data
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
 
 
 # we assume afqmc is performed in the rhf orbital basis
@@ -1967,6 +2036,68 @@ class UCISD(wave_function_auto):
         o2 += jnp.einsum("iajb, ia, jb", ci2AB, GFA[:, noccA:], GFB[:, noccB:])
 
         return (1.0 + o1 + o2) * o0
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class UCISinfD(wave_function_auto):
+    """This class contains functions for the CISD wavefunction
+    |0> + c(ia) |ia> + c(ia jb) |ia jb>
+
+    . The wave_data need to store the coefficient C(ia) and C(ia jb)
+    """
+
+    norb: int
+    nelec: Tuple[int, int]
+    eps: float = 1.0e-4  # finite difference step size in local energy calculations
+    n_batch: int = 1
+
+    @partial(jit, static_argnums=0)
+    def _calc_green(
+        self, walker_up: jax.Array, walker_dn: jax.Array
+    ) -> List[jax.Array]:
+
+        green_up = (walker_up.dot(jnp.linalg.inv(walker_up[: walker_up.shape[1], :]))).T
+        green_dn = (walker_dn.dot(jnp.linalg.inv(walker_dn[: walker_dn.shape[1], :]))).T
+        return [green_up, green_dn]
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap(
+        self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
+    ) -> complex:
+        noccA, rA, ci2AA = self.nelec[0], wave_data["rA"], wave_data["ci2AA"]
+        noccB, rB, ci2BB = self.nelec[1], wave_data["rB"], wave_data["ci2BB"]
+        ci2AB = wave_data["ci2AB"]
+        _, moB = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
+
+        walker_dn_B = moB.T @ (
+            walker_dn[:, :noccB]
+        )  # put walker_dn in the basis of beta reference
+
+        # rotate with t1
+        walker_up_r = rA @ walker_up
+        walker_dn_r = rB @ walker_dn_B
+
+        GFA, GFB = self._calc_green(walker_up_r, walker_dn_r)
+
+        o0 = jnp.linalg.det(walker_up_r[:noccA, :]) * jnp.linalg.det(
+            walker_dn_r[:noccB, :]
+        )
+
+        # AA
+        o2 = 0.5 * jnp.einsum("iajb, ia, jb", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
+        # o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
+
+        # BB
+        o2 += 0.5 * jnp.einsum("iajb, ia, jb", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
+        # o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
+
+        # AB
+        o2 += jnp.einsum("iajb, ia, jb", ci2AB, GFA[:, noccA:], GFB[:, noccB:])
+
+        return (1 + o2) * o0
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
