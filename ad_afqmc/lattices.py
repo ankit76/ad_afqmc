@@ -576,7 +576,7 @@ class triangular_grid(lattice):
 
             coords += pos[0] * L1
             
-        else: # PBC and OPBC.
+        else: # PBC and OBC.
             coords = pos @ lattice_vecs.T
 
         return coords
@@ -603,7 +603,7 @@ class triangular_grid(lattice):
             L1 = [1,         0],
             L2 = [cos(pi/3), sin(pi/3)]
         """
-        if self.boundary_condition == "opbc":
+        if self.boundary_condition == "obc":
             n1 = (pos[0] + 1, pos[1])
             n2 = (pos[0], pos[1] + 1)
             n3 = (pos[0] - 1, pos[1])

@@ -1004,27 +1004,8 @@ class propagator_cpmc_general(propagator_general):
         return prop_data
 
 
-class propagator_cpmc_slow(propagator_unrestricted):
+class propagator_cpmc_slow(propagator_cpmc_unrestricted, propagator_unrestricted):
     """CPMC propagator for the Hubbard model with on-site interactions."""
-    def init_prop_data(
-        self,
-        trial: wavefunctions.wave_function_cpmc,
-        wave_data: dict,
-        ham_data: dict,
-        init_walkers: Optional[Sequence] = None,
-    ) -> dict:
-        prop_data = super().init_prop_data(trial, wave_data, ham_data, init_walkers)
-        prop_data["walkers"][0] = prop_data["walkers"][0].real
-        prop_data["walkers"][1] = prop_data["walkers"][1].real
-        prop_data["overlaps"] = prop_data["overlaps"].real
-        gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))
-        const = jnp.exp(-self.dt * ham_data["u"] / 2)
-        prop_data["hs_constant"] = const * jnp.array(
-            [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
-        ) # [[(+1, up), (+1, dn)], [(-1, up), (-1, dn)]].
-        prop_data["node_crossings"] = 0
-        return prop_data
-
     @partial(jit, static_argnums=(0, 1))
     def propagate(
         self,
