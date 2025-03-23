@@ -1007,6 +1007,28 @@ class propagator_cpmc_general(propagator_general):
 class propagator_cpmc_slow(propagator_cpmc_unrestricted, propagator_unrestricted):
     """CPMC propagator for the Hubbard model with on-site interactions."""
     @partial(jit, static_argnums=(0, 1))
+    def propagate_one_body(
+        self,
+        trial: wavefunctions.wave_function_cpmc,
+        ham_data: dict,
+        prop_data: dict,
+        wave_data: dict,
+    ) -> dict:
+        prop_data["walkers"][0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        )
+        prop_data["walkers"][1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        )
+        overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
+        prop_data["weights"] = jnp.where(
+            prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
+        )
+        prop_data["overlaps"] = overlaps_new
+        return prop_data
+
+    @partial(jit, static_argnums=(0, 1))
     def propagate(
         self,
         trial: wavefunctions.wave_function,
@@ -1029,18 +1051,7 @@ class propagator_cpmc_slow(propagator_cpmc_unrestricted, propagator_unrestricted
             prop_data: dictionary containing the updated propagation data
         """
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
-        )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
-        )
-        overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
-        prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
-        prop_data["weights"] = jnp.where(
-            prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
-        )
-        prop_data["overlaps"] = overlaps_new
+        prop_data = self.propagate_one_body(trial, ham_data, prop_data, wave_data)
 
         # two body
         # TODO: define separate sampler that feeds uniform_rns instead of gaussian_rns
@@ -1097,18 +1108,7 @@ class propagator_cpmc_slow(propagator_cpmc_unrestricted, propagator_unrestricted
         prop_data, _ = lax.scan(scanned_fun, prop_data, jnp.arange(trial.norb))
 
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
-        )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
-        )
-        overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
-        prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
-        prop_data["weights"] = jnp.array(
-            jnp.where(prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"])
-        )
-        prop_data["overlaps"] = overlaps_new
+        prop_data = self.propagate_one_body(trial, ham_data, prop_data, wave_data)
 
         prop_data["weights"] *= jnp.exp(self.dt * (prop_data["pop_control_ene_shift"]))
         prop_data["weights"] = jnp.where(

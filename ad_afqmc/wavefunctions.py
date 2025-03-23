@@ -682,6 +682,60 @@ class wave_function_cpmc(wave_function):
 
 
 @dataclass
+class sum_state_cpmc(wave_function_cpmc):
+    """Sum of multiple states. wave_data should contain the coeffs in the expansion."""
+
+    norb: int
+    nelec: Tuple[int, int]
+    states: Tuple[wave_function, ...]
+    n_batch: int = 1
+
+    @partial(jit, static_argnums=0)
+    def calc_full_green_vmap(self, walkers: Sequence, wave_data: Any) -> jax.Array:
+        coeffs = wave_data["coeffs"]
+        return jnp.sum(
+            jnp.array(
+                [
+                    state.calc_full_green_vmap(walkers, wave_data[f"{i}"])
+                    * coeffs[i]
+                    for i, state in enumerate(self.states)
+                ]
+            )
+        )
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy(self, walker_up, walker_dn, ham_data, wave_data):
+        coeffs = wave_data["coeffs"]
+        energies_i = jnp.array(
+            [
+                state._calc_energy(
+                    walker_up, walker_dn, ham_data[f"{i}"], wave_data[f"{i}"]
+                )
+                for i, state in enumerate(self.states)
+            ]
+        )
+        overlaps_i = jnp.array(
+            [
+                state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
+                for i, state in enumerate(self.states)
+            ]
+        )
+        return jnp.sum(energies_i * overlaps_i * coeffs) / jnp.sum(overlaps_i * coeffs)
+
+    @partial(jit, static_argnums=0)
+    def _build_measurement_intermediates(self, ham_data, wave_data):
+        for i, state in enumerate(self.states):
+            ham_data[f"{i}"] = ham_data.copy()
+            ham_data[f"{i}"] = state._build_measurement_intermediates(
+                ham_data[f"{i}"], wave_data[f"{i}"]
+            )
+        return ham_data
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
 class sum_state(wave_function):
     """Sum of multiple states. wave_data should contain the coeffs in the expansion."""
 
