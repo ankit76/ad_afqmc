@@ -715,7 +715,8 @@ class propagator_cpmc_unrestricted(propagator_unrestricted):
                 prop_data["walkers"], wave_data
             )
         except:
-            print("# assuming cpmc_slow\n#")
+            pass
+            #print("# assuming cpmc_slow\n#")
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))
         const = jnp.exp(-self.dt * ham_data["u"] / 2)
         prop_data["hs_constant"] = const * jnp.array(
@@ -1009,7 +1010,7 @@ class propagator_cpmc_slow(propagator_cpmc_unrestricted, propagator_unrestricted
     @partial(jit, static_argnums=(0, 1))
     def propagate_one_body(
         self,
-        trial: wavefunctions.wave_function_cpmc,
+        trial: wavefunctions.wave_function,
         ham_data: dict,
         prop_data: dict,
         wave_data: dict,
