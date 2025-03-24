@@ -10,7 +10,7 @@ from pyscf import fci, gto, scf, mcscf, ao2mo
 from pyscf.fci import cistring
 from io_tools import check_dir
 
-module_path = os.path.abspath(os.path.join("/burg/ccce/users/su2254/ad_afqmc"))
+module_path = os.path.abspath(os.path.join("/projects/bcdd/shufay/ad_afqmc"))
 if module_path not in sys.path:
     sys.path.append(module_path)
 
@@ -168,7 +168,7 @@ verbose = args.verbose if rank == 0 else 0
 if verbose: print(f'\n# Boundary condition: {bc}')
 
 # For saving.
-tmpdir = f'/burg/ccce/users/su2254/ad_afqmc/hubbard_tri/cas/{nx}x{ny}/{bc}/cas_ndet=2/U={U}'
+tmpdir = f'/projects/bcdd/shufay/ad_afqmc/hubbard_tri/cas/{nx}x{ny}/{bc}/cas_ndet=2/U={U}'
 jobid = ''
 try: jobid = '.' + os.environ["SLURM_JOB_ID"]
 except: pass
@@ -235,12 +235,12 @@ if rank == 0:
 comm.Barrier()
 options = {
     "dt": 0.005,
-    "n_eql": 200,
+    "n_eql": 500,
     "n_ene_blocks_eql": 1,
     "n_sr_blocks_eql": 1,
     "n_ene_blocks": 1,
     "n_sr_blocks": 5,
-    "n_blocks": 200,
+    "n_blocks": 300,
     "n_prop_steps": 50,
     "n_walkers": nwalkers,
     "seed": 98,

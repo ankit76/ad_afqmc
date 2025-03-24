@@ -16,8 +16,8 @@ declare -a ncas_arr=(
 )
 
 declare -a U_arr=(
-    #[0]=4.0 
-    #[1]=8.0 
+    [0]=4.0 
+    [1]=8.0 
     [2]=12.0
 )
 
@@ -26,7 +26,7 @@ run_cpmc=1
 nwalkers=20
 det_tol=0.5
 verbose=3
-outdir="/burg/ccce/users/su2254/ad_afqmc/hubbard_tri/cas"
+outdir="/projects/bcdd/shufay/ad_afqmc/hubbard_tri/cas/${nx}x${ny}/${bc}"
 
 echo "nx, ny = $nx, $ny"
 
@@ -44,7 +44,7 @@ for i in "${!nup_arr[@]}"; do
 
     for U in ${U_arr[@]}; do
         echo "U = $U"
-        mkdir -p "${outdir}/${nx}x${ny}/${bc}/cas_ndet=2/U=${U}"
+        mkdir -p "${outdir}/cas_ndet=2/U=${U}"
         jobname="afqmc_hubbard_${nx}x${ny}_nelec=(${nup},${ndown})_U=${U}"
         
         if [[ $run_cpmc == "1" ]]; then
@@ -52,8 +52,8 @@ for i in "${!nup_arr[@]}"; do
         fi
 
         sbatch -J ${jobname} \
-               -o "U=${U}/${jobname}.%j.out" \
-               -e "U=${U}/${jobname}.%j.err" \
+               -o "${outdir}/cas_ndet=2/U=${U}/${jobname}.%j.out" \
+               -e "${outdir}/cas_ndet=2/U=${U}/${jobname}.%j.err" \
                srun_cas_ndet=2.sh ${U} ${nup} ${ndown} ${nup_cas} ${ndown_cas} ${nx} ${ny} ${ncas} ${nwalkers} ${bc} ${run_cpmc} ${det_tol} ${verbose}
         echo
     done
