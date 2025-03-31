@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import dtypes, jvp, random, vjp
 
-from ad_afqmc import hamiltonian, propagation, sampling, stat_utils, wavefunctions, misc
+from ad_afqmc import hamiltonian, misc, propagation, sampling, stat_utils, wavefunctions
 
 print = partial(print, flush=True)
 
@@ -48,7 +48,7 @@ def afqmc_energy(
     size = comm.Get_size()
     rank = comm.Get_rank()
     seed = options["seed"]
-    
+
     if rank == 0:
         sha1, branch, local_mods = misc.get_git_info()
         sys_info = misc.print_env_info(sha1, branch, local_mods)
@@ -73,11 +73,15 @@ def afqmc_energy(
     init_time = time.time() - init
     if rank == 0:
         print("# Equilibration sweeps:")
-        print(f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}")
-        #print("#   Iter        Block energy      Walltime")
+        print(
+            f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}"
+        )
+        # print("#   Iter        Block energy      Walltime")
         n = 0
-        print(f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} ")
-        #print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+        print(
+            f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
+        )
+        # print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
     n_ene_blocks_eql = options["n_ene_blocks_eql"]
@@ -161,10 +165,11 @@ def afqmc_energy(
                 comm,
                 tmpdir,
             )
-            try:
-                print(f"node encounters: {prop_data['node_crossings']}")
-            except:
-                pass
+            if rank == 0:
+                try:
+                    print(f"node encounters on proc 0: {prop_data['node_crossings']}")
+                except:
+                    pass
 
     # Analysis phase
     comm.Barrier()
@@ -465,13 +470,13 @@ def _run_equilibration(
         if rank == 0:
             if n % (max(sampler_eq.n_blocks // 5, 1)) == 0:
                 print(
-                        f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9e} {time.time() - init:<10.2e} ",
+                    f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9e} {time.time() - init:<10.2e} ",
                     flush=True,
                 )
-                #print(
+                # print(
                 #    f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ",
                 #    flush=True,
-                #)
+                # )
         comm.Barrier()
     return prop_data
 
