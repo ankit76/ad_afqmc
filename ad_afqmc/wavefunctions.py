@@ -1782,6 +1782,8 @@ class multislater(wave_function_auto):
         Bdes: Beta destruction indices.
         coeff: Coefficients of the determinants.
         ref_det: Reference determinant.
+        orbital_rotation: Rotation matrix to transform afqmc basis walkers
+        to wave function CI orbital basis.
     """
 
     norb: int
@@ -1808,14 +1810,16 @@ class multislater(wave_function_auto):
     @partial(jit, static_argnums=0)
     def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> complex:
         """Calclulates < psi_T | walker > efficiently using Wick's theorem"""
-        Acre, Ades, Bcre, Bdes, coeff, ref_det = (
+        Acre, Ades, Bcre, Bdes, coeff, ref_det, orbital_rotation = (
             wave_data["Acre"],
             wave_data["Ades"],
             wave_data["Bcre"],
             wave_data["Bdes"],
             wave_data["coeff"],
             wave_data["ref_det"],
+            wave_data["orbital_rotation"],
         )
+        walker = orbital_rotation @ walker
         green = self._calc_green_restricted(walker, wave_data)
 
         # overlap with the reference determinant
@@ -1872,14 +1876,17 @@ class multislater(wave_function_auto):
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> complex:
         """Calclulates < psi_T | walker > efficiently using Wick's theorem"""
-        Acre, Ades, Bcre, Bdes, coeff, ref_det = (
+        Acre, Ades, Bcre, Bdes, coeff, ref_det, orbital_rotation = (
             wave_data["Acre"],
             wave_data["Ades"],
             wave_data["Bcre"],
             wave_data["Bdes"],
             wave_data["coeff"],
             wave_data["ref_det"],
+            wave_data["orbital_rotation"],
         )
+        walker_up = orbital_rotation[0] @ walker_up
+        walker_dn = orbital_rotation[1] @ walker_dn
         green = self._calc_green(walker_up, walker_dn, wave_data)
 
         # overlap with the reference determinant
