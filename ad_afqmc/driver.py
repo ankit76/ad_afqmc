@@ -155,6 +155,10 @@ def afqmc_energy(
                 comm,
                 tmpdir,
             )
+            try:
+                print(f"node encounters: {prop_data['node_crossings']}")
+            except:
+                pass
 
     # Analysis phase
     comm.Barrier()
