@@ -57,28 +57,6 @@ def frobenius(n, coefficients, target):
     return solutions
 
 
-def frobenius_0(n, coefficients, target):
-    def backtrack(index, current_solution):
-        nonlocal solutions
-
-        # Base case: when we have n integers in the solution
-        if index == n:
-            # Check if the current solution satisfies the Frobenius equation
-            if sum([coefficients[i] * current_solution[i] for i in range(n)]) == target:
-                solutions.append(jnp.array(current_solution))
-            return
-
-        # Recursive case: for each possible value of the current integer
-        for i in range(target + 1):
-            current_solution[index] = i
-            backtrack(index + 1, current_solution)
-
-    solutions = []
-    current_solution = [0] * n
-    backtrack(0, current_solution)
-    return solutions
-
-
 class lattice(ABC):
     """Abstract base class for lattice objects."""
 
@@ -300,23 +278,23 @@ class two_dimensional_grid(lattice):
         bond_distances = [*set(bond_distances)]
         bond_distances.sort()
         self.bond_shell_distances = tuple(bond_distances)
-        if (self.l_x == 2) & (self.l_y == 2):
-            self.bonds = ((0, 0, 0), (0, 0, 1), (1, 0, 0), (1, 1, 0))
-        elif self.l_x == 2:
-            self.bonds = tuple(
-                [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-                + [(1, i, 0) for i in range(self.l_y)]
-            )
-        elif self.l_y == 2:
-            self.bonds = tuple(
-                [(0, 0, i) for i in self.l_x]
-                + [(1, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-            )
-        else:
-            self.bonds = tuple(
-                [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-                + [(1, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-            )
+        # if (self.l_x == 2) & (self.l_y == 2):
+        #     self.bonds = ((0, 0, 0), (0, 0, 1), (1, 0, 0), (1, 1, 0))
+        # elif self.l_x == 2:
+        #     self.bonds = tuple(
+        #         [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
+        #         + [(1, i, 0) for i in range(self.l_y)]
+        #     )
+        # elif self.l_y == 2:
+        #     self.bonds = tuple(
+        #         [(0, 0, i) for i in self.l_x]
+        #         + [(1, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
+        #     )
+        # else:
+        self.bonds = tuple(
+            [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
+            + [(1, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
+        )
 
     def get_site_num(self, pos):
         return pos[1] + self.l_x * pos[0]
