@@ -664,7 +664,9 @@ def finite_difference_properties(
     return obs_mf, obs_mp2, obs_ccsd, obs_ccsdpt
 
 
-def get_fci_state(fci: Any, ndets: Optional[int] = None, tol: float = 1.0e-4) -> dict:
+def get_fci_state(
+    fci: Any, ndets: Optional[int] = None, tol: float = 1.0e-4, root=0
+) -> dict:
     """Get FCI state from a pyscf FCI object.
 
     Args:
@@ -676,6 +678,8 @@ def get_fci_state(fci: Any, ndets: Optional[int] = None, tol: float = 1.0e-4) ->
         Dictionary with determinants as keys and coefficients as values.
     """
     ci_coeffs = fci.ci
+    if isinstance(ci_coeffs, list):
+        ci_coeffs = ci_coeffs[root]
     norb = fci.norb
     nelec = fci.nelec
     if ndets is None:
