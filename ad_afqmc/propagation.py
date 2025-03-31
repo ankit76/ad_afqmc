@@ -342,12 +342,15 @@ class propagator_unrestricted(propagator_restricted):
             prop_data["walkers"] = trial.get_init_walkers(
                 wave_data, self.n_walkers, restricted=False
             )
-        energy_samples = jnp.real(
-            trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        )
-        e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
-        prop_data["e_estimate"] = e_estimate
-        prop_data["pop_control_ene_shift"] = e_estimate
+        if "e_estimate" in ham_data:
+            prop_data["e_estimate"] = ham_data["e_estimate"]
+        else:
+            energy_samples = jnp.real(
+                trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+            )
+            e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
+            prop_data["e_estimate"] = e_estimate
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["normed_overlaps"] = prop_data["overlaps"]
         prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
