@@ -37,7 +37,7 @@ from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
 print = partial(print, flush=True)
 
 
-def _prep_afqmc(options=None, tmpdir="."):
+def _prep_afqmc(options=None):
     if rank == 0:
         print(f"# Number of MPI ranks: {size}\n#")
 
