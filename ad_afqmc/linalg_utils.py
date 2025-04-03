@@ -49,14 +49,14 @@ def _eigh_jvp_jitted_nob(v, Fmat, at):
 
 
 @jit
-def qr_vmap(walkers):
+def qr_vmap_restricted(walkers):
     walkers, r = vmap(jnp.linalg.qr)(walkers)
     norm_factors = vmap(lambda x: jnp.prod(jnp.diag(x)))(r)
     return walkers, norm_factors
 
 
 @jit
-def qr_vmap_uhf(walkers):
+def qr_vmap_unrestricted(walkers):
     walkers[0], r_0 = vmap(jnp.linalg.qr)(walkers[0])
     walkers[1], r_1 = vmap(jnp.linalg.qr)(walkers[1])
     norm_factors_0 = vmap(lambda x: jnp.prod(jnp.diag(x)))(r_0)
