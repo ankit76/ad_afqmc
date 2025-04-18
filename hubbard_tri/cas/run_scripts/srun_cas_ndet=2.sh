@@ -4,12 +4,8 @@
 #
 #SBATCH --account=ccce           # Replace ACCOUNT with your group account name
 #SBATCH -N 1                     # The number of nodes to request                      
-<<<<<<< Updated upstream
 #SBATCH --ntasks=20              # Total number of tasks                               
 #SBATCH --ntasks-per-node=20                                                       
-=======
-#SBATCH --ntasks-per-node=1     
->>>>>>> Stashed changes
 #SBATCH --cpus-per-task=1        # The number of cpu cores to use (up to 112 cores per server)
 #SBATCH --mem=40G               # The memory the job will use per cpu core            
 #SBATCH --time=0-4:00:00        # The time the job will take to run in D-HH:MM
@@ -21,10 +17,6 @@
 # -----------------------------------------------------------------------------
 # Prelims
 # -----------------------------------------------------------------------------
-export SCRATCHDIR="/burg/ccce/users/su2254"
-export HOMEDIR="/burg/home/su2254"
-export TMPDIR=${SCRATCHDIR}
-
 # Activate Anaconda work environment                                               
 source $HOME/.bashrc                                                               
 conda deactivate                                                                   
@@ -33,25 +25,14 @@ conda activate ad_afqmc
                                                                                    
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK                                        
-<<<<<<< Updated upstream
-=======
 
 export PYTHONPATH=/burg/home/su2254/libs/shufay_pyscf
 export PYTHONPATH=/burg/ccce/users/su2254/ad_afqmc_fresh:$PYTHONPATH
 echo "PYTHONPATH: $PYTHONPATH"
->>>>>>> Stashed changes
                                                                                    
 # Print the essential SLURM job parameters
 echo "SLURM job details:"                                                          
 scontrol show job $SLURM_JOB_ID
-echo 
-
-# Echo
-echo "SCRATCHDIR=${SCRATCHDIR}"
-echo "HOMEDIR=${HOMEDIR}"
-echo "TMPDIR=${TMPDIR}"
-echo
-echo "========================================================================"
 echo 
 
 # Inputs.

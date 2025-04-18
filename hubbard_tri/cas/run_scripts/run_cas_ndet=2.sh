@@ -16,29 +16,17 @@ declare -a ncas_arr=(
 )
 
 declare -a U_arr=(
-    #[0]=4.0 
-<<<<<<< Updated upstream
-    #[1]=8.0 
-    [2]=12.0
-=======
+    [0]=4.0 
     [1]=8.0 
-    #[2]=12.0
->>>>>>> Stashed changes
+    [2]=12.0
 )
 
 bc='open_x'
 run_cpmc=1
-<<<<<<< Updated upstream
-nwalkers=20
-det_tol=0.5
-verbose=3
-outdir="/burg/ccce/users/su2254/ad_afqmc/hubbard_tri/cas"
-=======
 nwalkers=50
 det_tol=0.5
 verbose=3
 outdir="/burg/ccce/users/su2254/ad_afqmc/hubbard_tri/cas/${nx}x${ny}/${bc}"
->>>>>>> Stashed changes
 
 echo "nx, ny = $nx, $ny"
 
@@ -56,11 +44,7 @@ for i in "${!nup_arr[@]}"; do
 
     for U in ${U_arr[@]}; do
         echo "U = $U"
-<<<<<<< Updated upstream
-        mkdir -p "${outdir}/${nx}x${ny}/${bc}/cas_ndet=2/U=${U}"
-=======
         mkdir -p "${outdir}/cas_ndet=2/U=${U}"
->>>>>>> Stashed changes
         jobname="afqmc_hubbard_${nx}x${ny}_nelec=(${nup},${ndown})_U=${U}"
         
         if [[ $run_cpmc == "1" ]]; then
@@ -68,13 +52,8 @@ for i in "${!nup_arr[@]}"; do
         fi
 
         sbatch -J ${jobname} \
-<<<<<<< Updated upstream
-               -o "U=${U}/${jobname}.%j.out" \
-               -e "U=${U}/${jobname}.%j.err" \
-=======
                -o "${outdir}/cas_ndet=2/U=${U}/${jobname}.%j.out" \
                -e "${outdir}/cas_ndet=2/U=${U}/${jobname}.%j.err" \
->>>>>>> Stashed changes
                srun_cas_ndet=2.sh ${U} ${nup} ${ndown} ${nup_cas} ${ndown_cas} ${nx} ${ny} ${ncas} ${nwalkers} ${bc} ${run_cpmc} ${det_tol} ${verbose}
         echo
     done
