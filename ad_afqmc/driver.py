@@ -243,9 +243,15 @@ def afqmc_observable(
     init_time = time.time() - init
     if rank == 0:
         print("# Equilibration sweeps:")
-        print("#   Iter        Block energy      Walltime")
+        print(
+            f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}"
+        )
+        # print("#   Iter        Block energy      Walltime")
         n = 0
-        print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+        print(
+            f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
+        )
+        # print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
     n_ene_blocks_eql = options["n_ene_blocks_eql"]
@@ -290,7 +296,7 @@ def afqmc_observable(
         global_block_weights = np.zeros(size * sampler.n_blocks)
         global_block_energies = np.zeros(size * sampler.n_blocks)
         global_block_observables = np.zeros(size * sampler.n_blocks)
-        if options["ad_mode"] == "reverse":
+        if options["ad_mode"] in ["reverse", "mixed"]:
             global_block_rdm1s = np.zeros(
                 (size * sampler.n_blocks, *(ham_data["h1"].shape))
             )
@@ -302,89 +308,159 @@ def afqmc_observable(
         options, ham, ham_data, propagator, trial, wave_data, sampler
     )
 
-    # Initialize prop_data_tangent and block data
-    prop_data_tangent = _init_prop_data_tangent(prop_data)
-    block_rdm1_n = np.zeros_like(ham_data["h1"])
-    block_rdm2_n = None
-    if options["ad_mode"] == "2rdm":
-        block_rdm2_n = np.zeros_like(rdm_2_op)
-
-    # Run sampling with AD
     local_large_deviations = np.array(0)
-    for n in range(sampler.n_blocks):
-        # Execute appropriate AD mode
-        (
-            block_energy_n,
-            block_observable_n,
-            block_rdm1_n,
-            block_rdm2_n,
-            prop_data,
-            local_large_deviations,
-        ) = _run_ad_step(
-            options["ad_mode"],
-            propagate_phaseless_wrapper,
-            observable_op,
-            observable_constant,
-            rdm_op,
-            rdm_2_op,
-            trial_observable,
-            trial_rdm1,
-            trial_rdm2,
-            prop_data,
-            prop_data_tangent,
-            block_rdm1_n,
-            block_rdm2_n,
-            local_large_deviations,
-        )
 
-        # Gather results
-        (
-            block_energy_n,
-            global_block_weights,
-            global_block_energies,
-            global_block_observables,
-            global_block_rdm1s,
-            global_block_rdm2s,
-        ) = _gather_ad_results(
-            block_energy_n,
-            block_observable_n,
-            block_weight_n=np.array([jnp.sum(prop_data["weights"])], dtype="float32"),
-            block_rdm1_n=block_rdm1_n,
-            block_rdm2_n=block_rdm2_n,
-            global_block_weights=global_block_weights,
-            global_block_energies=global_block_energies,
-            global_block_observables=global_block_observables,
-            global_block_rdm1s=global_block_rdm1s,
-            global_block_rdm2s=global_block_rdm2s,
-            n=n,
-            size=size,
-            rank=rank,
-            comm=comm,
-            ad_mode=options["ad_mode"],
-        )
+    if options["ad_mode"] == "mixed":
+        # Run sampling with AD
+        for n in range(sampler.n_blocks):
+            # Execute appropriate AD mode
+            block_energy_n, prop_data = sampler.propagate_phaseless(
+                ham, ham_data, propagator, prop_data, trial, wave_data
+            )
+        
+            block_energy_n = np.array([block_energy_n], dtype="float32")
+            block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
+            block_rdm1_n = np.array(prop_data["block_rdm1"], dtype="float32")
+            block_observable_n = np.sum(block_rdm1_n * observable_op)
+            block_observable_n = np.array([block_observable_n], dtype="float32")
+            
+            if np.isnan(block_observable_n) or np.isinf(block_observable_n):
+                block_observable_n = trial_observable
+                block_rdm1_n = trial_rdm1
+                local_large_deviations += 1
 
-        # Update walkers
-        block_energy_n = comm.bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
-        if options["save_walkers"] == True:
-            _save_walkers(prop_data, n, tmpdir, rank)
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
-        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
+            gather_weights = np.zeros(0, dtype="float32")
+            gather_energies = np.zeros(0, dtype="float32")
+            gather_observables = None
+            gather_rdm1s = None
 
-        # Print progress and save intermediate results
-        if n % (max(sampler.n_blocks // 10, 1)) == 0:
-            _print_progress_observable(
-                n,
+            if rank == 0:
+                gather_weights = np.zeros(size, dtype="float32")
+                gather_energies = np.zeros(size, dtype="float32")
+                gather_observables = np.zeros(size, dtype="float32")
+                gather_rdm1s = np.zeros((size, *block_rdm1_n.shape), dtype="float32")
+
+            comm.Gather(block_weight_n, gather_weights, root=0)
+            comm.Gather(block_energy_n, gather_energies, root=0)
+            comm.Gather(block_observable_n, gather_observables, root=0)
+            comm.Gather(block_rdm1_n, gather_rdm1s, root=0)
+
+            if rank == 0:
+                global_block_weights[n * size : (n + 1) * size] = gather_weights
+                global_block_energies[n * size : (n + 1) * size] = gather_energies
+                global_block_rdm1s[n * size : (n + 1) * size] = gather_rdm1s
+                global_block_observables[n * size : (n + 1) * size] = gather_observables
+                block_energy_n = np.sum(gather_weights * gather_energies) / np.sum(
+                    gather_weights
+                )
+            
+            # Update walkers
+            block_energy_n = comm.bcast(block_energy_n, root=0)
+            prop_data = propagator.orthonormalize_walkers(prop_data)
+            if options["save_walkers"] == True:
+                _save_walkers(prop_data, n, tmpdir, rank)
+            prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+            prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
+            prop_data["block_rdm1"] = jnp.zeros((2, trial.norb, trial.norb))
+
+            # Print progress and save intermediate results
+            if n % (max(sampler.n_blocks // 10, 1)) == 0:
+                _print_progress_observable(
+                    n,
+                    global_block_weights,
+                    global_block_energies,
+                    global_block_observables,
+                    size,
+                    rank,
+                    init,
+                    comm,
+                    tmpdir,
+                    options["ad_mode"],
+                )
+
+    else:
+        # Initialize prop_data_tangent and block data
+        prop_data_tangent = _init_prop_data_tangent(prop_data)
+        block_rdm1_n = np.zeros_like(ham_data["h1"])
+        block_rdm2_n = None
+        if options["ad_mode"] == "2rdm":
+            block_rdm2_n = np.zeros_like(rdm_2_op)
+
+        # Run sampling with AD
+        for n in range(sampler.n_blocks):
+            # Execute appropriate AD mode
+            (
+                block_energy_n,
+                block_observable_n,
+                block_rdm1_n,
+                block_rdm2_n,
+                prop_data,
+                local_large_deviations,
+            ) = _run_ad_step(
+                options["ad_mode"],
+                propagate_phaseless_wrapper,
+                observable_op,
+                observable_constant,
+                rdm_op,
+                rdm_2_op,
+                trial_observable,
+                trial_rdm1,
+                trial_rdm2,
+                prop_data,
+                prop_data_tangent,
+                block_rdm1_n,
+                block_rdm2_n,
+                local_large_deviations,
+            )
+
+            # Gather results
+            (
+                block_energy_n,
                 global_block_weights,
                 global_block_energies,
                 global_block_observables,
-                size,
-                rank,
-                init,
-                comm,
-                tmpdir,
-                options["ad_mode"],
+                global_block_rdm1s,
+                global_block_rdm2s,
+            ) = _gather_ad_results(
+                block_energy_n,
+                block_observable_n,
+                block_weight_n=np.array([jnp.sum(prop_data["weights"])], dtype="float32"),
+                block_rdm1_n=block_rdm1_n,
+                block_rdm2_n=block_rdm2_n,
+                global_block_weights=global_block_weights,
+                global_block_energies=global_block_energies,
+                global_block_observables=global_block_observables,
+                global_block_rdm1s=global_block_rdm1s,
+                global_block_rdm2s=global_block_rdm2s,
+                n=n,
+                size=size,
+                rank=rank,
+                comm=comm,
+                ad_mode=options["ad_mode"],
             )
+
+            # Update walkers
+            block_energy_n = comm.bcast(block_energy_n, root=0)
+            prop_data = propagator.orthonormalize_walkers(prop_data)
+            if options["save_walkers"] == True:
+                _save_walkers(prop_data, n, tmpdir, rank)
+            prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+            prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
+
+            # Print progress and save intermediate results
+            if n % (max(sampler.n_blocks // 10, 1)) == 0:
+                _print_progress_observable(
+                    n,
+                    global_block_weights,
+                    global_block_energies,
+                    global_block_observables,
+                    size,
+                    rank,
+                    init,
+                    comm,
+                    tmpdir,
+                    options["ad_mode"],
+                )
 
     # Report large deviations
     global_large_deviations = np.array(0)
@@ -887,7 +963,7 @@ def _analyze_observable_results(
         clean_energies = samples_clean[:, 1]
         clean_observables = samples_clean[:, 2]
 
-        if ad_mode == "reverse":
+        if ad_mode in ["reverse", "mixed"]:
             clean_rdm1s = (
                 global_block_rdm1s[idx] if global_block_rdm1s is not None else None
             )
@@ -928,14 +1004,14 @@ def _analyze_observable_results(
             print(
                 f"AFQMC observable: {sig_obs:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n"
             )
+            np.savetxt(tmpdir + "/obs_err.txt", np.array([obs_afqmc, obs_err_afqmc]))
         elif obs_afqmc is not None:
             print(f"AFQMC observable: {obs_afqmc}\n", flush=True)
 
         observable_data = {"obs_afqmc": obs_afqmc, "obs_err_afqmc": obs_err_afqmc}
-        np.savetxt(tmpdir + "/obs_err.txt", np.array([obs_afqmc, obs_err_afqmc]))
 
         # Additional analysis based on AD mode
-        if ad_mode == "reverse" and clean_rdm1s is not None:
+        if (ad_mode in ["reverse", "mixed"]) and (clean_rdm1s is not None):
             # Calculate average RDM1
             norms_rdm1 = np.array(list(map(np.linalg.norm, clean_rdm1s)))
             samples_clean_rdm, idx_rdm = stat_utils.reject_outliers(

@@ -528,6 +528,7 @@ class propagator_cpmc(propagator_unrestricted):
             prop_data["greens"] = trial.calc_full_green_vmap(
                 prop_data["walkers"], wave_data
             )
+            prop_data["block_rdm1"] = jnp.zeros((2, trial.norb, trial.norb))
         except:
             pass
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))

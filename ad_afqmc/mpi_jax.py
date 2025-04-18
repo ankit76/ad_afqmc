@@ -37,7 +37,7 @@ from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
 print = partial(print, flush=True)
 
 
-def _prep_afqmc(options=None):
+def _prep_afqmc(options=None, tmpdir="."):
     if rank == 0:
         print(f"# Number of MPI ranks: {size}\n#")
 
@@ -74,7 +74,7 @@ def _prep_afqmc(options=None):
     options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
     options["n_eql"] = options.get("n_eql", 1)
     options["ad_mode"] = options.get("ad_mode", None)
-    assert options["ad_mode"] in [None, "forward", "reverse", "2rdm"]
+    assert options["ad_mode"] in [None, "forward", "reverse", "2rdm", "mixed"]
     options["orbital_rotation"] = options.get("orbital_rotation", True)
     options["do_sr"] = options.get("do_sr", True)
     options["walker_type"] = options.get("walker_type", "rhf")
@@ -212,13 +212,23 @@ def _prep_afqmc(options=None):
                 options["n_walkers"],
                 n_batch=options["n_batch"],
             )
+    
+    if options["ad_mode"] == "mixed":
+        sampler = sampling.sampler_mixed(
+            options["n_prop_steps"],
+            options["n_ene_blocks"],
+            options["n_sr_blocks"],
+            options["n_blocks"],
+        )
 
-    sampler = sampling.sampler(
-        options["n_prop_steps"],
-        options["n_ene_blocks"],
-        options["n_sr_blocks"],
-        options["n_blocks"],
-    )
+
+    else:
+        sampler = sampling.sampler(
+            options["n_prop_steps"],
+            options["n_ene_blocks"],
+            options["n_sr_blocks"],
+            options["n_blocks"],
+        )
 
     if rank == 0:
         print(f"# norb: {norb}")
