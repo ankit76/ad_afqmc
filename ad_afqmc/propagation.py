@@ -714,6 +714,7 @@ class propagator_cpmc_unrestricted(propagator_unrestricted):
             prop_data["greens"] = trial.calc_full_green_vmap(
                 prop_data["walkers"], wave_data
             )
+            prop_data["block_rdm1"] = jnp.zeros((2, trial.norb, trial.norb))
         except:
             pass
             #print("# assuming cpmc_slow\n#")

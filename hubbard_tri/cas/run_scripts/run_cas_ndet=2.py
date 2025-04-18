@@ -27,7 +27,10 @@ from ad_afqmc import (
     propagation,
     wavefunctions,
     hamiltonian,
+<<<<<<< Updated upstream
     hf_guess
+=======
+>>>>>>> Stashed changes
 )
 
 np.set_printoptions(precision=5, suppress=True)
@@ -175,7 +178,13 @@ except: pass
 
 # -----------------------------------------------------------------------------
 # Settings.
+<<<<<<< Updated upstream
 lattice = lattices.triangular_grid(nx, ny, boundary_condition=bc)
+=======
+open_x = False
+if bc == 'open_x': open_x = True
+lattice = lattices.triangular_grid(nx, ny, open_x=open_x)
+>>>>>>> Stashed changes
 n_sites = lattice.n_sites
 n_elec = (nup, ndown)
 nocc = sum(n_elec)
@@ -235,12 +244,20 @@ if rank == 0:
 comm.Barrier()
 options = {
     "dt": 0.005,
+<<<<<<< Updated upstream
     "n_eql": 200,
+=======
+    "n_eql": 500,
+>>>>>>> Stashed changes
     "n_ene_blocks_eql": 1,
     "n_sr_blocks_eql": 1,
     "n_ene_blocks": 1,
     "n_sr_blocks": 5,
+<<<<<<< Updated upstream
     "n_blocks": 200,
+=======
+    "n_blocks": 300,
+>>>>>>> Stashed changes
     "n_prop_steps": 50,
     "n_walkers": nwalkers,
     "seed": 98,
