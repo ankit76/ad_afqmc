@@ -1,0 +1,10 @@
+*.h5
+*.csv
+*.npz
+*.dat
+*.sw*
+*__pycache__/
+*.ipynb_checkpoints/
+hubbard_tri/ghf/
+hubbard_tri/qmc/
+hubbard_tri/integrals/
