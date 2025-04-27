@@ -87,6 +87,7 @@ def _prep_afqmc(options=None):
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
     options["n_batch"] = options.get("n_batch", 1)
+    options["vhs_mixed_precision"] = options.get("vhs_mixed_precision", False)
 
     try:
         with h5py.File(tmpdir + "/observable.h5", "r") as fh5:
@@ -189,10 +190,18 @@ def _prep_afqmc(options=None):
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
             ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
-
-        prop = propagation.propagator_restricted(
-            options["dt"], options["n_walkers"], n_batch=options["n_batch"]
-        )
+        if options["vhs_mixed_precision"]:
+            prop = propagation.propagator_restricted(
+                options["dt"],
+                options["n_walkers"],
+                n_batch=options["n_batch"],
+                vhs_real_dtype=jnp.float32,
+                vhs_complex_dtype=jnp.complex64,
+            )
+        else:
+            prop = propagation.propagator_restricted(
+                options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+            )
 
     elif options["walker_type"] == "uhf":
         if options["symmetry"]:
@@ -207,11 +216,20 @@ def _prep_afqmc(options=None):
                 n_batch=options["n_batch"],
             )
         else:
-            prop = propagation.propagator_unrestricted(
-                options["dt"],
-                options["n_walkers"],
-                n_batch=options["n_batch"],
-            )
+            if options["vhs_mixed_precision"]:
+                prop = propagation.propagator_unrestricted(
+                    options["dt"],
+                    options["n_walkers"],
+                    n_batch=options["n_batch"],
+                    vhs_real_dtype=jnp.float32,
+                    vhs_complex_dtype=jnp.complex64,
+                )
+            else:
+                prop = propagation.propagator_unrestricted(
+                    options["dt"],
+                    options["n_walkers"],
+                    n_batch=options["n_batch"],
+                )
 
     sampler = sampling.sampler(
         options["n_prop_steps"],

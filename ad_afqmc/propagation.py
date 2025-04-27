@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import jit, lax, random, vmap
+from jax._src.typing import DTypeLike
 
 from ad_afqmc import linalg_utils, sr, wavefunctions
 from ad_afqmc.wavefunctions import wave_function
@@ -205,6 +206,8 @@ class propagator_restricted(propagator):
     n_walkers: int = 50
     n_exp_terms: int = 6
     n_batch: int = 1
+    vhs_real_dtype: DTypeLike = jnp.float64
+    vhs_complex_dtype: DTypeLike = jnp.complex128
 
     def init_prop_data(
         self,
@@ -264,9 +267,9 @@ class propagator_restricted(propagator):
             vhs = (
                 1.0j
                 * jnp.sqrt(self.dt)
-                * field_batch.dot(ham_data["chol"]).reshape(
-                    batch_size, walkers.shape[1], walkers.shape[1]
-                )
+                * field_batch.astype(self.vhs_complex_dtype)
+                .dot(ham_data["chol"].astype(self.vhs_real_dtype))
+                .reshape(batch_size, walkers.shape[1], walkers.shape[1])
             )
             walkers_new = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"],
@@ -368,9 +371,9 @@ class propagator_unrestricted(propagator_restricted):
             vhs = (
                 1.0j
                 * jnp.sqrt(self.dt)
-                * field_batch.dot(ham_data["chol"]).reshape(
-                    batch_size, walkers[0].shape[1], walkers[0].shape[1]
-                )
+                * field_batch.astype(self.vhs_complex_dtype)
+                .dot(ham_data["chol"].astype(self.vhs_real_dtype))
+                .reshape(batch_size, walkers[0].shape[1], walkers[0].shape[1])
             )
             walkers_new_0 = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"][0], vhs, walker_batch_0
