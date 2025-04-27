@@ -27,6 +27,8 @@ class propagator(ABC):
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
+    vhs_real_dtype: DTypeLike = jnp.float64
+    vhs_complex_dtype: DTypeLike = jnp.complex128
 
     @abstractmethod
     def init_prop_data(
@@ -71,25 +73,23 @@ class propagator(ABC):
         self, exp_h1: jax.Array, vhs_i: jax.Array, walker_i: jax.Array
     ) -> jax.Array:
         """Apply the Trotterized propagator to a det."""
-        walker_i = exp_h1.dot(walker_i)
+        walker_i = exp_h1 @ walker_i
+        fact_recip = jnp.array(
+            [1.0 / math.factorial(n + 1) for n in range(self.n_exp_terms - 1)]
+        )
+        fact_recip = fact_recip.reshape(-1, 1, 1)
 
         def scanned_fun(carry, x):
-            carry = vhs_i.dot(carry)
+            carry = vhs_i.astype(self.vhs_complex_dtype) @ carry
             return carry, carry
 
         _, vhs_n_walker = lax.scan(
-            scanned_fun, walker_i, jnp.arange(1, self.n_exp_terms)
+            scanned_fun,
+            walker_i.astype(self.vhs_complex_dtype),
+            jnp.arange(1, self.n_exp_terms),
         )
-        walker_i = walker_i + jnp.sum(
-            jnp.stack(
-                [
-                    vhs_n_walker[n] / math.factorial(n + 1)
-                    for n in range(self.n_exp_terms - 1)
-                ]
-            ),
-            axis=0,
-        )
-        walker_i = exp_h1.dot(walker_i)
+        walker_i = walker_i + jnp.sum(vhs_n_walker * fact_recip, axis=0)
+        walker_i = exp_h1 @ walker_i
         return walker_i
 
     def _apply_trotprop(
