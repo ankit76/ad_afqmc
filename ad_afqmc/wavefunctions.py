@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial, singledispatchmethod
-from typing import Any, List, Sequence, Tuple, Union
+from typing import Any, List, Literal, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -2321,13 +2321,40 @@ class cis(wave_function):
 
 @dataclass
 class cisd(wave_function):
-    """A manual implementation of the CISD wave function."""
+    """A manual implementation of the restricted CISD wave function.
+
+    The corresponding wave_data contains "ci1" and "ci2" which are the coefficients of the single (c_ia)
+    and double (c_iajb) excitations respectively. Mixed precision and memory mode are used to optimize
+    the performance of the energy calculations.
+
+    Attributes:
+        norb: int
+            Number of orbitals.
+        nelec: Tuple[int, int]
+            Number of electrons in alpha and beta spin channels.
+        n_batch: int
+            Number of walker batches.
+        mixed_real_dtype: DTypeLike
+            Data type used for mixed precision, double precision by default.
+        mixed_complex_dtype: DTypeLike
+            Data type used for mixed precision, double precision by default.
+        memory_mode: enum
+            Memory mode for energy calculations. "high" builds O(XNM) scaling intermediates per walker,
+            "low" builds at most O(XN^2).
+    """
 
     norb: int
     nelec: Tuple[int, int]
     n_batch: int = 1
     mixed_real_dtype: DTypeLike = jnp.float64
     mixed_complex_dtype: DTypeLike = jnp.complex128
+    memory_mode: Literal["high", "low"] = "low"
+
+    def __post_init__(self):
+        if self.memory_mode not in {"low", "high"}:
+            raise ValueError(
+                f"memory_mode must be one of ['low', 'high'], got {self.memory_mode}"
+            )
 
     @partial(jit, static_argnums=0)
     def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> complex:
@@ -2404,7 +2431,7 @@ class cisd(wave_function):
         return (fb_0 + fb_1 + fb_2) / overlap
 
     @partial(jit, static_argnums=0)
-    def _calc_energy_restricted(
+    def _calc_energy_restricted_low_memory(
         self, walker: jax.Array, ham_data: dict, wave_data: dict
     ) -> complex:
         ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
@@ -2546,35 +2573,7 @@ class cisd(wave_function):
         return (e1 + e2) / overlap + e0
 
     @partial(jit, static_argnums=0)
-    def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
-        ham_data["lci1"] = jnp.einsum(
-            "git,pt->gip",
-            ham_data["chol"].reshape(-1, self.norb, self.norb)[:, :, self.nelec[0] :],
-            wave_data["ci1"],
-            optimize="optimal",
-        )
-        return ham_data
-
-    def __hash__(self):
-        return hash(tuple(self.__dict__.values()))
-
-
-@dataclass
-class cisd_faster(cisd):
-    """A manual implementation of the CISD wave function.
-
-    Faster than cisd, but the energy function builds some large intermediates, O(XMN),
-    so memory usage is high.
-    """
-
-    norb: int
-    nelec: Tuple[int, int]
-    n_batch: int = 1
-    mixed_real_dtype: DTypeLike = jnp.float64
-    mixed_complex_dtype: DTypeLike = jnp.complex128
-
-    @partial(jit, static_argnums=0)
-    def _calc_energy_restricted(
+    def _calc_energy_restricted_high_memory(
         self, walker: jax.Array, ham_data: dict, wave_data: dict
     ) -> complex:
         ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
@@ -2683,6 +2682,25 @@ class cisd_faster(cisd):
         overlap_2 = gci2g
         overlap = 1.0 + overlap_1 + overlap_2
         return (e1 + e2) / overlap + e0
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy_restricted(
+        self, walker: jax.Array, ham_data: dict, wave_data: dict
+    ) -> complex:
+        if self.memory_mode == "low":
+            return self._calc_energy_restricted_low_memory(walker, ham_data, wave_data)
+        else:
+            return self._calc_energy_restricted_high_memory(walker, ham_data, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
+        ham_data["lci1"] = jnp.einsum(
+            "git,pt->gip",
+            ham_data["chol"].reshape(-1, self.norb, self.norb)[:, :, self.nelec[0] :],
+            wave_data["ci1"],
+            optimize="optimal",
+        )
+        return ham_data
 
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))

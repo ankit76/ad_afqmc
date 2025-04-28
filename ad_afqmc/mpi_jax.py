@@ -91,6 +91,7 @@ def _prep_afqmc(options=None):
     options["trial_mixed_precision"] = options.get(
         "trial_mixed_precision", False
     )  # only relevant for cisd for now
+    options["memory_mode"] = options.get("memory_mode", "low")  # only relevant for cisd
 
     try:
         with h5py.File(tmpdir + "/observable.h5", "r") as fh5:
@@ -152,15 +153,19 @@ def _prep_afqmc(options=None):
             trial_wave_data = {"ci1": ci1, "ci2": ci2}
             wave_data.update(trial_wave_data)
             if options["trial_mixed_precision"]:
-                trial = wavefunctions.cisd(
-                    norb,
-                    nelec_sp,
-                    n_batch=options["n_batch"],
-                    mixed_real_dtype=jnp.float32,
-                    mixed_complex_dtype=jnp.complex64,
-                )
+                mixed_real_dtype = jnp.float32
+                mixed_complex_dtype = jnp.complex64
             else:
-                trial = wavefunctions.cisd(norb, nelec_sp, n_batch=options["n_batch"])
+                mixed_real_dtype = jnp.float64
+                mixed_complex_dtype = jnp.complex128
+            trial = wavefunctions.cisd(
+                norb,
+                nelec_sp,
+                n_batch=options["n_batch"],
+                mixed_real_dtype=mixed_real_dtype,
+                mixed_complex_dtype=mixed_complex_dtype,
+                memory_mode=options["memory_mode"],
+            )
         except:
             raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
     elif options["trial"] == "ucisd":
@@ -181,15 +186,18 @@ def _prep_afqmc(options=None):
             }
             wave_data.update(trial_wave_data)
             if options["trial_mixed_precision"]:
-                trial = wavefunctions.ucisd(
-                    norb,
-                    nelec_sp,
-                    n_batch=options["n_batch"],
-                    mixed_real_dtype=jnp.float32,
-                    mixed_complex_dtype=jnp.complex64,
-                )
+                mixed_real_dtype = jnp.float32
+                mixed_complex_dtype = jnp.complex64
             else:
-                trial = wavefunctions.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
+                mixed_real_dtype = jnp.float64
+                mixed_complex_dtype = jnp.complex128
+            trial = wavefunctions.ucisd(
+                norb,
+                nelec_sp,
+                n_batch=options["n_batch"],
+                mixed_real_dtype=mixed_real_dtype,
+                mixed_complex_dtype=mixed_complex_dtype,
+            )
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
     else:

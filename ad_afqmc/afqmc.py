@@ -76,6 +76,8 @@ class AFQMC:
             Use mixed precision for VHS.
         trial_mixed_precision : bool
             Use mixed precision for trial (CISD).
+        memory_mode: str
+            Memory mode, "high" or "low" (CISD).
         tmpdir : str
             Temporary directory.
     """
@@ -120,6 +122,7 @@ class AFQMC:
         self.n_batch = 1
         self.vhs_mixed_precision = False
         self.trial_mixed_precision = False
+        self.memory_mode = "low"
         self.tmpdir = __config__.TMPDIR + f"/afqmc{np.random.randint(1, int(1e6))}/"
 
     def kernel(self, dry_run=False):
