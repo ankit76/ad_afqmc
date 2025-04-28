@@ -74,6 +74,8 @@ class AFQMC:
             Number of batches, relevant for GPU calculations.
         vhs_mixed_precision : bool
             Use mixed precision for VHS.
+        trial_mixed_precision : bool
+            Use mixed precision for trial (CISD).
         tmpdir : str
             Temporary directory.
     """
@@ -117,6 +119,7 @@ class AFQMC:
         self.ene0 = 0.0
         self.n_batch = 1
         self.vhs_mixed_precision = False
+        self.trial_mixed_precision = False
         self.tmpdir = __config__.TMPDIR + f"/afqmc{np.random.randint(1, int(1e6))}/"
 
     def kernel(self, dry_run=False):
