@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import jit, lax, random, vmap
+from jax._src.typing import DTypeLike
 
 from ad_afqmc import linalg_utils, sr, wavefunctions
 from ad_afqmc.wavefunctions import wave_function
@@ -26,6 +27,8 @@ class propagator(ABC):
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
+    vhs_real_dtype: DTypeLike = jnp.float64
+    vhs_complex_dtype: DTypeLike = jnp.complex128
 
     @abstractmethod
     def init_prop_data(
@@ -70,25 +73,23 @@ class propagator(ABC):
         self, exp_h1: jax.Array, vhs_i: jax.Array, walker_i: jax.Array
     ) -> jax.Array:
         """Apply the Trotterized propagator to a det."""
-        walker_i = exp_h1.dot(walker_i)
+        walker_i = exp_h1 @ walker_i
+        fact_recip = jnp.array(
+            [1.0 / math.factorial(n + 1) for n in range(self.n_exp_terms - 1)]
+        )
+        fact_recip = fact_recip.reshape(-1, 1, 1)
 
         def scanned_fun(carry, x):
-            carry = vhs_i.dot(carry)
+            carry = vhs_i.astype(self.vhs_complex_dtype) @ carry
             return carry, carry
 
         _, vhs_n_walker = lax.scan(
-            scanned_fun, walker_i, jnp.arange(1, self.n_exp_terms)
+            scanned_fun,
+            walker_i.astype(self.vhs_complex_dtype),
+            jnp.arange(1, self.n_exp_terms),
         )
-        walker_i = walker_i + jnp.sum(
-            jnp.stack(
-                [
-                    vhs_n_walker[n] / math.factorial(n + 1)
-                    for n in range(self.n_exp_terms - 1)
-                ]
-            ),
-            axis=0,
-        )
-        walker_i = exp_h1.dot(walker_i)
+        walker_i = walker_i + jnp.sum(vhs_n_walker * fact_recip, axis=0)
+        walker_i = exp_h1 @ walker_i
         return walker_i
 
     def _apply_trotprop(
@@ -205,6 +206,8 @@ class propagator_restricted(propagator):
     n_walkers: int = 50
     n_exp_terms: int = 6
     n_batch: int = 1
+    vhs_real_dtype: DTypeLike = jnp.float64
+    vhs_complex_dtype: DTypeLike = jnp.complex128
 
     def init_prop_data(
         self,
@@ -264,9 +267,9 @@ class propagator_restricted(propagator):
             vhs = (
                 1.0j
                 * jnp.sqrt(self.dt)
-                * field_batch.dot(ham_data["chol"]).reshape(
-                    batch_size, walkers.shape[1], walkers.shape[1]
-                )
+                * field_batch.astype(self.vhs_complex_dtype)
+                .dot(ham_data["chol"].astype(self.vhs_real_dtype))
+                .reshape(batch_size, walkers.shape[1], walkers.shape[1])
             )
             walkers_new = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"],
@@ -368,9 +371,9 @@ class propagator_unrestricted(propagator_restricted):
             vhs = (
                 1.0j
                 * jnp.sqrt(self.dt)
-                * field_batch.dot(ham_data["chol"]).reshape(
-                    batch_size, walkers[0].shape[1], walkers[0].shape[1]
-                )
+                * field_batch.astype(self.vhs_complex_dtype)
+                .dot(ham_data["chol"].astype(self.vhs_real_dtype))
+                .reshape(batch_size, walkers[0].shape[1], walkers[0].shape[1])
             )
             walkers_new_0 = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"][0], vhs, walker_batch_0
