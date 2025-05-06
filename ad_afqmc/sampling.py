@@ -84,8 +84,20 @@ class sampler:
             prop_data["e_estimate"],
             energy_samples,
         )
-        block_weight = jnp.sum(prop_data["weights"])
-        block_energy = jnp.sum(energy_samples * prop_data["weights"]) / block_weight
+
+        block_weight_local = jnp.sum(prop_data["weights"])
+        block_energy_numerator_local = jnp.sum(energy_samples * prop_data["weights"])
+        block_weight = lax.psum(block_weight_local, axis_name="device")
+        block_energy_numerator = lax.psum(
+            block_energy_numerator_local, axis_name="device"
+        )
+        block_energy = (
+            block_energy_numerator / block_weight
+        )  # each device returns the same energy
+        block_weight /= len(
+            jax.devices()
+        )  # each device returns the same average weight
+
         prop_data["pop_control_ene_shift"] = (
             0.9 * prop_data["pop_control_ene_shift"] + 0.1 * block_energy
         )
@@ -117,10 +129,14 @@ class sampler:
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
         energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
         # energy_samples = jnp.where(jnp.abs(energy_samples - ham_data['ene0']) > jnp.sqrt(2./propagator.dt), ham_data['ene0'],     energy_samples)
-        block_energy = jnp.sum(energy_samples * prop_data["overlaps"]) / jnp.sum(
-            prop_data["overlaps"]
+        block_weight_local = jnp.sum(prop_data["overlaps"])
+        block_energy_numerator_local = jnp.sum(energy_samples * prop_data["overlaps"])
+        block_weight = lax.psum(block_weight_local, axis_name="device")
+        block_energy_numerator = lax.psum(
+            block_energy_numerator_local, axis_name="device"
         )
-        block_weight = jnp.sum(prop_data["overlaps"])
+        block_energy = block_energy_numerator / block_weight
+        block_weight /= len(jax.devices())
         return prop_data, (prop_data, block_energy, block_weight)
 
     @partial(jit, static_argnums=(0, 4, 5))

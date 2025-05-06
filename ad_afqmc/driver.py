@@ -8,7 +8,16 @@ import jax.numpy as jnp
 import numpy as np
 from jax import dtypes, jvp, random, vjp
 
-from ad_afqmc import hamiltonian, misc, propagation, sampling, stat_utils, wavefunctions
+from ad_afqmc import (
+    config,
+    hamiltonian,
+    misc,
+    propagation,
+    sampling,
+    sharding_utils,
+    stat_utils,
+    wavefunctions,
+)
 
 print = partial(print, flush=True)
 
@@ -79,10 +88,12 @@ def afqmc_energy(
         # print("#   Iter        Block energy      Walltime")
         n = 0
         print(
-            f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
+            f"# {n:>10}      {np.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
         )
-        # print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+        # print(f"# {n:5d}      {prop_data['e_estimate'][0]:.9e}     {init_time:.2e} ")
     comm.Barrier()
+
+    prop_data = sharding_utils.prepare_dict_for_devices(prop_data)
 
     n_ene_blocks_eql = options["n_ene_blocks_eql"]
     n_sr_blocks_eql = options["n_sr_blocks_eql"]
@@ -120,11 +131,27 @@ def afqmc_energy(
         global_block_weights = np.zeros(sampler.n_blocks)
         global_block_energies = np.zeros(sampler.n_blocks)
 
+    # Set up pmapped version of propagate_phaseless
+    propagate_phaseless_pmapped = jax.pmap(
+        sampler.propagate_phaseless,
+        axis_name="device",
+        static_broadcasted_argnums=(0, 2, 4),  # ham, propagator, trial
+        in_axes=(None, None, None, 0, None, None),  # type: ignore
+    )
+
     # Run sampling
     for n in range(sampler.n_blocks):
-        block_energy_n, prop_data = sampler.propagate_phaseless(
+        block_energy_n, prop_data = propagate_phaseless_pmapped(
             ham, ham_data, propagator, prop_data, trial, wave_data
         )
+        # collect energies and weights
+        block_energy_n = np.array(block_energy_n)
+        block_weight_n = np.array(prop_data["weights"])
+        block_weight_n = np.sum(block_weight_n, axis=1)
+        block_energy_n = np.sum(block_weight_n * block_energy_n) / np.sum(
+            block_weight_n
+        )
+        block_weight_n = np.sum(block_weight_n)
 
         block_energy_n = np.array([block_energy_n], dtype="float32")
         block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
@@ -146,13 +173,34 @@ def afqmc_energy(
             global_block_energies[n] = block_energy_n
 
         block_energy_n = comm.bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data = jax.pmap(
+            propagator.orthonormalize_walkers, axis_name="device", in_axes=0
+        )(prop_data)
 
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
 
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
-        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
+        if isinstance(comm, config.not_MPI):
+            prop_data = jax.pmap(
+                propagator.stochastic_reconfiguration_local,
+                axis_name="device",
+                in_axes=0,
+            )(prop_data)
+        else:
+            assert len(jax.devices()) == 1, "Number of JAX devices should be 1 for MPI"
+            prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+
+        block_energy_jax = jnp.array(block_energy_n)
+        block_energy_replicated = jax.device_put_replicated(
+            block_energy_jax, jax.devices()
+        )
+
+        @jax.pmap
+        def update_e_estimate(prop_data, block_energy):
+            prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy
+            return prop_data
+
+        prop_data = update_e_estimate(prop_data, block_energy_replicated)
 
         # Print progress and save intermediate results
         if n % (max(sampler.n_blocks // 10, 1)) == 0:
@@ -432,12 +480,27 @@ def _run_equilibration(
 ):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
+    propagate_phaseless_pmapped = jax.pmap(
+        sampler_eq.propagate_phaseless,
+        axis_name="device",
+        static_broadcasted_argnums=(0, 2, 4),  # ham, propagator, trial
+        in_axes=(None, None, None, 0, None, None),  # type: ignore
+    )
     for n in range(1, sampler_eq.n_blocks + 1):
-        block_energy_n, prop_data = sampler_eq.propagate_phaseless(
+        block_energy_n, prop_data = propagate_phaseless_pmapped(
             ham, ham_data, propagator, prop_data, trial, wave_data
         )
+        # collect energies and weights
+        block_energy_n = np.array(block_energy_n)
+        block_weight_n = np.array(prop_data["weights"])
+        block_weight_n = np.sum(block_weight_n, axis=1)
+        block_energy_n = np.sum(block_weight_n * block_energy_n) / np.sum(
+            block_weight_n
+        )
+        block_weight_n = np.sum(block_weight_n)
+
         block_energy_n = np.array([block_energy_n], dtype="float32")
-        block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
+        block_weight_n = np.array([block_weight_n], dtype="float32")
         block_weighted_energy_n = np.array(
             [block_energy_n * block_weight_n], dtype="float32"
         )
@@ -460,11 +523,27 @@ def _run_equilibration(
             block_energy_n = total_block_energy_n / total_block_weight_n
         comm.Bcast(block_weight_n, root=0)
         comm.Bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
-        prop_data["e_estimate"] = (
-            0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n[0]
+        prop_data = jax.pmap(
+            propagator.orthonormalize_walkers, axis_name="device", in_axes=0
+        )(prop_data)
+
+        if isinstance(comm, config.not_MPI):
+            prop_data = propagator.stochastic_reconfiguration_local(prop_data)
+        else:
+            assert len(jax.devices()) == 1, "Number of JAX devices should be 1 for MPI"
+            prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+
+        block_energy_jax = jnp.array(block_energy_n)
+        block_energy_replicated = jax.device_put_replicated(
+            block_energy_jax, jax.devices()
         )
+
+        @jax.pmap
+        def update_e_estimate(prop_data, block_energy):
+            prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy
+            return prop_data
+
+        prop_data = update_e_estimate(prop_data, block_energy_replicated)
 
         comm.Barrier()
         if rank == 0:

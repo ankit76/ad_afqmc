@@ -59,7 +59,9 @@ class propagator(ABC):
 
     @abstractmethod
     def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        """Perform stochastic reconfiguration globally across processes using MPI. Not jax friendly."""
+        """Perform stochastic reconfiguration globally across processes using MPI. Not jax friendly.
+        Assumes single jax device.
+        """
         pass
 
     @abstractmethod
@@ -158,8 +160,10 @@ class propagator(ABC):
         prop_data["weights"] = jnp.array(
             jnp.where(prop_data["weights"] > 100.0, 0.0, prop_data["weights"])
         )
+        n_devices = len(jax.devices())
+        total_weight = lax.psum(jnp.sum(prop_data["weights"]), axis_name="device")
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"] - 0.1 * jnp.array(
-            jnp.log(jnp.sum(prop_data["weights"]) / self.n_walkers) / self.dt
+            jnp.log(total_weight / self.n_walkers / n_devices) / self.dt
         )
         prop_data["overlaps"] = overlaps_new
         return prop_data
@@ -243,11 +247,14 @@ class propagator_restricted(propagator):
         return prop_data
 
     def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
+        key, subkey = random.split(prop_data["key"][0])
+        prop_data["key"] = prop_data["key"].at[0].set(key)
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_mpi(
-            prop_data["walkers"], prop_data["weights"], zeta, comm
+        walkers, weights = sr.stochastic_reconfiguration_mpi(
+            prop_data["walkers"][0], prop_data["weights"][0], zeta, comm
         )
+        prop_data["walkers"] = prop_data["walkers"].at[0].set(walkers)
+        prop_data["weights"] = prop_data["weights"].at[0].set(weights)
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
@@ -412,14 +419,18 @@ class propagator_unrestricted(propagator_restricted):
         return prop_data
 
     def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
+        key, subkey = random.split(prop_data["key"][0])
+        prop_data["key"] = prop_data["key"].at[0].set(key)
         zeta = random.uniform(subkey)
-        (
-            prop_data["walkers"],
-            prop_data["weights"],
-        ) = sr.stochastic_reconfiguration_mpi_uhf(
-            prop_data["walkers"], prop_data["weights"], zeta, comm
+        walkers, weights = sr.stochastic_reconfiguration_mpi_uhf(
+            [prop_data["walkers"][0][0], prop_data["walkers"][1][0]],
+            prop_data["weights"][0],
+            zeta,
+            comm,
         )
+        prop_data["walkers"][0] = prop_data["walkers"][0].at[0].set(walkers[0])
+        prop_data["walkers"][1] = prop_data["walkers"][1].at[0].set(walkers[1])
+        prop_data["weights"] = prop_data["weights"].at[0].set(weights)
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
