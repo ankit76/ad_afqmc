@@ -33,7 +33,7 @@ def afqmc_energy(
     MPI: Any,
     init_walkers: Optional[Union[List, jax.Array]] = None,
     tmpdir: str = ".",
-) -> Tuple[float, float]:
+) -> Tuple:
     """
     Run AFQMC simulation for calculating energy.
 
@@ -50,7 +50,7 @@ def afqmc_energy(
         tmpdir (str, optional): Directory for temporary files.
 
     Returns:
-        Tuple[float, float]: AFQMC energy and error
+        Tuple: AFQMC energy and error
     """
     init = time.time()
     comm = MPI.COMM_WORLD
@@ -180,7 +180,7 @@ def afqmc_energy(
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
 
-        if isinstance(comm, config.not_MPI):
+        if isinstance(comm, config.not_a_comm):
             prop_data = jax.pmap(
                 propagator.stochastic_reconfiguration_local,
                 axis_name="device",
@@ -527,8 +527,12 @@ def _run_equilibration(
             propagator.orthonormalize_walkers, axis_name="device", in_axes=0
         )(prop_data)
 
-        if isinstance(comm, config.not_MPI):
-            prop_data = propagator.stochastic_reconfiguration_local(prop_data)
+        if isinstance(comm, config.not_a_comm):
+            prop_data = jax.pmap(
+                propagator.stochastic_reconfiguration_local,
+                axis_name="device",
+                in_axes=0,
+            )(prop_data)
         else:
             assert len(jax.devices()) == 1, "Number of JAX devices should be 1 for MPI"
             prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
