@@ -131,7 +131,9 @@ class AFQMC:
 
         Args:
             dry_run : bool
-                If True, writes input files like integrals to disk, useful for large calculations where one would like to run the trial generation and AFQMC calculations on different machines, on CPU and GPU, for example.
+                If True, writes input files like integrals to disk, useful for large calculations where
+                one would like to run the trial generation and AFQMC calculations on different machines,
+                on CPU and GPU, for example.
         """
         os.makedirs(self.tmpdir, exist_ok=True)
         pyscf_interface.prep_afqmc(

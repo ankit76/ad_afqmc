@@ -88,7 +88,7 @@ def afqmc_energy(
         # print("#   Iter        Block energy      Walltime")
         n = 0
         print(
-            f"# {n:>10}      {np.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
+            f"# {n:>10}      {np.sum(prop_data['weights']) * size * len(jax.devices()):<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
         )
         # print(f"# {n:5d}      {prop_data['e_estimate'][0]:.9e}     {init_time:.2e} ")
     comm.Barrier()
