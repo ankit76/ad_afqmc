@@ -631,7 +631,7 @@ class propagator_cpmc(propagator_unrestricted):
             # normalize
             prob_0 = ratio_0.real / 2.0
             prob_1 = ratio_1.real / 2.0
-            norm = prob_0 + prob_1
+            norm = prob_0 + prob_1 + 1e-13
             prob_0 /= norm
 
             # update

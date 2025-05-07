@@ -1007,6 +1007,8 @@ class uhf_cpmc(uhf, wave_function_cpmc):
                 update_constants[0] * (g_ji * sg_i - g_ii * sg_j) - sg_j,
             )
         )
+        green = jnp.where(jnp.isinf(green), 0.0, green)
+        green = jnp.where(jnp.isnan(green), 0.0, green)
         return green
 
     @partial(jit, static_argnums=0)
