@@ -423,10 +423,18 @@ class sampler_mixed(sampler):
 
         if rdm1_samples is not None:
             # This is just a weighted sum here. We'll accumulate over all ene_blocks.
-            prop_data["block_rdm1"] += jnp.sum(
-                    rdm1_samples * prop_data["weights"][:, None, None, None], 
-                    axis=0
-            )
+
+            if rdm1_samples.ndim == 4: # UHF trial.
+                prop_data["block_rdm1"] += jnp.sum(
+                        rdm1_samples * prop_data["weights"][:, None, None, None], 
+                        axis=0
+                )
+
+            else: # GHF trial.
+                prop_data["block_rdm1"] += jnp.sum(
+                        rdm1_samples * prop_data["weights"][:, None, None], 
+                        axis=0
+                )
 
         prop_data["pop_control_ene_shift"] = (
             0.9 * prop_data["pop_control_ene_shift"] + 0.1 * block_energy

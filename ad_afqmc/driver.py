@@ -72,7 +72,7 @@ def afqmc_energy(
     comm.Barrier()
     init_time = time.time() - init
     if rank == 0:
-        print("# Equilibration sweeps:")
+        print("\n# Equilibration sweeps:")
         print(
             f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}"
         )
@@ -208,6 +208,10 @@ def afqmc_observable(
     rank = comm.Get_rank()
     seed = options["seed"]
 
+    if rank == 0:
+        sha1, branch, local_mods = misc.get_git_info()
+        sys_info = misc.print_env_info(sha1, branch, local_mods)
+
     # Set up observable operators
     if observable is not None:
         observable_op = jnp.array(observable[0])
@@ -225,6 +229,9 @@ def afqmc_observable(
     trial_rdm1 = trial.get_rdm1(wave_data)
     if "rdm1" not in wave_data:
         wave_data["rdm1"] = trial_rdm1
+    if isinstance(trial, ghf):
+        trial_rdm1 = jsp.linalg.block_diag(*trial_rdm1)
+
     ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
@@ -242,7 +249,7 @@ def afqmc_observable(
     comm.Barrier()
     init_time = time.time() - init
     if rank == 0:
-        print("# Equilibration sweeps:")
+        print("\n# Equilibration sweeps:")
         print(
             f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}"
         )
@@ -1033,7 +1040,11 @@ def _analyze_observable_results(
             )
 
             # Save RDM1 data
-            np.savez(tmpdir + "/rdm1_afqmc.npz", rdm1=avg_rdm1)
+            np.savez(tmpdir + "/rdm1_afqmc.npz",
+                     rdm1_avg=avg_rdm1,
+                     rdm1_err=errors_rdm1, 
+                     rdm1_noise=rdm_noise,
+                     rdm1_noise_err=rdm_noise_err)
             observable_data["rdm1"] = avg_rdm1
             observable_data["rdm1_noise"] = rdm_noise
             observable_data["rdm1_noise_err"] = rdm_noise_err
