@@ -1033,7 +1033,7 @@ def _analyze_observable_results(
             )
 
             # Save RDM1 data
-            np.savez("rdm1_afqmc.npz", rdm1=avg_rdm1)
+            np.savez(tmpdir + "/rdm1_afqmc.npz", rdm1=avg_rdm1)
             observable_data["rdm1"] = avg_rdm1
             observable_data["rdm1_noise"] = rdm_noise
             observable_data["rdm1_noise_err"] = rdm_noise_err
