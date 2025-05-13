@@ -1,8 +1,11 @@
-import h5py
 import pickle
+
+import h5py
 import numpy as np
 from jax import numpy as jnp
+
 from ad_afqmc import propagation, wavefunctions
+
 
 def read_fcidump(tmpdir):
     with h5py.File(tmpdir + "/FCIDUMP_chol", "r") as fh5:
@@ -19,6 +22,7 @@ def read_fcidump(tmpdir):
     nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
 
     return h0, h1, chol, ms, nelec, nmo, nchol, nelec_sp
+
 
 def read_options(options, rank, tmpdir):
     if options is None:
@@ -43,6 +47,11 @@ def read_options(options, rank, tmpdir):
     options["orbital_rotation"] = options.get("orbital_rotation", True)
     options["do_sr"] = options.get("do_sr", True)
     options["walker_type"] = options.get("walker_type", "restricted")
+    # backwards compatibility
+    if options["walker_type"] == "rhf":
+        options["walker_type"] = "restricted"
+    elif options["walker_type"] == "uhf":
+        options["walker_type"] = "unrestricted"
     assert options["walker_type"] in ["restricted", "unrestricted"]
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
@@ -63,6 +72,7 @@ def read_options(options, rank, tmpdir):
 
     return options
 
+
 def read_observable(nmo, options, tmpdir):
     try:
         with h5py.File(tmpdir + "/observable.h5", "r") as fh5:
@@ -73,6 +83,7 @@ def read_observable(nmo, options, tmpdir):
             observable = [observable_op, observable_constant]
     except:
         observable = None
+
 
 def read_wave_data(mo_coeff, norb, nelec_sp, tmpdir):
     wave_data = {}
@@ -89,6 +100,7 @@ def read_wave_data(mo_coeff, norb, nelec_sp, tmpdir):
             ]
         )
     return wave_data
+
 
 def set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir):
     if options["trial"] == "rhf":
@@ -181,6 +193,7 @@ def set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir):
             trial = None
 
     return trial
+
 
 def set_prop(options, ham_data):
     if options["walker_type"] == "restricted":
