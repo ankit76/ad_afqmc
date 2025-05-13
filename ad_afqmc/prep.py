@@ -55,6 +55,11 @@ def read_options(options, rank, tmpdir):
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
     options["n_batch"] = options.get("n_batch", 1)
+    options["vhs_mixed_precision"] = options.get("vhs_mixed_precision", False)
+    options["trial_mixed_precision"] = options.get(
+        "trial_mixed_precision", False
+    )  # only relevant for cisd for now
+    options["memory_mode"] = options.get("memory_mode", "low")  # only relevant for cisd
 
     return options
 
@@ -113,7 +118,20 @@ def set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir):
             ci2 = jnp.array(amplitudes["ci2"])
             trial_wave_data = {"ci1": ci1, "ci2": ci2}
             wave_data.update(trial_wave_data)
-            trial = wavefunctions.cisd(norb, nelec_sp, n_batch=options["n_batch"])
+            if options["trial_mixed_precision"]:
+                mixed_real_dtype = jnp.float32
+                mixed_complex_dtype = jnp.complex64
+            else:
+                mixed_real_dtype = jnp.float64
+                mixed_complex_dtype = jnp.complex128
+            trial = wavefunctions.cisd(
+                norb,
+                nelec_sp,
+                n_batch=options["n_batch"],
+                mixed_real_dtype=mixed_real_dtype,
+                mixed_complex_dtype=mixed_complex_dtype,
+                memory_mode=options["memory_mode"],
+            )
         except:
             raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
     elif options["trial"] == "ucisd":
@@ -133,7 +151,19 @@ def set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir):
                 "mo_coeff": mo_coeff,
             }
             wave_data.update(trial_wave_data)
-            trial = wavefunctions.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
+            if options["trial_mixed_precision"]:
+                mixed_real_dtype = jnp.float32
+                mixed_complex_dtype = jnp.complex64
+            else:
+                mixed_real_dtype = jnp.float64
+                mixed_complex_dtype = jnp.complex128
+            trial = wavefunctions.ucisd(
+                norb,
+                nelec_sp,
+                n_batch=options["n_batch"],
+                mixed_real_dtype=mixed_real_dtype,
+                mixed_complex_dtype=mixed_complex_dtype,
+            )
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
     else:
@@ -158,10 +188,18 @@ def set_prop(options, ham_data):
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
             ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
-
-        prop = propagation.propagator_restricted(
-            options["dt"], options["n_walkers"], n_batch=options["n_batch"]
-        )
+        if options["vhs_mixed_precision"]:
+            prop = propagation.propagator_restricted(
+                options["dt"],
+                options["n_walkers"],
+                n_batch=options["n_batch"],
+                vhs_real_dtype=jnp.float32,
+                vhs_complex_dtype=jnp.complex64,
+            )
+        else:
+            prop = propagation.propagator_restricted(
+                options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+            )
 
     elif options["walker_type"] == "unrestricted":
         if options["symmetry"]:
@@ -176,9 +214,18 @@ def set_prop(options, ham_data):
                 n_batch=options["n_batch"],
             )
         else:
-            prop = propagation.propagator_unrestricted(
-                options["dt"],
-                options["n_walkers"],
-                n_batch=options["n_batch"],
-            )
+            if options["vhs_mixed_precision"]:
+                prop = propagation.propagator_unrestricted(
+                    options["dt"],
+                    options["n_walkers"],
+                    n_batch=options["n_batch"],
+                    vhs_real_dtype=jnp.float32,
+                    vhs_complex_dtype=jnp.complex64,
+                )
+            else:
+                prop = propagation.propagator_unrestricted(
+                    options["dt"],
+                    options["n_walkers"],
+                    n_batch=options["n_batch"],
+                )
     return prop, ham_data
