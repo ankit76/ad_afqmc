@@ -37,7 +37,12 @@ def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
                 print(f"# Number of MPI ranks not specified, using 1 by default.")
         except ImportError:
             use_mpi = False
-            print(f"# Unable to import mpi4py, not using MPI.")
+            if mpi_prefix is not None or nproc is not None:
+                raise ValueError(
+                    f"# MPI prefix or number of processes specified, but mpi4py not found. Please install mpi4py or remove the MPI options."
+                )
+            else:
+                print(f"# Unable to import mpi4py, not using MPI.")
 
     gpu_flag = "--use_gpu" if use_gpu else ""
     mpi_flag = "--use_mpi" if use_mpi else ""
