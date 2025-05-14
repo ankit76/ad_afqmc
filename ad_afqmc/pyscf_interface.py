@@ -71,38 +71,7 @@ def prep_afqmc(
     print("#\n# Preparing AFQMC calculation")
 
     if isinstance(mf_or_cc, (CCSD, UCCSD)):
-        # raise warning about mpi
-        print(
-            "# Note that PySCF CC module uses MPI. This could potentially lead to MPI initialization issues in some cases."
-        )
-        mf = mf_or_cc._scf
-        cc = mf_or_cc
-        if cc.frozen is not None:
-            norb_frozen = cc.frozen
-        if isinstance(cc, UCCSD):
-            ci2aa = cc.t2[0] + 2 * np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[0])
-            ci2aa = (ci2aa - ci2aa.transpose(0, 1, 3, 2)) / 2
-            ci2aa = ci2aa.transpose(0, 2, 1, 3)
-            ci2bb = cc.t2[2] + 2 * np.einsum("ia,jb->ijab", cc.t1[1], cc.t1[1])
-            ci2bb = (ci2bb - ci2bb.transpose(0, 1, 3, 2)) / 2
-            ci2bb = ci2bb.transpose(0, 2, 1, 3)
-            ci2ab = cc.t2[1] + np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[1])
-            ci2ab = ci2ab.transpose(0, 2, 1, 3)
-            ci1a = np.array(cc.t1[0])
-            ci1b = np.array(cc.t1[1])
-            np.savez(
-                tmpdir + "/amplitudes.npz",
-                ci1a=ci1a,
-                ci1b=ci1b,
-                ci2aa=ci2aa,
-                ci2ab=ci2ab,
-                ci2bb=ci2bb,
-            )
-        else:
-            ci2 = cc.t2 + np.einsum("ia,jb->ijab", np.array(cc.t1), np.array(cc.t1))
-            ci2 = ci2.transpose(0, 2, 1, 3)
-            ci1 = np.array(cc.t1)
-            np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2)
+        mf, cc, norb_frozen = read_pyscf_ccsd(mf_or_cc, tmpdir)
     else:
         mf = mf_or_cc
 
@@ -115,54 +84,7 @@ def prep_afqmc(
             basis_coeff = mf.mo_coeff
 
     # calculate cholesky integrals
-    print("# Calculating Cholesky integrals")
-    h1e, chol, nelec, enuc, nbasis, nchol = [None] * 6
-    if integrals is not None:
-        assert norb_frozen == 0, "Frozen orbitals not supported for custom integrals"
-        enuc = integrals["h0"]
-        h1e = integrals["h1"]
-        eri = integrals["h2"]
-        nelec = mol.nelec
-        nbasis = h1e.shape[-1]
-        norb = nbasis
-        eri = ao2mo.restore(4, eri, norb)
-        chol0 = modified_cholesky(eri, chol_cut)
-        nchol = chol0.shape[0]
-        chol = np.zeros((nchol, norb, norb))
-        for i in range(nchol):
-            for m in range(norb):
-                for n in range(m + 1):
-                    triind = m * (m + 1) // 2 + n
-                    chol[i, m, n] = chol0[i, triind]
-                    chol[i, n, m] = chol0[i, triind]
-
-        # basis transformation
-        h1e = basis_coeff.T @ h1e @ basis_coeff
-        for gamma in range(nchol):
-            chol[gamma] = basis_coeff.T @ chol[gamma] @ basis_coeff
-
-    else:
-        DFbas = None
-        if getattr(mf, "with_df", None) is not None:
-            DFbas = mf.with_df.auxmol.basis  # type: ignore
-        h1e, chol, nelec, enuc = generate_integrals(
-            mol, mf.get_hcore(), basis_coeff, chol_cut, DFbas=DFbas
-        )
-        nbasis = h1e.shape[-1]
-        nelec = mol.nelec
-
-        if norb_frozen > 0:
-            assert norb_frozen * 2 < sum(
-                nelec
-            ), "Frozen orbitals exceed number of electrons"
-            mc = mcscf.CASSCF(
-                mf, mol.nao - norb_frozen, mol.nelectron - 2 * norb_frozen
-            )
-            nelec = mc.nelecas  # type: ignore
-            mc.mo_coeff = basis_coeff  # type: ignore
-            h1e, enuc = mc.get_h1eff()  # type: ignore
-            chol = chol.reshape((-1, nbasis, nbasis))
-            chol = chol[:, mc.ncore : mc.ncore + mc.ncas, mc.ncore : mc.ncore + mc.ncas]  # type: ignore
+    h1e, chol, nelec, enuc, nbasis, nchol = compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, chol_cut)
 
     print("# Finished calculating Cholesky integrals\n#")
 
@@ -177,68 +99,7 @@ def prep_afqmc(
     chol = chol.reshape((chol.shape[0], -1))
 
     # write trial mo coefficients
-    trial_coeffs = np.empty((2, nbasis, nbasis))
-    overlap = mf.get_ovlp(mol)
-    if isinstance(mf, (scf.uhf.UHF, scf.rohf.ROHF)):
-        uhfCoeffs = np.empty((nbasis, 2 * nbasis))
-        if isinstance(mf, scf.uhf.UHF):
-            q, r = np.linalg.qr(
-                basis_coeff[:, norb_frozen:]
-                .T.dot(overlap)
-                .dot(mf.mo_coeff[0][:, norb_frozen:])
-            )
-            sgn = np.sign(r.diagonal())
-            q = np.einsum("ij,j->ij", q, sgn)
-            # q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[0][:, norb_frozen:])
-            # print("max err a", np.max(abs(q-q2)))
-            # q, _ = np.linalg.qr(
-            #    basis_coeff[:, norb_frozen:]
-            #    .T.dot(overlap)
-            #    .dot(mf.mo_coeff[0][:, norb_frozen:])
-            # )
-            uhfCoeffs[:, :nbasis] = q
-            q, r = np.linalg.qr(
-                basis_coeff[:, norb_frozen:]
-                .T.dot(overlap)
-                .dot(mf.mo_coeff[1][:, norb_frozen:])
-            )
-            sgn = np.sign(r.diagonal())
-            q = np.einsum("ij,j->ij", q, sgn)
-            # q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[1][:, norb_frozen:])
-            # print("max err b", np.max(abs(q-q2)))
-            # import pdb
-            # pdb.set_trace()
-            # q, _ = np.linalg.qr(
-            #     basis_coeff[:, norb_frozen:]
-            #     .T.dot(overlap)
-            #     .dot(mf.mo_coeff[1][:, norb_frozen:])
-            # )
-            uhfCoeffs[:, nbasis:] = q
-        else:
-            q, r = np.linalg.qr(
-                basis_coeff[:, norb_frozen:]
-                .T.dot(overlap)
-                .dot(mf.mo_coeff[:, norb_frozen:])
-            )
-            sgn = np.sign(r.diagonal())
-            q = np.einsum("ij,j->ij", q, sgn)
-            uhfCoeffs[:, :nbasis] = q
-            uhfCoeffs[:, nbasis:] = q
-
-        trial_coeffs[0] = uhfCoeffs[:, :nbasis]
-        trial_coeffs[1] = uhfCoeffs[:, nbasis:]
-        # np.savetxt("uhf.txt", uhfCoeffs)
-        np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
-
-    elif isinstance(mf, scf.rhf.RHF):
-        q, _ = np.linalg.qr(
-            basis_coeff[:, norb_frozen:]
-            .T.dot(overlap)
-            .dot(mf.mo_coeff[:, norb_frozen:])
-        )
-        trial_coeffs[0] = q
-        trial_coeffs[1] = q
-        np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
+    trial_coeffs = write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir) 
 
     write_dqmc(
         h1e,
@@ -251,7 +112,6 @@ def prep_afqmc(
         filename=tmpdir + "/FCIDUMP_chol",
         mo_coeffs=trial_coeffs,
     )
-
 
 def getCollocationMatrices(
     mol, grid_level=0, thc_eps=1.0e-4, mo1=None, mo2=None, alpha=0.25
@@ -949,3 +809,158 @@ def parity(d0: np.ndarray, cre: Sequence, des: Sequence) -> float:
         d[C[i]] = 0
         d[D[i]] = 1
     return float(parity)
+
+def read_pyscf_ccsd(mf_or_cc, tmpdir):
+    # raise warning about mpi
+    print(
+        "# Note that PySCF CC module uses MPI. This could potentially lead to MPI initialization issues in some cases."
+    )
+    mf = mf_or_cc._scf
+    cc = mf_or_cc
+    if cc.frozen is not None:
+        norb_frozen = cc.frozen
+    else:
+        norb_frozen = 0
+    if isinstance(cc, UCCSD):
+        ci2aa = cc.t2[0] + 2 * np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[0])
+        ci2aa = (ci2aa - ci2aa.transpose(0, 1, 3, 2)) / 2
+        ci2aa = ci2aa.transpose(0, 2, 1, 3)
+        ci2bb = cc.t2[2] + 2 * np.einsum("ia,jb->ijab", cc.t1[1], cc.t1[1])
+        ci2bb = (ci2bb - ci2bb.transpose(0, 1, 3, 2)) / 2 
+        ci2bb = ci2bb.transpose(0, 2, 1, 3)
+        ci2ab = cc.t2[1] + np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[1])
+        ci2ab = ci2ab.transpose(0, 2, 1, 3)
+        ci1a = np.array(cc.t1[0])
+        ci1b = np.array(cc.t1[1])
+        np.savez(
+            tmpdir + "/amplitudes.npz",
+            ci1a=ci1a,
+            ci1b=ci1b,
+            ci2aa=ci2aa,
+            ci2ab=ci2ab,
+            ci2bb=ci2bb,
+        )
+    else:
+        ci2 = cc.t2 + np.einsum("ia,jb->ijab", np.array(cc.t1), np.array(cc.t1))
+        ci2 = ci2.transpose(0, 2, 1, 3)
+        ci1 = np.array(cc.t1)
+        np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2)
+
+    return mf, cc, norb_frozen
+
+def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, chol_cut):
+    print("# Calculating Cholesky integrals")
+    h1e, chol, nelec, enuc, nbasis, nchol = [None] * 6
+    if integrals is not None:
+        assert norb_frozen == 0, "Frozen orbitals not supported for custom integrals"
+        enuc = integrals["h0"]
+        h1e = integrals["h1"]
+        eri = integrals["h2"]
+        nelec = mol.nelec
+        nbasis = h1e.shape[-1]
+        norb = nbasis
+        eri = ao2mo.restore(4, eri, norb)
+        chol0 = modified_cholesky(eri, chol_cut)
+        nchol = chol0.shape[0]
+        chol = np.zeros((nchol, norb, norb))
+        for i in range(nchol):
+            for m in range(norb):
+                for n in range(m + 1):
+                    triind = m * (m + 1) // 2 + n
+                    chol[i, m, n] = chol0[i, triind]
+                    chol[i, n, m] = chol0[i, triind]
+
+        # basis transformation
+        h1e = basis_coeff.T @ h1e @ basis_coeff
+        for gamma in range(nchol):
+            chol[gamma] = basis_coeff.T @ chol[gamma] @ basis_coeff
+
+    else:
+        DFbas = None
+        if getattr(mf, "with_df", None) is not None:
+            DFbas = mf.with_df.auxmol.basis  # type: ignore
+        h1e, chol, nelec, enuc = generate_integrals(
+            mol, mf.get_hcore(), basis_coeff, chol_cut, DFbas=DFbas
+        )
+        nbasis = h1e.shape[-1]
+        nelec = mol.nelec
+
+        if norb_frozen > 0:
+            assert norb_frozen * 2 < sum(
+                nelec
+            ), "Frozen orbitals exceed number of electrons"
+            mc = mcscf.CASSCF(
+                mf, mol.nao - norb_frozen, mol.nelectron - 2 * norb_frozen
+            )
+            nelec = mc.nelecas  # type: ignore
+            mc.mo_coeff = basis_coeff  # type: ignore
+            h1e, enuc = mc.get_h1eff()  # type: ignore
+            chol = chol.reshape((-1, nbasis, nbasis))
+            chol = chol[:, mc.ncore : mc.ncore + mc.ncas, mc.ncore : mc.ncore + mc.ncas]  # type: ignore
+    return h1e, chol, nelec, enuc, nbasis, nchol
+
+def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
+    trial_coeffs = np.empty((2, nbasis, nbasis))
+    overlap = mf.get_ovlp(mol)
+    if isinstance(mf, (scf.uhf.UHF, scf.rohf.ROHF)):
+        uhfCoeffs = np.empty((nbasis, 2 * nbasis))
+        if isinstance(mf, scf.uhf.UHF):
+            q, r = np.linalg.qr(
+                basis_coeff[:, norb_frozen:]
+                .T.dot(overlap)
+                .dot(mf.mo_coeff[0][:, norb_frozen:])
+            )
+            sgn = np.sign(r.diagonal())
+            q = np.einsum("ij,j->ij", q, sgn)
+            # q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[0][:, norb_frozen:])
+            # print("max err a", np.max(abs(q-q2)))
+            # q, _ = np.linalg.qr(
+            #    basis_coeff[:, norb_frozen:]
+            #    .T.dot(overlap)
+            #    .dot(mf.mo_coeff[0][:, norb_frozen:])
+            # )
+            uhfCoeffs[:, :nbasis] = q
+            q, r = np.linalg.qr(
+                basis_coeff[:, norb_frozen:]
+                .T.dot(overlap)
+                .dot(mf.mo_coeff[1][:, norb_frozen:])
+            )
+            sgn = np.sign(r.diagonal())
+            q = np.einsum("ij,j->ij", q, sgn)
+            # q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[1][:, norb_frozen:])
+            # print("max err b", np.max(abs(q-q2)))
+            # import pdb
+            # pdb.set_trace()
+            # q, _ = np.linalg.qr(
+            #     basis_coeff[:, norb_frozen:]
+            #     .T.dot(overlap)
+            #     .dot(mf.mo_coeff[1][:, norb_frozen:])
+            # )
+            uhfCoeffs[:, nbasis:] = q
+        else:
+            q, r = np.linalg.qr(
+                basis_coeff[:, norb_frozen:]
+                .T.dot(overlap)
+                .dot(mf.mo_coeff[:, norb_frozen:])
+            )
+            sgn = np.sign(r.diagonal())
+            q = np.einsum("ij,j->ij", q, sgn)
+            uhfCoeffs[:, :nbasis] = q
+            uhfCoeffs[:, nbasis:] = q
+
+        trial_coeffs[0] = uhfCoeffs[:, :nbasis]
+        trial_coeffs[1] = uhfCoeffs[:, nbasis:]
+        # np.savetxt("uhf.txt", uhfCoeffs)
+        np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
+
+    elif isinstance(mf, scf.rhf.RHF):
+        q, _ = np.linalg.qr(
+            basis_coeff[:, norb_frozen:]
+            .T.dot(overlap)
+            .dot(mf.mo_coeff[:, norb_frozen:])
+        )
+        trial_coeffs[0] = q
+        trial_coeffs[1] = q
+        np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
+
+    return trial_coeffs

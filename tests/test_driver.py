@@ -25,7 +25,7 @@ def test_energy_mpi():
         "n_walkers": 50,
         "seed": seed,
         "trial": "uhf",
-        "walker_type": "uhf",
+        "walker_type": "unrestricted",
     }
     ene, _ = run_afqmc.run_afqmc(
         options=options, mpi_prefix="mpirun ", nproc=2, tmpdir=tmpdir
@@ -42,7 +42,7 @@ def test_jvp_h1e():
         "n_walkers": 50,
         "seed": seed,
         "trial": "uhf",
-        "walker_type": "uhf",
+        "walker_type": "unrestricted",
         "ad_mode": "forward",
     }
     ene, _ = run_afqmc.run_afqmc(options=options, nproc=2, tmpdir=tmpdir)
@@ -60,7 +60,7 @@ def test_vjp_rdm():
         "n_walkers": 50,
         "seed": seed,
         "trial": "uhf",
-        "walker_type": "uhf",
+        "walker_type": "unrestricted",
         "ad_mode": "reverse",
     }
     ene, _ = run_afqmc.run_afqmc(options=options, nproc=2, tmpdir=tmpdir)
@@ -80,7 +80,7 @@ def test_energy():
         "n_walkers": 50,
         "seed": seed,
         "trial": "uhf",
-        "walker_type": "uhf",
+        "walker_type": "unrestricted",
     }
     ene, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="", tmpdir=tmpdir)
     assert np.isclose(ene, -3.238196747261496, atol=1e-5)

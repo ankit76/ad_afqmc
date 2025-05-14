@@ -40,23 +40,23 @@ def check(obj, options, e, atol, mpi):
 # rhf
 def check_rhf_restricted_w(mf, e, atol, mpi):
     options["trial"] = "rhf"
-    options["walker_type"] = "rhf"
+    options["walker_type"] = "restricted"
     return check(mf, options, e, atol, mpi)
     
 def check_rhf_unrestricted_w(mf, e, atol, mpi):
     options["trial"] = "rhf"
-    options["walker_type"] = "uhf"
+    options["walker_type"] = "unrestricted"
     return check(mf, options, e, atol, mpi)
 
 # uhf
 def check_uhf_restricted_w(mf, e, atol, mpi):
     options["trial"] = "uhf"
-    options["walker_type"] = "rhf"
+    options["walker_type"] = "restricted"
     return check(mf, options, e, atol, mpi)
 
 def check_uhf_unrestricted_w(mf, e, atol, mpi):
     options["trial"] = "uhf"
-    options["walker_type"] = "uhf"
+    options["walker_type"] = "unrestricted"
     return check(mf, options, e, atol, mpi)
 
 # cisd
@@ -65,7 +65,7 @@ def check_rcisd_restricted_w(mf, e, atol, mpi):
     mycc = cc.RCCSD(mf)
     mycc.kernel()
     options["trial"] = "cisd"
-    options["walker_type"] = "rhf"
+    options["walker_type"] = "restricted"
     return check(mycc, options, e, atol, mpi)
      
 def check_rcisd_fc_restricted_w(mf, nfrozen, e, atol, mpi):
@@ -73,7 +73,7 @@ def check_rcisd_fc_restricted_w(mf, nfrozen, e, atol, mpi):
     mycc.frozen = nfrozen
     mycc.kernel()
     options["trial"] = "cisd"
-    options["walker_type"] = "rhf"
+    options["walker_type"] = "restricted"
     return check(mycc, options, e, atol, mpi)
 
 ## uhf
@@ -81,14 +81,14 @@ def check_ucisd_restricted_w(mf, e, atol, mpi):
     mycc = cc.UCCSD(mf)
     mycc.kernel()
     options["trial"] = "ucisd"
-    options["walker_type"] = "rhf"
+    options["walker_type"] = "restricted"
     return check(mycc, options, e, atol, mpi)
 
 def check_ucisd_unrestricted_w(mf, e, atol, mpi):
     mycc = cc.UCCSD(mf)
     mycc.kernel()
     options["trial"] = "ucisd"
-    options["walker_type"] = "uhf"
+    options["walker_type"] = "unrestricted"
     return check(mycc, options, e, atol, mpi)
 
 def check_ucisd_fc_restricted_w(mf, nfrozen, e, atol, mpi):
@@ -96,7 +96,7 @@ def check_ucisd_fc_restricted_w(mf, nfrozen, e, atol, mpi):
     mycc.frozen = nfrozen
     mycc.kernel()
     options["trial"] = "ucisd"
-    options["walker_type"] = "rhf"
+    options["walker_type"] = "restricted"
     return check(mycc, options, e, atol, mpi)
 
 def run(l_flag, l_fun):

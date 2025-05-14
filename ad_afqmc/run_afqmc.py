@@ -22,7 +22,7 @@ def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
         pickle.dump(options, f)
     path = os.path.abspath(__file__)
     dir_path = os.path.dirname(path)
-    script = f"{dir_path}/mpi_jax.py"
+    script = f"{dir_path}/launch_script.py"
     use_gpu = config.afqmc_config["use_gpu"]
     use_mpi = config.afqmc_config["use_mpi"]
     if not use_gpu and config.afqmc_config["use_mpi"] is not False:
@@ -70,7 +70,7 @@ def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None):
     if script is None:
         path = os.path.abspath(__file__)
         dir_path = os.path.dirname(path)
-        script = f"{dir_path}/mpi_jax.py"
+        script = f"{dir_path}/launch_script.py"
     if mpi_prefix is None:
         mpi_prefix = "mpirun "
     if nproc is not None:
