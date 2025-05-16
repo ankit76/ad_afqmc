@@ -444,7 +444,6 @@ class wave_function_cpmc(wave_function):
         """
         pass
 
-
 @dataclass
 class sum_state(wave_function):
     """Sum of multiple states. wave_data should contain the coeffs in the expansion."""
@@ -500,6 +499,50 @@ class sum_state(wave_function):
             ]
         )
         return jnp.sum(energies_i * overlaps_i * coeffs) / jnp.sum(overlaps_i * coeffs)
+
+    @partial(jit, static_argnums=0)
+    def _build_measurement_intermediates(self, ham_data, wave_data):
+        for i, state in enumerate(self.states):
+            ham_data[f"{i}"] = ham_data.copy()
+            ham_data[f"{i}"] = state._build_measurement_intermediates(
+                ham_data[f"{i}"], wave_data[f"{i}"]
+            )
+        return ham_data
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
+
+@dataclass
+class sum_state_cpmc(sum_state, wave_function_cpmc):
+    """Sum of multiple states. wave_data should contain the coeffs in the expansion."""
+
+    norb: int
+    nelec: Tuple[int, int]
+    states: Tuple[wave_function_cpmc, ...]
+    n_batch: int = 1
+
+    @partial(jit, static_argnums=0)
+    def calc_full_green(
+            self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
+    ) -> jax.Array:
+        coeffs = wave_data["coeffs"]
+        ovlp = 0.
+        green = np.zeros((2, self.norb, self.norb))
+
+        for i, state in enumerate(self.states):
+            green_i = state.calc_full_green(walker_up, walker_dn, wave_data[f"{i}"])
+            ovlp_i = state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
+            w_i = coeffs[i] * ovlp_i
+            green += w_i * green_i
+            ovlp += w_i
+        
+        return jnp.array(green / ovlp)
+
+    @partial(jit, static_argnums=0)
+    def calc_full_green_vmap(self, walkers: Sequence, wave_data: Any) -> jax.Array:
+        return vmap(self.calc_full_green, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
 
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data, wave_data):

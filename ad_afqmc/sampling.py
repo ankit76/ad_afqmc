@@ -410,7 +410,7 @@ class sampler_mixed(sampler):
         
         rdm1_samples = None
 
-        if isinstance(trial, wave_function_cpmc):
+        if isinstance(trial, wave_function_cpmc) or isinstance(trial, sum_state):
             rdm1_samples = trial.calc_full_green_vmap(
                     prop_data["walkers"], wave_data
             )
