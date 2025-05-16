@@ -9,7 +9,7 @@ from jax import checkpoint, jit, lax, random
 from ad_afqmc import linalg_utils
 from ad_afqmc.hamiltonian import hamiltonian
 from ad_afqmc.propagation import propagator
-from ad_afqmc.wavefunctions import wave_function, wave_function_cpmc
+from ad_afqmc.wavefunctions import wave_function, wave_function_cpmc, sum_state
 
 
 @dataclass

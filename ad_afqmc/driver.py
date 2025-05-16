@@ -9,6 +9,7 @@ import numpy as np
 from jax import dtypes, jvp, random, vjp
 
 from ad_afqmc import hamiltonian, misc, propagation, sampling, stat_utils, wavefunctions
+from ad_afqmc.wavefunctions import ghf
 
 print = partial(print, flush=True)
 
