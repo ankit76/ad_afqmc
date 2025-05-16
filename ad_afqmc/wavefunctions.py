@@ -520,6 +520,29 @@ class sum_state_cpmc(sum_state, wave_function_cpmc):
     nelec: Tuple[int, int]
     states: Tuple[wave_function_cpmc, ...]
     n_batch: int = 1
+    
+    @partial(jit, static_argnums=0)
+    def calc_green_diagonal(
+            self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
+    ) -> jax.Array:
+        coeffs = wave_data["coeffs"]
+        ovlp = 0.
+        green = np.zeros((2, self.norb))
+
+        for i, state in enumerate(self.states):
+            green_i = state.calc_green_diagonal(walker_up, walker_dn, wave_data[f"{i}"])
+            ovlp_i = state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
+            w_i = coeffs[i] * ovlp_i
+            green += w_i * green_i
+            ovlp += w_i
+        
+        return jnp.array(green / ovlp)
+
+    @partial(jit, static_argnums=0)
+    def calc_green_diagonal_vmap(self, walkers: Sequence, wave_data: dict) -> jax.Array:
+        return vmap(self.calc_green_diagonal, in_axes=(0, 0, None))(
+            walkers[0], walkers[1], wave_data
+        )
 
     @partial(jit, static_argnums=0)
     def calc_full_green(
@@ -542,6 +565,67 @@ class sum_state_cpmc(sum_state, wave_function_cpmc):
     def calc_full_green_vmap(self, walkers: Sequence, wave_data: Any) -> jax.Array:
         return vmap(self.calc_full_green, in_axes=(0, 0, None))(
             walkers[0], walkers[1], wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap_ratio(
+        self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
+    ) -> float:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+        ratio = (1 + update_constants[0] * green[spin_i, i, i]) * (
+            1 + update_constants[1] * green[spin_j, j, j]
+        ) - (spin_i == spin_j) * update_constants[0] * update_constants[1] * (
+            green[spin_i, i, j] * green[spin_j, j, i]
+        )
+        return ratio
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap_ratio_vmap(
+        self, greens: jax.Array, update_indices: jax.Array, update_constants: jax.Array
+    ) -> jax.Array:
+        return vmap(self.calc_overlap_ratio, in_axes=(0, None, None))(
+            greens, update_indices, update_constants
+        )
+
+    @partial(jit, static_argnums=0)
+    def update_greens_function(
+        self,
+        green: jax.Array,
+        ratio: float,
+        update_indices: jax.Array,
+        update_constants: jax.Array,
+    ) -> jax.Array:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+        sg_i = green[spin_i, i].at[i].add(-1)
+        sg_j = green[spin_j, j].at[j].add(-1)
+        g_ii = green[spin_i, i, i]
+        g_jj = green[spin_j, j, j]
+        g_ij = (spin_i == spin_j) * green[spin_i, i, j]
+        g_ji = (spin_i == spin_j) * green[spin_j, j, i]
+        green = green.at[spin_i, :, :].add(
+            (update_constants[0] / ratio)
+            * jnp.outer(
+                green[spin_i, :, i],
+                update_constants[1] * (g_ij * sg_j - g_jj * sg_i) - sg_i,
+            )
+        )
+        green = green.at[spin_j, :, :].add(
+            (update_constants[1] / ratio)
+            * jnp.outer(
+                green[spin_j, :, j],
+                update_constants[0] * (g_ji * sg_i - g_ii * sg_j) - sg_j,
+            )
+        )
+        return green
+
+    @partial(jit, static_argnums=0)
+    def update_greens_function_vmap(
+        self, greens, ratios, update_indices, update_constants
+    ):
+        return vmap(self.update_greens_function, in_axes=(0, 0, None, 0))(
+            greens, ratios, update_indices, update_constants
         )
 
     @partial(jit, static_argnums=0)
