@@ -35,6 +35,7 @@ def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
             print(f"# mpi4py found, using MPI.")
             if nproc is None:
                 print(f"# Number of MPI ranks not specified, using 1 by default.")
+                nproc = 1
         except ImportError:
             use_mpi = False
             if mpi_prefix is not None or nproc is not None:
