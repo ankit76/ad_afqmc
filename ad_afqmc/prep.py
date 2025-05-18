@@ -83,6 +83,7 @@ def read_observable(nmo, options, tmpdir):
             observable = [observable_op, observable_constant]
     except:
         observable = None
+    return observable
 
 
 def read_wave_data(mo_coeff, norb, nelec_sp, tmpdir):
