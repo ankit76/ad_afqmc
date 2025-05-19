@@ -9,8 +9,7 @@ import numpy as np
 from jax import dtypes, jvp, random, vjp
 
 from ad_afqmc import hamiltonian, misc, propagation, sampling, stat_utils, wavefunctions
-
-print = partial(print, flush=True)
+from ad_afqmc.config import mpi_print as print
 
 
 def afqmc_energy(
@@ -71,17 +70,16 @@ def afqmc_energy(
     # Equilibration phase
     comm.Barrier()
     init_time = time.time() - init
-    if rank == 0:
-        print("# Equilibration sweeps:")
-        print(
-            f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}"
-        )
-        # print("#   Iter        Block energy      Walltime")
-        n = 0
-        print(
-            f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
-        )
-        # print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+    print("# Equilibration sweeps:")
+    print(
+        f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}"
+    )
+    # print("#   Iter        Block energy      Walltime")
+    n = 0
+    print(
+        f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
+    )
+    # print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
     n_ene_blocks_eql = options["n_ene_blocks_eql"]
@@ -109,9 +107,8 @@ def afqmc_energy(
 
     # Sampling phase
     comm.Barrier()
-    if rank == 0:
-        print("#\n# Sampling sweeps:")
-        print("#  Iter        Mean energy          Stochastic error       Walltime")
+    print("#\n# Sampling sweeps:")
+    print("#  Iter        Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
     global_block_weights = None
@@ -165,11 +162,10 @@ def afqmc_energy(
                 comm,
                 tmpdir,
             )
-            if rank == 0:
-                try:
-                    print(f"node encounters on proc 0: {prop_data['node_crossings']}")
-                except:
-                    pass
+            try:
+                print(f"node encounters on proc 0: {prop_data['node_crossings']}")
+            except:
+                pass
 
     # Analysis phase
     comm.Barrier()
@@ -241,11 +237,10 @@ def afqmc_observable(
     # Equilibration phase
     comm.Barrier()
     init_time = time.time() - init
-    if rank == 0:
-        print("# Equilibration sweeps:")
-        print("#   Iter        Block energy      Walltime")
-        n = 0
-        print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+    print("# Equilibration sweeps:")
+    print("#   Iter        Block energy      Walltime")
+    n = 0
+    print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
     n_ene_blocks_eql = options["n_ene_blocks_eql"]
@@ -273,11 +268,10 @@ def afqmc_observable(
 
     # Sampling phase
     comm.Barrier()
-    if rank == 0:
-        print("#\n# Sampling sweeps:")
-        print(
-            "#  Iter        Mean energy          Stochastic error       Mean observable       Walltime"
-        )
+    print("#\n# Sampling sweeps:")
+    print(
+        "#  Iter        Mean energy          Stochastic error       Mean observable       Walltime"
+    )
     comm.Barrier()
 
     # Setup for sampling phase
@@ -394,8 +388,7 @@ def afqmc_observable(
         op=MPI.SUM,
         root=0,
     )
-    if rank == 0:
-        print(f"#\n# Number of large deviations: {global_large_deviations}", flush=True)
+    print(f"#\n# Number of large deviations: {global_large_deviations}", flush=True)
 
     # Analysis phase
     comm.Barrier()
@@ -467,16 +460,15 @@ def _run_equilibration(
         )
 
         comm.Barrier()
-        if rank == 0:
-            if n % (max(sampler_eq.n_blocks // 5, 1)) == 0:
-                print(
-                    f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9e} {time.time() - init:<10.2e} ",
-                    flush=True,
-                )
-                # print(
-                #    f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ",
-                #    flush=True,
-                # )
+        if n % (max(sampler_eq.n_blocks // 5, 1)) == 0:
+            print(
+                f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9e} {time.time() - init:<10.2e} ",
+                flush=True,
+            )
+            # print(
+            #    f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ",
+            #    flush=True,
+            # )
         comm.Barrier()
     return prop_data
 
@@ -1091,9 +1083,8 @@ def fp_afqmc(
 
     comm.Barrier()
     init_time = time.time() - init
-    if rank == 0:
-        print("#\n# Sampling sweeps:")
-        print("#  Iter        Mean energy          Stochastic error       Walltime")
+    print("#\n# Sampling sweeps:")
+    print("#  Iter        Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
     global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
