@@ -82,7 +82,7 @@ def test_energy():
         "trial": "uhf",
         "walker_type": "unrestricted",
     }
-    ene, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="", tmpdir=tmpdir)
+    ene, _ = run_afqmc.run_afqmc(options=options, tmpdir=tmpdir)
     assert np.isclose(ene, -3.238196747261496, atol=1e-5)
 
 
