@@ -2176,9 +2176,10 @@ class CISD(wave_function_auto):
         GF = self._calc_green_restricted(walker)
         o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
         o1 = jnp.einsum("ia,ia", ci1, GF[:, nocc:])
-        o2 = 2.0 * jnp.einsum(
+        o2 = 2 * jnp.einsum(
             "iajb, ia, jb", ci2, GF[:, nocc:], GF[:, nocc:]
-        )
+        ) - jnp.einsum("iajb, ib, ja", ci2, GF[:, nocc:], GF[:, nocc:])
+
         return (1.0 + 2 * o1 + o2) * o0
 
     def __hash__(self) -> int:
