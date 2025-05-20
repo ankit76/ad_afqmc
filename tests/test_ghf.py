@@ -25,15 +25,15 @@ def transform_matrix(A):
     return B
 
 def random_orthogonal_real(n):
-    np.random.seed(42)
-    A = np.random.randn(n, n)
+    rng = np.random.default_rng()
+    A = rng.standard_normal((n, n))
     Q, R = np.linalg.qr(A)
     Q *= np.sign(np.diag(R))
     return Q
 
 def random_orthogonal_complex(n):
-    np.random.seed(42)
-    A = np.random.randn(n, n) + 1j*np.random.randn(n, n) 
+    rng = np.random.default_rng()
+    A = rng.standard_normal((n, n)) + 1.0j * rng.standard_normal((n, n))
     Q, R = np.linalg.qr(A)
     Q *= np.sign(np.diag(R))
     return Q
