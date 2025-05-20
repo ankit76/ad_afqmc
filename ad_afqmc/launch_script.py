@@ -36,30 +36,29 @@ from ad_afqmc import driver, hamiltonian, sampling
 
 print = partial(print, flush=True)
 
-from prep import read_fcidump, read_options, read_observable, read_wave_data, set_trial, set_prop
+from ad_afqmc import prep
 
 def _prep_afqmc(options=None):
     if rank == 0:
         print(f"# Number of MPI ranks: {size}\n#")
 
-    h0, h1, chol, ms, nelec, nmo, nchol, nelec_sp = read_fcidump(tmpdir)
+    h0, h1, chol, ms, nelec, nmo, nchol, nelec_sp = prep.read_fcidump(tmpdir)
     norb = nmo
 
-    options = read_options(options, rank, tmpdir)
-    observable = read_observable(nmo, options, tmpdir)
+    options = prep.read_options(options, rank, tmpdir)
+    observable = prep.read_observable(nmo, options, tmpdir)
 
     ham = hamiltonian.hamiltonian(nmo)
     ham_data = {}
     ham_data["h0"] = h0
-    ham_data["h1"] = jnp.array([h1, h1])
-    ham_data["chol"] = chol.reshape(nchol, -1)
+    ham_data["h1"] = jnp.array([h1, h1]) #* 0.0
+    ham_data["chol"] = chol.reshape(nchol, -1) #* 0.0
     ham_data["ene0"] = options["ene0"]
 
-    mo_coeff = jnp.array(np.load(tmpdir + "/mo_coeff.npz")["mo_coeff"])
-
-    wave_data = read_wave_data(mo_coeff, norb, nelec_sp, tmpdir)
-    trial = set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir)
-    prop, ham_data = set_prop(options, ham_data)
+    mo_coeff = prep.read_mo_coeff(nmo, tmpdir)
+    wave_data = prep.read_1rdm(mo_coeff, norb, nelec_sp, tmpdir, options)
+    trial = prep.set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir)
+    prop, ham_data = prep.set_prop(options, ham_data)
 
     sampler = sampling.sampler(
         options["n_prop_steps"],

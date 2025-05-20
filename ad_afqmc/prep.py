@@ -43,11 +43,11 @@ def read_options(options, rank, tmpdir):
     options["orbital_rotation"] = options.get("orbital_rotation", True)
     options["do_sr"] = options.get("do_sr", True)
     options["walker_type"] = options.get("walker_type", "restricted")
-    assert options["walker_type"] in ["restricted", "unrestricted"]
+    assert options["walker_type"] in ["restricted", "unrestricted", "generalized"]
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
-    assert options["trial"] in [None, "rhf", "uhf", "noci", "cisd", "ucisd"]
+    assert options["trial"] in [None, "rhf", "uhf", "ghf_real", "ghf_complex", "noci", "cisd", "ucisd", "CISD", "gcisd_complex"]
     print(options["trial"])
     if options["trial"] is None:
         if rank == 0:
@@ -69,8 +69,23 @@ def read_observable(nmo, options, tmpdir):
     except:
         observable = None
 
-def read_wave_data(mo_coeff, norb, nelec_sp, tmpdir):
+def read_mo_coeff(nmo, tmpdir):
+    mo_coeff = jnp.array(np.load(tmpdir + "/mo_coeff.npz")["mo_coeff"])
+    assert(jnp.shape(mo_coeff)[0] == 2)
+    assert(jnp.shape(mo_coeff)[1] == nmo)
+    assert(jnp.shape(mo_coeff)[2] == nmo)
+    return mo_coeff
+
+def read_1rdm(mo_coeff, norb, nelec_sp, tmpdir, options):
     wave_data = {}
+    if options["trial"] in ["ghf_real", "ghf_complex", "gcisd_complex"]:
+        wave_data["rdm1"] = jnp.array(
+            [
+                mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
+                mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
+            ]
+        )
+        return wave_data
     try:
         rdm1 = jnp.array(np.load(tmpdir + "/rdm1.npz")["rdm1"])
         assert rdm1.shape == (2, norb, norb)
@@ -95,6 +110,12 @@ def set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir):
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
         ]
+    elif options["trial"] == "ghf_real":
+        trial = wavefunctions.ghf_real(norb, nelec_sp, n_batch=options["n_batch"])
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]]
+    elif options["trial"] == "ghf_complex":
+        trial = wavefunctions.ghf_complex(norb, nelec_sp, n_batch=options["n_batch"])
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]]
     elif options["trial"] == "noci":
         with open(tmpdir + "/dets.pkl", "rb") as f:
             ci_coeffs_dets = pickle.load(f)
@@ -116,6 +137,16 @@ def set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir):
             trial = wavefunctions.cisd(norb, nelec_sp, n_batch=options["n_batch"])
         except:
             raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
+    elif options["trial"] == "CISD":
+        try:
+            amplitudes = np.load(tmpdir + "/amplitudes.npz")
+            ci1 = jnp.array(amplitudes["ci1"])
+            ci2 = jnp.array(amplitudes["ci2"])
+            trial_wave_data = {"ci1": ci1, "ci2": ci2}
+            wave_data.update(trial_wave_data)
+            trial = wavefunctions.CISD(norb, nelec_sp, n_batch=options["n_batch"])
+        except:
+            raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
     elif options["trial"] == "ucisd":
         try:
             amplitudes = np.load(tmpdir + "/amplitudes.npz")
@@ -134,6 +165,31 @@ def set_trial(options, mo_coeff, norb, nelec_sp, rank, wave_data, tmpdir):
             }
             wave_data.update(trial_wave_data)
             trial = wavefunctions.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
+        except:
+            raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
+    elif options["trial"] == "gcisd_complex":
+        try:
+            amplitudes = np.load(tmpdir + "/amplitudes.npz")
+            #c1 = jnp.array(amplitudes["c1"])
+            #c2 = jnp.array(amplitudes["c2"])
+
+            t1 = jnp.array(amplitudes["t1"])
+            t2 = jnp.array(amplitudes["t2"])
+
+            ci1 = t1
+            ci2 = np.einsum("ijab->iajb",t2) \
+                + np.einsum("ia,jb->iajb",t1,t1) \
+                - np.einsum("ib,ja->iajb",t1,t1)
+            trial_wave_data = {
+                "ci1": ci1,
+                "ci2": ci2,
+                "mo_coeff": mo_coeff,
+            }
+            wave_data.update(trial_wave_data)
+            if options["trial"] == "GCISD_complex":
+                trial = wavefunctions.GCISD_complex(norb, nelec_sp, n_batch=options["n_batch"])
+            else:
+                trial = wavefunctions.gcisd_complex(norb, nelec_sp, n_batch=options["n_batch"])
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
     else:
@@ -181,4 +237,13 @@ def set_prop(options, ham_data):
                 options["n_walkers"],
                 n_batch=options["n_batch"],
             )
+    elif options["walker_type"] == "generalized":
+        if options["symmetry"]:
+            ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
+        else:
+            ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
+
+        prop = propagation.propagator_generalized(
+            options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+        )
     return prop, ham_data

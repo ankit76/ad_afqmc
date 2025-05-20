@@ -58,6 +58,7 @@ def afqmc_energy(
         ham_data, propagator, trial, wave_data
     )
     prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
+
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
@@ -459,6 +460,7 @@ def _run_equilibration(
                     flush=True,
                 )
         comm.Barrier()
+        #kaboooom
     return prop_data
 
 
