@@ -618,7 +618,6 @@ class propagator_generalized(propagator):
         ham_data["mf_shifts"] = 1.0j * vmap(
             lambda x: jnp.sum(x.reshape(trial.norb, trial.norb) * rdm1) 
         )(ham_data["chol"])
-        #jax.debug.print("shift {s}", s = ham_data["mf_shifts"])
         ham_data["h0_prop"] = (
             -ham_data["h0"] - jnp.sum(ham_data["mf_shifts"] ** 2) / 2.0
         )
