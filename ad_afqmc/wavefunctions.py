@@ -2185,71 +2185,6 @@ class CISD(wave_function_auto):
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
-#@dataclass
-#class GCISD_complex(wave_function_auto):
-#    """This class contains functions for the CISD wavefunction
-#    |0> + c(ia) |ia> + c(ia jb) |ia jb>
-#
-#    . The wave_data need to store the coefficient C(ia) and C(ia jb)
-#    """
-#
-#    norb: int
-#    nelec: Tuple[int, int]
-#    eps: float = 1.0e-4  # finite difference step size in local energy calculations
-#    n_batch: int = 1
-#
-#    @partial(jit, static_argnums=0)
-#    def _calc_green_restricted(self, walker: jax.Array) -> jax.Array:
-#        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
-#
-#    #@partial(jit, static_argnums=0)
-#    #def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> complex:
-#    #    nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
-#    #    GF = self._calc_green_restricted(walker)
-#    #    #jax.debug.print("G {g}",g=GF[0,0])
-#    #    o0 = jnp.linalg.det(walker[: walker.shape[1], :])
-#    #    o1 = jnp.einsum("ia,ia", ci1.conj(), GF[:, nocc:])
-#    #    o2 = 2.0 * jnp.einsum("iajb, ia, jb", ci2.conj(), GF[:, nocc:], GF[:, nocc:])
-#    #    #o2 -= jnp.einsum("iajb, ib, ja", ci2.conj(), GF[:, nocc:], GF[:, nocc:])
-#    #    o = (1.0 + o1 + 0.25*o2) * o0
-#    #    #jax.debug.print("o {o}", o=o)
-#    #    return o
-#
-#    @partial(jit, static_argnums=0)
-#    def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> complex:
-#        nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
-#        GF = self._calc_green_restricted(walker)
-#        o0 = jnp.linalg.det(walker[: walker.shape[1], :])
-#        o1 = jnp.einsum("ia,ia", ci1.conj(), GF[:, nocc:])
-#        o2 = 2.0 * jnp.einsum("iajb, ia, jb", ci2.conj(), GF[:, nocc:], GF[:, nocc:])
-#        o = (1.0 + o1 + 0.25*o2) * o0
-#        return o
-#
-#    def __hash__(self) -> int:
-#        return hash(tuple(self.__dict__.values()))
-
-#@dataclass
-#class GHF_complex(wave_function_auto):
-#    """Test
-#    """
-#
-#    norb: int
-#    nelec: Tuple[int, int]
-#    eps: float = 1.0e-4  # finite difference step size in local energy calculations
-#    n_batch: int = 1
-#
-#    @partial(jit, static_argnums=0)
-#    def _calc_green_restricted(self, walker: jax.Array) -> jax.Array:
-#        return (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
-#
-#    @partial(jit, static_argnums=0)
-#    def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> complex:
-#        o0 = jnp.linalg.det(walker[: walker.shape[1], :])
-#        return o0
-#
-#    def __hash__(self) -> int:
-#        return hash(tuple(self.__dict__.values()))
-
 @dataclass
 class gcisd_complex(wave_function_auto):
     """This class contains functions for the CISD wavefunction
@@ -2799,10 +2734,6 @@ class cisd(wave_function):
         green = (walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
         green_occ = green[:, nocc:].copy()
         greenp = jnp.vstack((green_occ, -jnp.eye(self.norb - nocc)))
-        #jax.debug.print("w {w}", w=walker)
-        #jax.debug.print("g {g}", g=green)
-        #jax.debug.print("o {o}", o=green_occ)
-        #jax.debug.print("p {p}", p=greenp)
 
         chol = ham_data["chol"].reshape(-1, self.norb, self.norb)
         rot_chol = chol[:, : self.nelec[0], :]
@@ -2853,12 +2784,7 @@ class cisd(wave_function):
         overlap_1 = 2 * ci1g
         overlap_2 = gci2g / 2.0
         overlap = 1.0 + overlap_1 + overlap_2
-        #jax.debug.print("0 {fb}", fb=fb_0)
-        #jax.debug.print("1 {fb}", fb=fb_1)
-        #jax.debug.print("2 {fb}", fb=fb_2)
-        #jax.debug.print("f {fb}", fb=fb_0+fb_1+fb_2)
-        #jax.debug.print("o {o}", o=overlap)
-        #jax.debug.print("fb {fb}", fb=(fb_0 + fb_1 + fb_2) / overlap)
+
         return (fb_0 + fb_1 + fb_2) / overlap
 
     @partial(jit, static_argnums=0)
@@ -2870,10 +2796,6 @@ class cisd(wave_function):
         green = (walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
         green_occ = green[:, nocc:].copy()
         greenp = jnp.vstack((green_occ, -jnp.eye(self.norb - nocc)))
-        #jax.debug.print("w {w}", w=walker)
-        #jax.debug.print("g {g}", g=green)
-        #jax.debug.print("o {o}", o=green_occ)
-        #jax.debug.print("p {p}", p=greenp)
 
         chol = ham_data["chol"].reshape(-1, self.norb, self.norb)
         rot_chol = chol[:, : self.nelec[0], :]
@@ -3005,11 +2927,7 @@ class cisd(wave_function):
         overlap_1 = 2 * ci1g  # jnp.einsum("ia,ia", ci1, green_occ)
         overlap_2 = gci2g
         overlap = 1.0 + overlap_1 + overlap_2
-        #jax.debug.print("o {o1} {o2}", o1=overlap_1, o2=overlap_2)
-        #jax.debug.print("e1 {e1_0} {e1_1} {e1_2}", e1_0=e1_0, e1_1=e1_1, e1_2=e1_2)
-        #jax.debug.print("e1 {e1}", e1=e1)
-        #jax.debug.print("e2 {e2_0} {e2_1} {e2_2}", e2_0=e2_0, e2_1=e2_1, e2_2=e2_2)
-        #jax.debug.print("e2 {e2}", e2=e2)
+
         return (e1 + e2) / overlap + e0
 
     @partial(jit, static_argnums=0)
