@@ -471,7 +471,6 @@ def _run_equilibration(
             #    flush=True,
             # )
         comm.Barrier()
-        #kaboooom
     return prop_data
 
 
