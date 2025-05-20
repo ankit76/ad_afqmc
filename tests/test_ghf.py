@@ -65,7 +65,7 @@ def check_hf(mol, mf):
     options["trial"] = "rhf"
     options["walker_type"] = "restricted"
     
-    ene1, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="", nproc=None, tmpdir=tmpdir)
+    ene1, err1 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
     
     # RHF based GHF
     mo_coeff = mf.mo_coeff
@@ -76,8 +76,9 @@ def check_hf(mol, mf):
     options["trial"] = "ghf_complex"
     options["walker_type"] = "generalized"   
  
-    ene2, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="", nproc=None, tmpdir=tmpdir)
+    ene2, err2 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
     assert np.isclose(ene1, ene2, atol=1e-6), f"{ene1} {ene2}"
+    assert np.isclose(err1, err2, atol=1e-8), f"{err1} {err2}"
     
     # RHF based GHF with a complex rotation
     mo_coeff = mf.mo_coeff
@@ -86,8 +87,9 @@ def check_hf(mol, mf):
 
     pyscf_interface.prep_afqmc_ghf_complex(mol, mo_coeff+0j, hcore_ao, n_ao, tmpdir, chol_cut=chol_cut)
     
-    ene2, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="", nproc=None, tmpdir=tmpdir)
+    ene2, err2 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
     assert np.isclose(ene1, ene2, atol=1e-6), f"{ene1} {ene2}"
+    assert np.isclose(err1, err2, atol=1e-8), f"{err1} {err2}"
 
 def check_cc(mol, mf):
     nmo=np.shape(mf.mo_coeff)[1]
@@ -105,7 +107,7 @@ def check_cc(mol, mf):
     options["trial"] = "cisd"
     options["walker_type"] = "restricted"
 
-    ene1, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="", nproc=None, tmpdir=tmpdir)
+    ene1, err1 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
 
     # GCCSD
     ## GHF
@@ -124,8 +126,9 @@ def check_cc(mol, mf):
     options["trial"] = "gcisd_complex"
     options["walker_type"] = "generalized"
     
-    ene2, _ = run_afqmc.run_afqmc(options=options, mpi_prefix="", nproc=None, tmpdir=tmpdir)
+    ene2, err2 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
     assert np.isclose(ene1, ene2, atol=1e-6), f"{ene1} vs {ene2}"
+    assert np.isclose(err1, err2, atol=1e-8), f"{err1} {err2}"
 
 # H4
 mol = gto.M(atom="""

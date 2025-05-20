@@ -6,6 +6,24 @@ from dataclasses import dataclass
 import numpy as np
 
 afqmc_config = {"use_gpu": False, "use_mpi": None}
+rank = 0
+
+
+def is_jupyter_notebook():
+    try:
+        from IPython.core.getipython import get_ipython
+
+        ipython = get_ipython()
+        if ipython is not None and "IPKernelApp" in ipython.config:
+            return True
+        else:
+            return False
+    except ImportError:
+        return False
+
+
+if is_jupyter_notebook():
+    afqmc_config["use_mpi"] = False
 
 
 class not_a_comm:
@@ -92,6 +110,7 @@ def setup_comm():
         from mpi4py import MPI
     else:
         MPI = not_MPI()
+    global rank
     rank = MPI.COMM_WORLD.Get_rank()
     if rank == 0 and afqmc_config["use_gpu"] == False:
         hostname = socket.gethostname()
@@ -103,3 +122,8 @@ def setup_comm():
         print(f"# Machine Type: {machine_type}")
         print(f"# Processor: {processor}")
     return MPI
+
+
+def mpi_print(message, flush=True):
+    if rank == 0:
+        print(message, flush=flush)

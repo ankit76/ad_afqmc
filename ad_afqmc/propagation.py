@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import jit, lax, random, vmap
+from jax._src.typing import DTypeLike
 
 from ad_afqmc import linalg_utils, sr, wavefunctions
 from ad_afqmc.wavefunctions import wave_function
@@ -26,6 +27,8 @@ class propagator(ABC):
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
+    vhs_real_dtype: DTypeLike = jnp.float64
+    vhs_complex_dtype: DTypeLike = jnp.complex128
 
     @abstractmethod
     def init_prop_data(
@@ -70,25 +73,23 @@ class propagator(ABC):
         self, exp_h1: jax.Array, vhs_i: jax.Array, walker_i: jax.Array
     ) -> jax.Array:
         """Apply the Trotterized propagator to a det."""
-        walker_i = exp_h1.dot(walker_i)
+        walker_i = exp_h1 @ walker_i
+        fact_recip = jnp.array(
+            [1.0 / math.factorial(n + 1) for n in range(self.n_exp_terms - 1)]
+        )
+        fact_recip = fact_recip.reshape(-1, 1, 1)
 
         def scanned_fun(carry, x):
-            carry = vhs_i.dot(carry)
+            carry = vhs_i.astype(self.vhs_complex_dtype) @ carry
             return carry, carry
 
         _, vhs_n_walker = lax.scan(
-            scanned_fun, walker_i, jnp.arange(1, self.n_exp_terms)
+            scanned_fun,
+            walker_i.astype(self.vhs_complex_dtype),
+            jnp.arange(1, self.n_exp_terms),
         )
-        walker_i = walker_i + jnp.sum(
-            jnp.stack(
-                [
-                    vhs_n_walker[n] / math.factorial(n + 1)
-                    for n in range(self.n_exp_terms - 1)
-                ]
-            ),
-            axis=0,
-        )
-        walker_i = exp_h1.dot(walker_i)
+        walker_i = walker_i + jnp.sum(vhs_n_walker * fact_recip, axis=0)
+        walker_i = exp_h1 @ walker_i
         return walker_i
 
     def _apply_trotprop(
@@ -205,6 +206,8 @@ class propagator_restricted(propagator):
     n_walkers: int = 50
     n_exp_terms: int = 6
     n_batch: int = 1
+    vhs_real_dtype: DTypeLike = jnp.float64
+    vhs_complex_dtype: DTypeLike = jnp.complex128
 
     def init_prop_data(
         self,
@@ -264,9 +267,9 @@ class propagator_restricted(propagator):
             vhs = (
                 1.0j
                 * jnp.sqrt(self.dt)
-                * field_batch.dot(ham_data["chol"]).reshape(
-                    batch_size, walkers.shape[1], walkers.shape[1]
-                )
+                * field_batch.astype(self.vhs_complex_dtype)
+                .dot(ham_data["chol"].astype(self.vhs_real_dtype))
+                .reshape(batch_size, walkers.shape[1], walkers.shape[1])
             )
             walkers_new = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"],
@@ -342,12 +345,15 @@ class propagator_unrestricted(propagator_restricted):
             prop_data["walkers"] = trial.get_init_walkers(
                 wave_data, self.n_walkers, "unrestricted"
             )
-        energy_samples = jnp.real(
-            trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        )
-        e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
-        prop_data["e_estimate"] = e_estimate
-        prop_data["pop_control_ene_shift"] = e_estimate
+        if "e_estimate" in ham_data:
+            prop_data["e_estimate"] = ham_data["e_estimate"]
+        else:
+            energy_samples = jnp.real(
+                trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+            )
+            e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
+            prop_data["e_estimate"] = e_estimate
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["normed_overlaps"] = prop_data["overlaps"]
         prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
@@ -365,9 +371,9 @@ class propagator_unrestricted(propagator_restricted):
             vhs = (
                 1.0j
                 * jnp.sqrt(self.dt)
-                * field_batch.dot(ham_data["chol"]).reshape(
-                    batch_size, walkers[0].shape[1], walkers[0].shape[1]
-                )
+                * field_batch.astype(self.vhs_complex_dtype)
+                .dot(ham_data["chol"].astype(self.vhs_real_dtype))
+                .reshape(batch_size, walkers[0].shape[1], walkers[0].shape[1])
             )
             walkers_new_0 = vmap(self._apply_trotprop_det, in_axes=(None, 0, 0))(
                 ham_data["exp_h1"][0], vhs, walker_batch_0
@@ -653,15 +659,33 @@ class propagator_cpmc(propagator_unrestricted):
         prop_data["walkers"][0] = prop_data["walkers"][0].real
         prop_data["walkers"][1] = prop_data["walkers"][1].real
         prop_data["overlaps"] = prop_data["overlaps"].real
-        prop_data["greens"] = trial.calc_full_green_vmap(
-            prop_data["walkers"], wave_data
-        )
+        try:
+            prop_data["greens"] = trial.calc_full_green_vmap(
+                prop_data["walkers"], wave_data
+            )
+        except:
+            pass
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))
         const = jnp.exp(-self.dt * ham_data["u"] / 2)
         prop_data["hs_constant"] = const * jnp.array(
             [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
         )
+        prop_data["node_crossings"] = 0
         return prop_data
+
+    @partial(jit, static_argnums=(0, 2))
+    def _build_propagation_intermediates(
+        self, ham_data: dict, trial: wave_function, wave_data: dict
+    ) -> dict:
+        ham_data = super()._build_propagation_intermediates(ham_data, trial, wave_data)
+        # no mean field shift
+        ham_data["exp_h1"] = jnp.array(
+            [
+                jsp.linalg.expm(-self.dt * ham_data["h1"][0] / 2.0),
+                jsp.linalg.expm(-self.dt * ham_data["h1"][1] / 2.0),
+            ]
+        )
+        return ham_data
 
     @partial(jit, static_argnums=(0, 1))
     def propagate_one_body(
@@ -739,7 +763,7 @@ class propagator_cpmc(propagator_unrestricted):
             # normalize
             prob_0 = ratio_0.real / 2.0
             prob_1 = ratio_1.real / 2.0
-            norm = prob_0 + prob_1
+            norm = prob_0 + prob_1 + 1e-13
             prob_0 /= norm
 
             # update
@@ -842,6 +866,7 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
+            carry["node_crossings"] += jnp.sum(jnp.array(ratio_0) == 0.0)
 
             # field 2
             new_walkers_1_up = (
@@ -855,6 +880,7 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
+            carry["node_crossings"] += jnp.sum(jnp.array(ratio_1) == 0.0)
 
             # normalize
             norm = ratio_0 + ratio_1
@@ -991,10 +1017,14 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         # one body
         prop_data["walkers"][0] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
-        ) * jnp.exp(self.dt * (prop_data["e_estimate"]) / 2)
+        ) * jnp.exp(
+            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"][0].shape[-1]
+        )
         prop_data["walkers"][1] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
-        ) * jnp.exp(self.dt * (prop_data["e_estimate"]) / 2)
+        ) * jnp.exp(
+            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"][1].shape[-1]
+        )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         # prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
         # prop_data["weights"] = jnp.where(

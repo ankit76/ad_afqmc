@@ -1,6 +1,9 @@
 import os
 import pickle
+import shlex
+import subprocess
 from functools import partial
+from typing import Optional, Union
 
 import numpy as np
 
@@ -9,22 +12,40 @@ from ad_afqmc import config
 print = partial(print, flush=True)
 
 
-def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
+def run_afqmc(
+    options: Optional[dict] = None,
+    mpi_prefix: Optional[str] = None,
+    nproc: Optional[int] = None,
+    tmpdir: Optional[str] = None,
+):
+    """
+    Run AFQMC calculation from pre-generated input files.
+
+    Parameters:
+        options : dict, optional
+            Options for AFQMC.
+        mpi_prefix : str, optional
+            MPI prefix, used to launch MPI processes.
+        nproc : int, optional
+            Number of processes, if using MPI.
+        tmpdir : str, optional
+            Temporary directory where the input files are stored.
+    """
     if tmpdir is None:
         try:
             with open("tmpdir.txt", "r") as f:
                 tmpdir = f.read().strip()
         except:
             tmpdir = "."
-    if options is None:
-        options = {}
-    with open(tmpdir + "/options.bin", "wb") as f:
-        pickle.dump(options, f)
+    if options is not None:
+        with open(tmpdir + "/options.bin", "wb") as f:
+            pickle.dump(options, f)
     path = os.path.abspath(__file__)
     dir_path = os.path.dirname(path)
     script = f"{dir_path}/launch_script.py"
     use_gpu = config.afqmc_config["use_gpu"]
     use_mpi = config.afqmc_config["use_mpi"]
+
     if not use_gpu and config.afqmc_config["use_mpi"] is not False:
         try:
             from mpi4py import MPI
@@ -35,9 +56,15 @@ def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
             print(f"# mpi4py found, using MPI.")
             if nproc is None:
                 print(f"# Number of MPI ranks not specified, using 1 by default.")
+                nproc = 1
         except ImportError:
             use_mpi = False
-            print(f"# Unable to import mpi4py, not using MPI.")
+            if mpi_prefix is not None or nproc is not None:
+                raise ValueError(
+                    f"# MPI prefix or number of processes specified, but mpi4py not found. Please install mpi4py or remove the MPI options."
+                )
+            else:
+                print(f"# Unable to import mpi4py, not using MPI.")
 
     gpu_flag = "--use_gpu" if use_gpu else ""
     mpi_flag = "--use_mpi" if use_mpi else ""
@@ -51,9 +78,32 @@ def run_afqmc(options=None, mpi_prefix=None, nproc=None, tmpdir=None):
             mpi_prefix = ""
     elif nproc is not None:
         mpi_prefix += f"-np {nproc}"
-    os.system(
-        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; {mpi_prefix} python {script} {tmpdir} {gpu_flag} {mpi_flag}"
+    env = os.environ.copy()
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    cmd = shlex.split(f"{mpi_prefix} python {script} {tmpdir} {gpu_flag} {mpi_flag}")
+    # Launch process with real-time output
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        env=env,
+        bufsize=1,
     )
+    # Print output in real-time
+    while True:
+        output = process.stdout.readline()
+        if output == "" and process.poll() is not None:
+            break
+        if output:
+            print(output, end="")
+    return_code = process.poll()
+    if return_code != 0:
+        if return_code is None:
+            return_code = -1
+        raise subprocess.CalledProcessError(return_code, cmd)
+
     try:
         ene_err = np.loadtxt(tmpdir + "/ene_err.txt")
     except:

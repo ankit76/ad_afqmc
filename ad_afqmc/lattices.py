@@ -9,76 +9,6 @@ from jax import numpy as jnp
 from jax.tree_util import register_pytree_node_class
 
 
-def make_phonon_basis(n_sites, max_phonons):
-    basis = []
-    coefficients = [1 for _ in range(n_sites)]
-    for i in range(max_phonons + 1):
-        basis += frobenius(n_sites, coefficients, i)
-    return basis
-
-
-def frobenius(n, coefficients, target):
-    """
-    Enumerates solutions of the Frobenius equation with n integers.
-
-    Args:
-    - n: int, number of integers in the solution
-    - coefficients: list of ints, coefficients for the Frobenius equation
-    - target: int, target value for the Frobenius equation
-
-    Returns:
-    - list of tuples, each tuple represents a solution of the Frobenius equation
-    """
-    dp = [0] + [-1] * target  # Initialize the dynamic programming array
-
-    for i in range(1, target + 1):
-        for j in range(n):
-            if coefficients[j] <= i and dp[i - coefficients[j]] != -1:
-                dp[i] = j
-                break
-
-    if dp[target] == -1:
-        return []  # No solution exists
-
-    solutions = []
-    current_solution = [0] * n
-
-    def get_solution(i, remaining):
-        if i == -1:
-            if remaining == 0:
-                solutions.append(jnp.array(current_solution))
-            return
-
-        for j in range(remaining // coefficients[i], -1, -1):
-            current_solution[i] = j
-            get_solution(i - 1, remaining - j * coefficients[i])
-
-    get_solution(n - 1, target)
-    return solutions
-
-
-def frobenius_0(n, coefficients, target):
-    def backtrack(index, current_solution):
-        nonlocal solutions
-
-        # Base case: when we have n integers in the solution
-        if index == n:
-            # Check if the current solution satisfies the Frobenius equation
-            if sum([coefficients[i] * current_solution[i] for i in range(n)]) == target:
-                solutions.append(jnp.array(current_solution))
-            return
-
-        # Recursive case: for each possible value of the current integer
-        for i in range(target + 1):
-            current_solution[index] = i
-            backtrack(index + 1, current_solution)
-
-    solutions = []
-    current_solution = [0] * n
-    backtrack(0, current_solution)
-    return solutions
-
-
 class lattice(ABC):
     """Abstract base class for lattice objects."""
 
@@ -133,15 +63,6 @@ class one_dimensional_chain(lattice):
 
     def get_site_num(self, pos):
         return pos[0]
-
-    def make_polaron_basis(self, max_n_phonons):
-        phonon_basis = make_phonon_basis(self.n_sites, max_n_phonons)
-        polaron_basis = tuple(
-            [(i,), phonon_state]
-            for i in range(self.n_sites)
-            for phonon_state in phonon_basis
-        )
-        return polaron_basis
 
     def get_marshall_sign(self, walker):
         if isinstance(walker, list):
@@ -300,36 +221,26 @@ class two_dimensional_grid(lattice):
         bond_distances = [*set(bond_distances)]
         bond_distances.sort()
         self.bond_shell_distances = tuple(bond_distances)
-        if (self.l_x == 2) & (self.l_y == 2):
-            self.bonds = ((0, 0, 0), (0, 0, 1), (1, 0, 0), (1, 1, 0))
-        elif self.l_x == 2:
-            self.bonds = tuple(
-                [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-                + [(1, i, 0) for i in range(self.l_y)]
-            )
-        elif self.l_y == 2:
-            self.bonds = tuple(
-                [(0, 0, i) for i in self.l_x]
-                + [(1, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-            )
-        else:
-            self.bonds = tuple(
-                [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-                + [(1, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
-            )
+        # if (self.l_x == 2) & (self.l_y == 2):
+        #     self.bonds = ((0, 0, 0), (0, 0, 1), (1, 0, 0), (1, 1, 0))
+        # elif self.l_x == 2:
+        #     self.bonds = tuple(
+        #         [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
+        #         + [(1, i, 0) for i in range(self.l_y)]
+        #     )
+        # elif self.l_y == 2:
+        #     self.bonds = tuple(
+        #         [(0, 0, i) for i in self.l_x]
+        #         + [(1, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
+        #     )
+        # else:
+        self.bonds = tuple(
+            [(0, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
+            + [(1, i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y)]
+        )
 
     def get_site_num(self, pos):
         return pos[1] + self.l_x * pos[0]
-
-    def make_polaron_basis(self, max_n_phonons):
-        phonon_basis = make_phonon_basis(self.l_x * self.l_y, max_n_phonons)
-        assert self.sites is not None
-        polaron_basis = tuple(
-            [site, phonon_state.reshape((self.l_y, self.l_x))]
-            for site in self.sites
-            for phonon_state in phonon_basis
-        )
-        return polaron_basis
 
     def get_marshall_sign(self, walker):
         if isinstance(walker, list):
@@ -553,6 +464,30 @@ class triangular_grid(lattice):
 
     def get_site_num(self, pos):
         return pos[1] + self.l_y * pos[0]
+    
+    def get_site_coordinate(self, pos):
+        """
+        Returns the real space coordinate of the site specified by `pos`,
+        assuming a primitive lattice vector of unit length.
+        """
+        theta = np.pi / 3.
+        lattice_vecs = np.array([[np.cos(theta), 1.],
+                                 [np.sin(theta), 0.]])
+        if self.open_x:
+            L2, L1 = lattice_vecs.T
+            L3 = L2 - L1
+            Ly = [L2, L3]
+            coords = np.zeros(2)
+
+            for i in range(1, pos[0]+1):
+                coords += Ly[(i-1) % 2]
+
+            coords += pos[1] * L1
+
+        else: # PBC and OBC.
+            coords = pos @ lattice_vecs.T
+
+        return coords
 
     # @partial(jit, static_argnums=(0,))
     def get_nearest_neighbors(self, pos):
@@ -668,29 +603,6 @@ class three_dimensional_grid(lattice):
         )
         # TODO: fix bonds
         # self.bonds = tuple([ (i // self.l_x, i % self.l_x) for i in range(self.l_x * self.l_y) ])
-
-    def make_polaron_basis(self, max_n_phonons):
-        phonon_basis = make_phonon_basis(self.l_x * self.l_y * self.l_z, max_n_phonons)
-        assert self.sites is not None
-        polaron_basis = tuple(
-            [site, phonon_state.reshape((self.l_x, self.l_y, self.l_z))]
-            for site in self.sites
-            for phonon_state in phonon_basis
-        )
-        return polaron_basis
-
-    def make_polaron_basis_n(self, n_bands, max_n_phonons):
-        phonon_basis = make_phonon_basis(self.l_x * self.l_y * self.l_z, max_n_phonons)
-        assert self.sites is not None
-        electronic_basis = tuple(
-            [(n, site) for n in range(n_bands) for site in self.sites]
-        )
-        polaron_basis = tuple(
-            [site, phonon_state.reshape((self.l_x, self.l_y, self.l_z))]
-            for site in electronic_basis
-            for phonon_state in phonon_basis
-        )
-        return polaron_basis
 
     def get_site_num(self, pos):
         return pos[2] + self.l_x * pos[1] + (self.l_x * self.l_y) * pos[0]

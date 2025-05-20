@@ -50,6 +50,7 @@ wave_data_multislater = {
     "Bdes": Bdes,
     "coeff": coeff,
     "ref_det": ref_det,
+    "orbital_rotation": jnp.eye(norb),
 }
 
 nelec_sp = (3, 2)

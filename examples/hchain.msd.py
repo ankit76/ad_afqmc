@@ -1,5 +1,6 @@
 import pickle
 
+import numpy as np
 from pyscf import fci, gto, scf
 
 from ad_afqmc import pyscf_interface, run_afqmc, wavefunctions
@@ -29,6 +30,7 @@ wave_data = {
     "Bdes": Bdes,
     "coeff": coeff,
     "ref_det": ref_det,
+    "orbital_rotation": np.eye(mol.nao),
 }
 # write wavefunction to disk
 with open("trial.pkl", "wb") as f:
