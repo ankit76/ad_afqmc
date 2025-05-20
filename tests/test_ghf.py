@@ -131,32 +131,34 @@ def check_cc(mol, mf):
     assert np.isclose(err1, err2, atol=1e-8), f"{err1} {err2}"
 
 # H4
-mol = gto.M(atom="""
-    H 0. 0. -1.2
-    H 0. 0. -0.4
-    H 0. 0. 0.4
-    H 0. 0. 1.2
-    """,
-    basis="sto-3g",
-    verbose=3)
-mf = scf.RHF(mol)
-mf.kernel()
-
-check_hf(mol, mf)
-check_cc(mol, mf)
+def test_h4():
+    mol = gto.M(atom="""
+        H 0. 0. -1.2
+        H 0. 0. -0.4
+        H 0. 0. 0.4
+        H 0. 0. 1.2
+        """,
+        basis="sto-3g",
+        verbose=3)
+    mf = scf.RHF(mol)
+    mf.kernel()
+    
+    check_hf(mol, mf)
+    check_cc(mol, mf)
 
 # H2O
-mol = gto.M(
-    atom = f'''
-    O        0.0000000000      0.0000000000      0.0000000000
-    H        0.9562300000      0.0000000000      0.0000000000
-    H       -0.2353791634      0.9268076728      0.0000000000
-    ''',
-    basis = 'sto-3g',
-    spin=0,
-    verbose = 3)
-mf = scf.RHF(mol)
-mf.kernel()
-
-check_hf(mol, mf)
-check_cc(mol, mf)
+def test_h2o():
+    mol = gto.M(
+        atom = f'''
+        O        0.0000000000      0.0000000000      0.0000000000
+        H        0.9562300000      0.0000000000      0.0000000000
+        H       -0.2353791634      0.9268076728      0.0000000000
+        ''',
+        basis = 'sto-3g',
+        spin=0,
+        verbose = 3)
+    mf = scf.RHF(mol)
+    mf.kernel()
+    
+    check_hf(mol, mf)
+    check_cc(mol, mf)
