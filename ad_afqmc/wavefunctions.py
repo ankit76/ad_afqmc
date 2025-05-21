@@ -2619,6 +2619,7 @@ class ucisd(wave_function):
     n_batch: int = 1
     mixed_real_dtype: DTypeLike = jnp.float64
     mixed_complex_dtype: DTypeLike = jnp.complex128
+    memory_mode: Literal["high", "low"] = "low"
 
     @partial(jit, static_argnums=0)
     def _calc_overlap(
@@ -2912,59 +2913,119 @@ class ucisd(wave_function):
         )
         e2_2_2_1 = -((lci2g_a + lci2g_b) @ (lg_a + lg_b)) / 2.0
 
-        def scanned_fun(carry, x):
-            chol_a_i, rot_chol_a_i, chol_b_i, rot_chol_b_i = x
-            gl_a_i = jnp.einsum("pj,ji->pi", green_a, chol_a_i, optimize="optimal")
-            gl_b_i = jnp.einsum("pj,ji->pi", green_b, chol_b_i, optimize="optimal")
-            lci2_green_a_i = jnp.einsum(
-                "pi,ji->pj",
-                rot_chol_a_i,
+        if self.memory_mode == "low":
+
+            def scan_over_chol(carry, x):
+                chol_a_i, rot_chol_a_i, chol_b_i, rot_chol_b_i = x
+                gl_a_i = jnp.einsum("pj,ji->pi", green_a, chol_a_i, optimize="optimal")
+                gl_b_i = jnp.einsum("pj,ji->pi", green_b, chol_b_i, optimize="optimal")
+                lci2_green_a_i = jnp.einsum(
+                    "pi,ji->pj",
+                    rot_chol_a_i,
+                    8 * ci2_green_a + 2 * ci2_green_ab_a,
+                    optimize="optimal",
+                )
+                lci2_green_b_i = jnp.einsum(
+                    "pi,ji->pj",
+                    rot_chol_b_i,
+                    8 * ci2_green_b + 2 * ci2_green_ab_b,
+                    optimize="optimal",
+                )
+                carry[0] += 0.5 * (
+                    jnp.einsum("pi,pi->", gl_a_i, lci2_green_a_i, optimize="optimal")
+                    + jnp.einsum("pi,pi->", gl_b_i, lci2_green_b_i, optimize="optimal")
+                )
+                glgp_a_i = jnp.einsum(
+                    "pi,it->pt", gl_a_i, greenp_a, optimize="optimal"
+                ).astype(jnp.complex64)
+                glgp_b_i = jnp.einsum(
+                    "pi,it->pt", gl_b_i, greenp_b, optimize="optimal"
+                ).astype(jnp.complex64)
+                l2ci2_a = 0.5 * jnp.einsum(
+                    "pt,qu,ptqu->",
+                    glgp_a_i,
+                    glgp_a_i,
+                    ci2_aa.astype(jnp.float32),
+                    optimize="optimal",
+                )
+                l2ci2_b = 0.5 * jnp.einsum(
+                    "pt,qu,ptqu->",
+                    glgp_b_i,
+                    glgp_b_i,
+                    ci2_bb.astype(jnp.float32),
+                    optimize="optimal",
+                )
+                l2ci2_ab = jnp.einsum(
+                    "pt,qu,ptqu->",
+                    glgp_a_i,
+                    glgp_b_i,
+                    ci2_ab.astype(jnp.float32),
+                    optimize="optimal",
+                )
+                carry[1] += l2ci2_a + l2ci2_b + l2ci2_ab
+                return carry, 0.0
+
+            [e2_2_2_2, e2_2_3], _ = lax.scan(
+                scan_over_chol, [0.0, 0.0], (chol_a, rot_chol_a, chol_b, rot_chol_b)
+            )
+        else:
+            gl_a = jnp.einsum(
+                "pj,gji->gpi",
+                green_a.astype(self.mixed_complex_dtype),
+                chol_a.astype(self.mixed_real_dtype),
+                optimize="optimal",
+            )
+            gl_b = jnp.einsum(
+                "pj,gji->gpi",
+                green_b.astype(self.mixed_complex_dtype),
+                chol_b.astype(self.mixed_real_dtype),
+                optimize="optimal",
+            )
+            lci2_green_a = jnp.einsum(
+                "gpi,ji->gpj",
+                rot_chol_a,
                 8 * ci2_green_a + 2 * ci2_green_ab_a,
                 optimize="optimal",
             )
-            lci2_green_b_i = jnp.einsum(
-                "pi,ji->pj",
-                rot_chol_b_i,
+            lci2_green_b = jnp.einsum(
+                "gpi,ji->gpj",
+                rot_chol_b,
                 8 * ci2_green_b + 2 * ci2_green_ab_b,
                 optimize="optimal",
             )
-            carry[0] += 0.5 * (
-                jnp.einsum("pi,pi->", gl_a_i, lci2_green_a_i, optimize="optimal")
-                + jnp.einsum("pi,pi->", gl_b_i, lci2_green_b_i, optimize="optimal")
+            e2_2_2_2 = 0.5 * (
+                jnp.einsum("gpi,gpi->", gl_a, lci2_green_a, optimize="optimal")
+                + jnp.einsum("gpi,gpi->", gl_b, lci2_green_b, optimize="optimal")
             )
-            glgp_a_i = jnp.einsum(
-                "pi,it->pt", gl_a_i, greenp_a, optimize="optimal"
+            glgp_a = jnp.einsum(
+                "gpi,it->gpt", gl_a, greenp_a, optimize="optimal"
             ).astype(jnp.complex64)
-            glgp_b_i = jnp.einsum(
-                "pi,it->pt", gl_b_i, greenp_b, optimize="optimal"
+            glgp_b = jnp.einsum(
+                "gpi,it->gpt", gl_b, greenp_b, optimize="optimal"
             ).astype(jnp.complex64)
             l2ci2_a = 0.5 * jnp.einsum(
-                "pt,qu,ptqu->",
-                glgp_a_i,
-                glgp_a_i,
+                "gpt,gqu,ptqu->g",
+                glgp_a,
+                glgp_a,
                 ci2_aa.astype(jnp.float32),
                 optimize="optimal",
             )
             l2ci2_b = 0.5 * jnp.einsum(
-                "pt,qu,ptqu->",
-                glgp_b_i,
-                glgp_b_i,
+                "gpt,gqu,ptqu->g",
+                glgp_b,
+                glgp_b,
                 ci2_bb.astype(jnp.float32),
                 optimize="optimal",
             )
             l2ci2_ab = jnp.einsum(
-                "pt,qu,ptqu->",
-                glgp_a_i,
-                glgp_b_i,
+                "gpt,gqu,ptqu->g",
+                glgp_a,
+                glgp_b,
                 ci2_ab.astype(jnp.float32),
                 optimize="optimal",
             )
-            carry[1] += l2ci2_a + l2ci2_b + l2ci2_ab
-            return carry, 0.0
+            e2_2_3 = l2ci2_a.sum() + l2ci2_b.sum() + l2ci2_ab.sum()
 
-        [e2_2_2_2, e2_2_3], _ = lax.scan(
-            scanned_fun, [0.0, 0.0], (chol_a, rot_chol_a, chol_b, rot_chol_b)
-        )
         e2_2_2 = e2_2_2_1 + e2_2_2_2
         e2_2 = e2_2_1 + e2_2_2 + e2_2_3
 

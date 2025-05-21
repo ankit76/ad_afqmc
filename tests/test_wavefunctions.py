@@ -346,16 +346,21 @@ def test_ucisd():
     ci1_b = jnp.array(np.random.randn(nocc_b, norb - nocc_b)) / (
         (norb - nocc_b) * nocc_b
     )
-    walker_up = jnp.array(np.random.randn(norb, nocc_a)) / (norb * nocc_a) + 0.0j
-    walker_dn = jnp.array(np.random.randn(norb, nocc_b)) / (norb * nocc_b) + 0.0j
+    walker_up = jnp.array(
+        np.random.randn(norb, nocc_a) + 1.0j * np.random.randn(norb, nocc_a)
+    )
+    walker_dn = jnp.array(
+        np.random.randn(norb, nocc_b) + 1.0j * np.random.randn(norb, nocc_b)
+    )
     trial = wavefunctions.ucisd(norb, nelec)
+    trial_hm = wavefunctions.ucisd(norb, nelec, memory_mode="high")
     trial_auto = wavefunctions.UCISD(norb, nelec)
     ci2_aa = jnp.array(np.random.randn(nocc_a, norb - nocc_a, nocc_a, norb - nocc_a))
     ci2_aa = (ci2_aa + ci2_aa.transpose(2, 3, 0, 1)) / 2.0
-    ci2_aa = (ci2_aa - ci2_aa.transpose(0, 3, 2, 1)) / 2.0 / ci2_aa.size
+    ci2_aa = (ci2_aa - ci2_aa.transpose(0, 3, 2, 1)) / 2.0
     ci2_bb = jnp.array(np.random.randn(nocc_b, norb - nocc_b, nocc_b, norb - nocc_b))
     ci2_bb = (ci2_bb + ci2_bb.transpose(2, 3, 0, 1)) / 2.0
-    ci2_bb = (ci2_bb - ci2_bb.transpose(0, 3, 2, 1)) / 2.0 / ci2_bb.size
+    ci2_bb = (ci2_bb - ci2_bb.transpose(0, 3, 2, 1)) / 2.0
     ci2_ab = jnp.array(np.random.randn(nocc_a, norb - nocc_a, nocc_b, norb - nocc_b))
     mo_coeff_b = jnp.linalg.qr(jnp.array(np.random.randn(norb, norb)))[0]
     mo_coeff = jnp.array([np.eye(norb, norb), mo_coeff_b])
@@ -371,15 +376,15 @@ def test_ucisd():
     h1 = jnp.array(np.random.randn(norb, norb))
     h1 = (h1 + h1.T) / 2.0 / h1.size
     chol = jnp.array(np.random.randn(nchol, norb, norb))
-    chol = (chol + chol.transpose(0, 2, 1)) / 2.0 / chol.size
+    chol = (chol + chol.transpose(0, 2, 1)) / 2.0 / jnp.sqrt(norb)
     ham_data = {"h0": h0, "h1": jnp.array([h1, h1]), "chol": chol}
     ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
     ham_data = trial_auto._build_measurement_intermediates(ham_data, wave_data)
-    assert np.allclose(
-        trial._calc_energy(walker_up, walker_dn, ham_data, wave_data),
-        trial_auto._calc_energy(walker_up, walker_dn, ham_data, wave_data),
-        atol=1.0e-4,
-    )
+    ene_lm = trial._calc_energy(walker_up, walker_dn, ham_data, wave_data)
+    ene_hm = trial_hm._calc_energy(walker_up, walker_dn, ham_data, wave_data)
+    ene_auto = trial_auto._calc_energy(walker_up, walker_dn, ham_data, wave_data)
+    assert np.allclose(ene_auto, ene_lm, atol=1.0e-4)
+    assert np.allclose(ene_lm, ene_hm, atol=1.0e-5)
     assert np.allclose(
         trial._calc_force_bias(walker_up, walker_dn, ham_data, wave_data),
         trial_auto._calc_force_bias(walker_up, walker_dn, ham_data, wave_data),
