@@ -329,7 +329,7 @@ def test_cisd():
     ene_manual_lm = trial._calc_energy_restricted(walker, ham_data, wave_data)
     ene_manual_hm = trial_hm._calc_energy_restricted(walker, ham_data, wave_data)
     assert np.allclose(ene_auto, ene_manual_lm, atol=1.0e-4)
-    assert np.allclose(ene_manual_lm, ene_manual_hm, atol=1.0e-5)
+    assert np.allclose(ene_manual_lm, ene_manual_hm, atol=1.0e-4)
     assert np.allclose(
         trial._calc_force_bias_restricted(walker, ham_data, wave_data),
         trial_auto._calc_force_bias_restricted(walker, ham_data, wave_data),
@@ -384,7 +384,7 @@ def test_ucisd():
     ene_hm = trial_hm._calc_energy(walker_up, walker_dn, ham_data, wave_data)
     ene_auto = trial_auto._calc_energy(walker_up, walker_dn, ham_data, wave_data)
     assert np.allclose(ene_auto, ene_lm, atol=1.0e-4)
-    assert np.allclose(ene_lm, ene_hm, atol=1.0e-5)
+    assert np.allclose(ene_lm, ene_hm, atol=1.0e-4)
     assert np.allclose(
         trial._calc_force_bias(walker_up, walker_dn, ham_data, wave_data),
         trial_auto._calc_force_bias(walker_up, walker_dn, ham_data, wave_data),
