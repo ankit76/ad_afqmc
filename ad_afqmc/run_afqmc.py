@@ -35,8 +35,11 @@ def run_afqmc(
         try:
             with open("tmpdir.txt", "r") as f:
                 tmpdir = f.read().strip()
+            print(f"# tmpdir.txt file found: tmpdir is set to '{tmpdir}'\n#")
         except:
             tmpdir = "."
+    assert os.path.isdir(tmpdir), f"tmpdir directory '{tmpdir}' does not exist."
+
     if options is not None:
         with open(tmpdir + "/options.bin", "wb") as f:
             pickle.dump(options, f)
