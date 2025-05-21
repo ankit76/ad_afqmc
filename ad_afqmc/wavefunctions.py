@@ -2343,6 +2343,12 @@ class cisd(wave_function):
         memory_mode: enum
             Memory mode for energy calculations. "high" builds O(XNM) scaling intermediates per walker,
             "low" builds at most O(XN^2).
+        _mixed_real_dtype_testing: DTypeLike
+            Data type used for testing. Some operations are in single precision by default but
+            can be changed to double precision for testing.
+        _mixed_complex_dtype_testing: DTypeLike
+            Data type used for testing. Some operations are in single precision by default but
+            can be changed to double precision for testing.
     """
 
     norb: int
@@ -2351,6 +2357,8 @@ class cisd(wave_function):
     mixed_real_dtype: DTypeLike = jnp.float64
     mixed_complex_dtype: DTypeLike = jnp.complex128
     memory_mode: Literal["high", "low"] = "low"
+    _mixed_real_dtype_testing: DTypeLike = jnp.float32
+    _mixed_complex_dtype_testing: DTypeLike = jnp.complex64
 
     def __post_init__(self):
         if self.memory_mode not in {"low", "high"}:
@@ -2534,19 +2542,19 @@ class cisd(wave_function):
                 )
                 glgp_i = jnp.einsum(
                     "pi,it->pt", gl_i, greenp, optimize="optimal"
-                ).astype(jnp.complex64)
+                ).astype(self._mixed_complex_dtype_testing)
                 l2ci2_1 = jnp.einsum(
                     "pt,qu,ptqu->",
                     glgp_i,
                     glgp_i,
-                    ci2.astype(jnp.float32),
+                    ci2.astype(self._mixed_real_dtype_testing),
                     optimize="optimal",
                 )
                 l2ci2_2 = jnp.einsum(
                     "pu,qt,ptqu->",
                     glgp_i,
                     glgp_i,
-                    ci2.astype(jnp.float32),
+                    ci2.astype(self._mixed_real_dtype_testing),
                     optimize="optimal",
                 )
                 carry[1] += 2 * l2ci2_1 - l2ci2_2
@@ -2567,20 +2575,20 @@ class cisd(wave_function):
             )
             e2_2_2_2 = 0.5 * jnp.einsum("gpi,gpi->", gl, lci2_green, optimize="optimal")
             glgp = jnp.einsum("gpi,it->gpt", gl, greenp, optimize="optimal").astype(
-                jnp.complex64
+                self._mixed_complex_dtype_testing
             )
             l2ci2_1 = jnp.einsum(
                 "gpt,gqu,ptqu->g",
                 glgp,
                 glgp,
-                ci2.astype(jnp.float32),
+                ci2.astype(self._mixed_real_dtype_testing),
                 optimize="optimal",
             )
             l2ci2_2 = jnp.einsum(
                 "gpu,gqt,ptqu->g",
                 glgp,
                 glgp,
-                ci2.astype(jnp.float32),
+                ci2.astype(self._mixed_real_dtype_testing),
                 optimize="optimal",
             )
             e2_2_3 = 2 * l2ci2_1.sum() - l2ci2_2.sum()
@@ -2620,6 +2628,8 @@ class ucisd(wave_function):
     mixed_real_dtype: DTypeLike = jnp.float64
     mixed_complex_dtype: DTypeLike = jnp.complex128
     memory_mode: Literal["high", "low"] = "low"
+    _mixed_real_dtype_testing: DTypeLike = jnp.float32
+    _mixed_complex_dtype_testing: DTypeLike = jnp.complex64
 
     @partial(jit, static_argnums=0)
     def _calc_overlap(
@@ -2937,29 +2947,29 @@ class ucisd(wave_function):
                 )
                 glgp_a_i = jnp.einsum(
                     "pi,it->pt", gl_a_i, greenp_a, optimize="optimal"
-                ).astype(jnp.complex64)
+                ).astype(self._mixed_complex_dtype_testing)
                 glgp_b_i = jnp.einsum(
                     "pi,it->pt", gl_b_i, greenp_b, optimize="optimal"
-                ).astype(jnp.complex64)
+                ).astype(self._mixed_complex_dtype_testing)
                 l2ci2_a = 0.5 * jnp.einsum(
                     "pt,qu,ptqu->",
                     glgp_a_i,
                     glgp_a_i,
-                    ci2_aa.astype(jnp.float32),
+                    ci2_aa.astype(self._mixed_real_dtype_testing),
                     optimize="optimal",
                 )
                 l2ci2_b = 0.5 * jnp.einsum(
                     "pt,qu,ptqu->",
                     glgp_b_i,
                     glgp_b_i,
-                    ci2_bb.astype(jnp.float32),
+                    ci2_bb.astype(self._mixed_real_dtype_testing),
                     optimize="optimal",
                 )
                 l2ci2_ab = jnp.einsum(
                     "pt,qu,ptqu->",
                     glgp_a_i,
                     glgp_b_i,
-                    ci2_ab.astype(jnp.float32),
+                    ci2_ab.astype(self._mixed_real_dtype_testing),
                     optimize="optimal",
                 )
                 carry[1] += l2ci2_a + l2ci2_b + l2ci2_ab
@@ -2999,29 +3009,29 @@ class ucisd(wave_function):
             )
             glgp_a = jnp.einsum(
                 "gpi,it->gpt", gl_a, greenp_a, optimize="optimal"
-            ).astype(jnp.complex64)
+            ).astype(self._mixed_complex_dtype_testing)
             glgp_b = jnp.einsum(
                 "gpi,it->gpt", gl_b, greenp_b, optimize="optimal"
-            ).astype(jnp.complex64)
+            ).astype(self._mixed_complex_dtype_testing)
             l2ci2_a = 0.5 * jnp.einsum(
                 "gpt,gqu,ptqu->g",
                 glgp_a,
                 glgp_a,
-                ci2_aa.astype(jnp.float32),
+                ci2_aa.astype(self._mixed_real_dtype_testing),
                 optimize="optimal",
             )
             l2ci2_b = 0.5 * jnp.einsum(
                 "gpt,gqu,ptqu->g",
                 glgp_b,
                 glgp_b,
-                ci2_bb.astype(jnp.float32),
+                ci2_bb.astype(self._mixed_real_dtype_testing),
                 optimize="optimal",
             )
             l2ci2_ab = jnp.einsum(
                 "gpt,gqu,ptqu->g",
                 glgp_a,
                 glgp_b,
-                ci2_ab.astype(jnp.float32),
+                ci2_ab.astype(self._mixed_real_dtype_testing),
                 optimize="optimal",
             )
             e2_2_3 = l2ci2_a.sum() + l2ci2_b.sum() + l2ci2_ab.sum()
