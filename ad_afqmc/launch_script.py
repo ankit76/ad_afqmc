@@ -2,7 +2,7 @@ import argparse
 import pickle
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
-
+import os
 import h5py
 import numpy as np
 from jax import numpy as jnp
@@ -63,6 +63,7 @@ def read_fcidump(tmp_dir: Optional[str] = None) -> Tuple:
     """
     directory = tmp_dir if tmp_dir is not None else tmpdir
 
+    assert os.path.isfile(directory + "/FCIDUMP_chol"), f"File '{directory}/FCIDUMP_chol' does not exist."
     with h5py.File(directory + "/FCIDUMP_chol", "r") as fh5:
         [nelec, norb, ms, nchol] = fh5["header"]
         h0 = jnp.array(fh5.get("energy_core"))
