@@ -312,6 +312,7 @@ def test_cisd():
     ci1 = jnp.array(np.random.randn(nocc, norb - nocc))
     walker = jnp.array(np.random.randn(norb, nocc)) + 0.0j
     trial = wavefunctions.cisd(norb, nelec)
+    trial_hm = wavefunctions.cisd(norb, nelec, memory_mode="high")
     trial_auto = wavefunctions.CISD(norb, nelec)
     ci2 = jnp.array(np.random.randn(nocc, norb - nocc, nocc, norb - nocc))
     ci2 = (ci2 + ci2.transpose(2, 3, 0, 1)) / 2.0
@@ -324,11 +325,11 @@ def test_cisd():
     ham_data = {"h0": h0, "h1": jnp.array([h1, h1]), "chol": chol}
     ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
     ham_data = trial_auto._build_measurement_intermediates(ham_data, wave_data)
-    assert np.allclose(
-        trial._calc_energy_restricted(walker, ham_data, wave_data),
-        trial_auto._calc_energy_restricted(walker, ham_data, wave_data),
-        atol=1.0e-4,
-    )
+    ene_auto = trial_auto._calc_energy_restricted(walker, ham_data, wave_data)
+    ene_manual_lm = trial._calc_energy_restricted(walker, ham_data, wave_data)
+    ene_manual_hm = trial_hm._calc_energy_restricted(walker, ham_data, wave_data)
+    assert np.allclose(ene_auto, ene_manual_lm, atol=1.0e-4)
+    assert np.allclose(ene_manual_lm, ene_manual_hm, atol=1.0e-5)
     assert np.allclose(
         trial._calc_force_bias_restricted(walker, ham_data, wave_data),
         trial_auto._calc_force_bias_restricted(walker, ham_data, wave_data),
