@@ -315,7 +315,7 @@ class wave_function(ABC):
                     natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
                 )
                 if (
-                    np.abs(det_overlap) > 1e-3
+                    np.abs(det_overlap) > 1e-5
                 ):  # probably should scale this threshold with number of electrons
                     return jnp.array([natorbs_up + 0.0j] * n_walkers)
                 else:
@@ -332,7 +332,7 @@ class wave_function(ABC):
                     det_overlap = np.linalg.det(
                         new_vecs.T @ natorbs_up[:, : self.nelec[0]]
                     ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
-                    if np.abs(det_overlap) > 1e-3:
+                    if np.abs(det_overlap) > 1e-5:
                         return jnp.array([new_vecs + 0.0j] * n_walkers)
                     else:
                         raise ValueError(
