@@ -28,7 +28,7 @@ def check(obj, options, e, atol, mpi):
         mpi_prefix = "mpirun "
         nproc = 2
     else:
-        mpi_prefix = ""
+        mpi_prefix = None
         nproc = None
 
     ene, _ = run_afqmc.run_afqmc(
