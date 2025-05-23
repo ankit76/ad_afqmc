@@ -17,11 +17,9 @@ mf.kernel()
 
 # Frozen-core RCCSD 
 mycc = cc.CCSD(mf)
-mycc.frozen = 1
 mycc.kernel()
 
 # Frozen-core afqmc @ RCCSD
 af = afqmc.AFQMC(mycc)
-af.frozen = 1
 af.nproc = 2 # Number of MPI processes
 af.kernel()

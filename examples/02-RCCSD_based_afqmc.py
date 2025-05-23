@@ -28,5 +28,5 @@ mycc.kernel()
 
 # Frozen-core afqmc @ RCCSD
 af = afqmc.AFQMC(mycc)
-af.frozen = 1
+af.norb_frozen = 1
 af.kernel()
