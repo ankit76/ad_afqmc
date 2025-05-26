@@ -94,7 +94,7 @@ def get_spin_covariance(psi0a, psi0b, ao_ovlp):
     return A, spin_cov
 
 
-def spin_collinearity_test(psi0, ao_ovlp, debug=False):
+def spin_collinearity_test(psi0, ao_ovlp, verbose=False, debug=False):
     """
     Spin collinearity test as introduced in 10.197.16.115
     """
@@ -144,17 +144,18 @@ def spin_collinearity_test(psi0, ao_ovlp, debug=False):
     evals, evecs = np.linalg.eigh(A)
     mu = evals[0]
     spin_axis = evecs[:, 0]
+    
+    if verbose:
+        print(f'\n# ----------------------')
+        print(f'# Spin collinearity test')
+        print(f'# ----------------------')
+        print(f'# epsilon0 = {epsilon0}')
+        print(f"# non {'half-' if nocc%2 else ''}integer value indicates non-collinearity")
 
-    print(f'\n# ----------------------')
-    print(f'# Spin collinearity test')
-    print(f'# ----------------------')
-    print(f'# epsilon0 = {epsilon0}')
-    print(f"# non {'half-' if nocc%2 else ''}integer value indicates non-collinearity")
+        print(f'\n# minimum mu = {mu}')
+        print(f'# Value is 0 iff wavefunction is collinear')
 
-    print(f'\n# minimum mu = {mu}')
-    print(f'# Value is 0 iff wavefunction is collinear')
-
-    print(f'\n# If mu = 0, the collinear spin axis is: \n{spin_axis}')
+        print(f'\n# If mu = 0, the collinear spin axis is: \n{spin_axis}')
     
     if debug: return epsilon0, mu, evals, evecs, A
     return epsilon0, mu, spin_axis
