@@ -137,7 +137,12 @@ def prep_afqmc(
                     chol[i, n, m] = chol0[i, triind]
 
         # basis transformation
-        h1e = basis_coeff.T @ h1e @ basis_coeff
+        if h1e.ndim == 3:
+            h1e[0] = basis_coeff.T @ h1e[0] @ basis_coeff
+            h1e[1] = basis_coeff.T @ h1e[1] @ basis_coeff
+        
+        else: h1e = basis_coeff.T @ h1e @ basis_coeff
+
         for gamma in range(nchol):
             chol[gamma] = basis_coeff.T @ chol[gamma] @ basis_coeff
 

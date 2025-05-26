@@ -44,7 +44,7 @@ def _prep_afqmc(options=None, tmpdir="."):
     with h5py.File(tmpdir + "/FCIDUMP_chol", "r") as fh5:
         [nelec, nmo, ms, nchol] = fh5["header"]
         h0 = jnp.array(fh5.get("energy_core"))
-        h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
+        h1 = jnp.array(fh5.get("hcore"))
         chol = jnp.array(fh5.get("chol")).reshape(-1, nmo, nmo)
 
     assert type(ms) is np.int64
@@ -106,7 +106,8 @@ def _prep_afqmc(options=None, tmpdir="."):
     ham = hamiltonian.hamiltonian(nmo)
     ham_data = {}
     ham_data["h0"] = h0
-    ham_data["h1"] = jnp.array([h1, h1])
+    if h1.ndim == 3: ham_data["h1"] = jnp.array(h1)
+    else: ham_data["h1"] = jnp.array([h1, h1])
     ham_data["chol"] = chol.reshape(nchol, -1)
     ham_data["ene0"] = options["ene0"]
 
