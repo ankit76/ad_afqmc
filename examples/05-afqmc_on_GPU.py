@@ -15,10 +15,10 @@ mol =  gto.M(atom ="""
 mf = scf.RHF(mol)
 mf.kernel()
 
-# Frozen-core RCCSD 
+# RCCSD 
 mycc = cc.CCSD(mf)
 mycc.kernel()
 
-# Frozen-core afqmc @ RCCSD
+# afqmc @ RCCSD
 af = afqmc.AFQMC(mycc)
 af.kernel()
