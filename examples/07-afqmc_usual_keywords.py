@@ -35,8 +35,4 @@ af.seed = np.random.randint(1, int(1e6)) # Seed for random numbers generation
 af.n_eql = 20 # Number of equilibration steps at the beginning
 af.walker_type = "restricted" # Walker type, i.e., resticted, unrestricted or generalized
 af.tmpdir = "tmp" # Temporary directory
-
-if not os.path.exists(af.tmpdir):
-    os.makedirs(af.tmpdir)
-
 af.kernel()
