@@ -44,7 +44,7 @@ def _prep_afqmc(options=None, tmpdir="."):
     with h5py.File(tmpdir + "/FCIDUMP_chol", "r") as fh5:
         [nelec, nmo, ms, nchol] = fh5["header"]
         h0 = jnp.array(fh5.get("energy_core"))
-        h1 = jnp.array(fh5.get("hcore"))
+        h1 = jnp.squeeze(jnp.array(fh5.get("hcore")).reshape(-1, nmo, nmo))
         chol = jnp.array(fh5.get("chol")).reshape(-1, nmo, nmo)
 
     assert type(ms) is np.int64

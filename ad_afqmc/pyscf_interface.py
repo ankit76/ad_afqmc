@@ -137,7 +137,7 @@ def prep_afqmc(
                     chol[i, n, m] = chol0[i, triind]
 
         # basis transformation
-        if h1e.ndim == 3:
+        if h1e.ndim == 3: # Shape (2, nmo, nmo)
             h1e[0] = basis_coeff.T @ h1e[0] @ basis_coeff
             h1e[1] = basis_coeff.T @ h1e[1] @ basis_coeff
         
