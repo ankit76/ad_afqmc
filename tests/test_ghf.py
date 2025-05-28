@@ -11,37 +11,34 @@ chol_cut = 1e-8
 if not os.path.exists(tmpdir):
     os.makedirs(tmpdir)
 
-def rhf_to_ghf(A):
+def rhf_to_ghf(A, na, nb):
     n = A.shape[-1]
     B = np.zeros((2 * n, 2 * n), dtype=complex)
 
-    for i in range(2 * n):
-        col_idx = i // 2
-        if i % 2 == 0:
-            B[:n, i] = A[:, col_idx]
-        else:
-            B[n:, i] = A[:, col_idx]
+    B[:n, 0:na] = A[:, 0:na]
+    B[n:, na:na+nb] = A[:, 0:nb]
+    B[:n, na+nb:nb+n] = A[:, na:]
+    B[n:, nb+n:] = A[:, nb:]
 
     return B
 
-def uhf_to_ghf(A):
+def uhf_to_ghf(A, na, nb):
     n = A.shape[-1]
     B = np.zeros((2 * n, 2 * n), dtype=complex)
 
-    for i in range(2 * n):
-        col_idx = i // 2
-        if i % 2 == 0:
-            B[:n, i] = A[0][:, col_idx]
-        else:
-            B[n:, i] = A[1][:, col_idx]
+    B[:n, 0:na] = A[0][:, 0:na]
+    B[n:, na:na+nb] = A[1][:, 0:nb]
+    B[:n, na+nb:nb+n] = A[0][:, na:]
+    B[n:, nb+n:] = A[1][:, nb:]
 
     return B
 
-def transform_matrix(A):
+def transform_matrix(A, mol):
+    na, nb = mol.nelec
     if A.ndim == 2:
-        B = rhf_to_ghf(A)
+        B = rhf_to_ghf(A, na, nb)
     elif A.ndim == 3:
-        B = uhf_to_ghf(A)
+        B = uhf_to_ghf(A, na, nb)
     
     return B
 
@@ -91,7 +88,7 @@ def check_hf(mol, mf):
     ene1, err1 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
     # RHF/UHF based GHF
     mo_coeff = mf.mo_coeff
-    mo_coeff = transform_matrix(mo_coeff)
+    mo_coeff = transform_matrix(mo_coeff, mol)
 
     pyscf_interface.prep_afqmc_ghf_complex(mol, mo_coeff+0.0j, hcore_ao, n_ao, tmpdir, chol_cut=chol_cut)
 
@@ -104,7 +101,7 @@ def check_hf(mol, mf):
     
     # RHF/UHF based GHF with a complex rotation
     mo_coeff = mf.mo_coeff
-    mo_coeff = transform_matrix(mo_coeff)
+    mo_coeff = transform_matrix(mo_coeff, mol)
     mo_coeff = mo_coeff @ la.block_diag(random_orthogonal_complex(nelec), random_orthogonal_complex(2*nmo-nelec))
 
     pyscf_interface.prep_afqmc_ghf_complex(mol, mo_coeff+0j, hcore_ao, n_ao, tmpdir, chol_cut=chol_cut)
