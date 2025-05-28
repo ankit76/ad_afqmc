@@ -513,7 +513,7 @@ class propagator_unrestricted(propagator_restricted):
         return hash(tuple(self.__dict__.values()))
 
 @dataclass
-class propagator_generalized(propagator):
+class propagator_generalized(propagator_restricted):
 
     dt: float = 0.01
     n_walkers: int = 50
@@ -579,34 +579,6 @@ class propagator_generalized(propagator):
         )
         walkers = walkers_new.reshape(n_walkers, walkers.shape[1], walkers.shape[2])
         return walkers
-
-    @partial(jit, static_argnums=(0,))
-    def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_restricted(
-            prop_data["walkers"], prop_data["weights"], zeta
-        )
-        return prop_data
-
-    def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        (
-            prop_data["walkers"],
-            prop_data["weights"],
-        ) = sr.stochastic_reconfiguration_mpi_restricted(
-            prop_data["walkers"], prop_data["weights"], zeta, comm
-        )
-        return prop_data
-
-    def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"], _ = linalg_utils.qr_vmap_restricted(prop_data["walkers"])
-        return prop_data
-
-    def _orthogonalize_walkers(self, prop_data: dict) -> Tuple:
-        prop_data["walkers"], norms = linalg_utils.qr_vmap_restricted(prop_data["walkers"])
-        return prop_data, norms
 
     @partial(jit, static_argnums=(0, 2))
     def _build_propagation_intermediates(
