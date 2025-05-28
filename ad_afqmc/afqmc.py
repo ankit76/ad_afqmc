@@ -85,7 +85,12 @@ class AFQMC:
     ):
         self.mf_or_cc = mf_or_cc
         self.basis_coeff = None
-        self.norb_frozen = 0
+        frozen = getattr(mf_or_cc, "frozen", 0)
+        if isinstance(frozen, int):
+            self.norb_frozen = frozen
+        else:
+            print("Warning: Frozen is not an integer, assuming 0 frozen orbitals.")
+            self.norb_frozen = 0
         self.chol_cut = 1e-5
         self.integrals = None  # custom integrals
         self.mpi_prefix = None
