@@ -1,6 +1,4 @@
 from pyscf import gto, scf, cc
-from ad_afqmc import config
-config.afqmc_config["use_mpi"] = True # To run with MPI
 from ad_afqmc import afqmc
 
 mol =  gto.M(atom ="""

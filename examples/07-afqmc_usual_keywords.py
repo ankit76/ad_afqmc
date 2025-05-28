@@ -3,7 +3,6 @@ import numpy as np
 
 from pyscf import gto, scf, cc
 from ad_afqmc import config
-config.afqmc_config["use_mpi"] = True # To run with MPI
 #config.afqmc_config["use_gpu"] = True # To run on GPU
 from ad_afqmc import afqmc
 
