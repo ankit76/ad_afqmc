@@ -850,6 +850,7 @@ def read_pyscf_ccsd(mf_or_cc, tmpdir):
 
 def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, chol_cut):
     print("# Calculating Cholesky integrals")
+    assert basis_coeff.dtype == "float", "Only implemented for real-valued MOs"
     h1e, chol, nelec, enuc, nbasis, nchol = [None] * 6
     if integrals is not None:
         assert norb_frozen == 0, "Frozen orbitals not supported for custom integrals"
@@ -900,6 +901,7 @@ def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, cho
     return h1e, chol, nelec, enuc, nbasis, nchol
 
 def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
+    assert basis_coeff.dtype == "float", "Only implemented for real-valued MOs"
     trial_coeffs = np.empty((2, nbasis, nbasis))
     overlap = mf.get_ovlp(mol)
     if isinstance(mf, (scf.uhf.UHF, scf.rohf.ROHF)):
@@ -967,65 +969,22 @@ def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
 
     return trial_coeffs
 
-
-# calculate and write cholesky integrals
-def prep_afqmc_ghf(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
+def prep_afqmc_ghf_complex(mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5):
     import scipy.linalg as la
-    norb = n_ao
-    
-    # Chol ao to mo
-    chol_vecs = chunked_cholesky(mol, max_error=chol_cut)
-    nchol = chol_vecs.shape[0]
-    chol = np.zeros((nchol, 2 * norb, 2 * norb))
-    for i in range(nchol):
-        chol_i = chol_vecs[i].reshape(norb, norb)
-        chol_i = la.block_diag(chol_i, chol_i)
-        chol[i] = mo_coeff.T.dot(chol_i).dot(mo_coeff)
-
-    # h ao to mo
-    #print(h_ao)
-    #print(mo_coeff)
-    h = mo_coeff.T.dot(la.block_diag(h_ao, h_ao)).dot(mo_coeff)
-    #print(h)
-
-    enuc = mol.energy_nuc()
-    nbasis = h.shape[-1]
-    print(f'nelec: {mol.nelec}')
-    print(f'nbasis: {nbasis}')
-    print(f'chol.shape: {chol.shape}')
-
-    # Modified one-electron integrals
-    chol = chol.reshape((-1, nbasis, nbasis))
-    v0 = 0.5 * np.einsum('nik,nkj->ij', chol, chol, optimize='optimal')
-    h_mod = h - v0
-    chol = chol.reshape((chol.shape[0], -1))
-    
-    # Save
-    write_dqmc(h, h_mod, chol, sum(mol.nelec), nbasis, enuc, ms=mol.spin, filename=tmpdir+'/FCIDUMP_chol')
-
-    np.savez(tmpdir+"/mo_coeff.npz", mo_coeff=[mo_coeff,mo_coeff])
-
-    return h, h_mod, chol
-
-def prep_afqmc_ghf_complex(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
-    import scipy.linalg as la
-    norb = n_ao
+    norb = np.shape(gmf.mo_coeff)[-1]//2
+    mo_coeff = gmf.mo_coeff
 
     # Chol ao to mo
     chol_vecs = chunked_cholesky(mol, max_error=chol_cut)
     nchol = chol_vecs.shape[0]
-    chol = np.zeros((nchol, 2 * norb, 2 * norb), dtype=complex)
+    chol = np.zeros((nchol, 2*norb, 2*norb), dtype=complex)
     for i in range(nchol):
         chol_i = chol_vecs[i].reshape(norb, norb)
         chol_i = la.block_diag(chol_i, chol_i)
         chol[i] = mo_coeff.T.conj() @ chol_i @ mo_coeff
 
     # h ao to mo
-    if np.shape(h_ao)[0] == n_ao:
-        h_ao = la.block_diag(h_ao, h_ao)
-        h = mo_coeff.T.conj() @ h_ao @ mo_coeff
-    else:
-        h = mo_coeff.T.conj() @ h_ao @ mo_coeff
+    h = mo_coeff.T.conj() @ gmf.get_hcore() @ mo_coeff
 
     enuc = mol.energy_nuc()
     nbasis = h.shape[-1]
@@ -1042,9 +1001,7 @@ def prep_afqmc_ghf_complex(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
     # Save
     write_dqmc(h, h_mod, chol, sum(mol.nelec), nbasis, enuc, ms=mol.spin, filename=tmpdir+'/FCIDUMP_chol')
 
-    ovlp = mol.intor("int1e_ovlp")
-    ovlp = la.block_diag(ovlp, ovlp)
-
+    ovlp = gmf.get_ovlp(mol)
     q, r = np.linalg.qr(
         mo_coeff.T.conj() @ ovlp @ mo_coeff
     )

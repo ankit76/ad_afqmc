@@ -11,37 +11,6 @@ chol_cut = 1e-8
 if not os.path.exists(tmpdir):
     os.makedirs(tmpdir)
 
-def rhf_to_ghf(A, na, nb):
-    n = A.shape[-1]
-    B = np.zeros((2 * n, 2 * n), dtype=complex)
-
-    B[:n, 0:na] = A[:, 0:na]
-    B[n:, na:na+nb] = A[:, 0:nb]
-    B[:n, na+nb:nb+n] = A[:, na:]
-    B[n:, nb+n:] = A[:, nb:]
-
-    return B
-
-def uhf_to_ghf(A, na, nb):
-    n = A.shape[-1]
-    B = np.zeros((2 * n, 2 * n), dtype=complex)
-
-    B[:n, 0:na] = A[0][:, 0:na]
-    B[n:, na:na+nb] = A[1][:, 0:nb]
-    B[:n, na+nb:nb+n] = A[0][:, na:]
-    B[n:, nb+n:] = A[1][:, nb:]
-
-    return B
-
-def transform_matrix(A, mol):
-    na, nb = mol.nelec
-    if A.ndim == 2:
-        B = rhf_to_ghf(A, na, nb)
-    elif A.ndim == 3:
-        B = uhf_to_ghf(A, na, nb)
-    
-    return B
-
 def random_orthogonal_real(n):
     rng = np.random.default_rng()
     A = rng.standard_normal((n, n))
@@ -87,10 +56,9 @@ def check_hf(mol, mf):
     
     ene1, err1 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
     # RHF/UHF based GHF
-    mo_coeff = mf.mo_coeff
-    mo_coeff = transform_matrix(mo_coeff, mol)
+    gmf = scf.addons.convert_to_ghf(mf)
 
-    pyscf_interface.prep_afqmc_ghf_complex(mol, mo_coeff+0.0j, hcore_ao, n_ao, tmpdir, chol_cut=chol_cut)
+    pyscf_interface.prep_afqmc_ghf_complex(mol, gmf, tmpdir, chol_cut=chol_cut)
 
     options["trial"] = "ghf_complex"
     options["walker_type"] = "generalized"   
@@ -100,11 +68,9 @@ def check_hf(mol, mf):
     assert np.isclose(err1, err2, atol=1e-8), f"{err1} {err2}"
     
     # RHF/UHF based GHF with a complex rotation
-    mo_coeff = mf.mo_coeff
-    mo_coeff = transform_matrix(mo_coeff, mol)
-    mo_coeff = mo_coeff @ la.block_diag(random_orthogonal_complex(nelec), random_orthogonal_complex(2*nmo-nelec))
+    gmf.mo_coeff = gmf.mo_coeff @ la.block_diag(random_orthogonal_complex(nelec), random_orthogonal_complex(2*nmo-nelec))
 
-    pyscf_interface.prep_afqmc_ghf_complex(mol, mo_coeff+0j, hcore_ao, n_ao, tmpdir, chol_cut=chol_cut)
+    pyscf_interface.prep_afqmc_ghf_complex(mol, gmf, tmpdir, chol_cut=chol_cut)
     
     ene2, err2 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
     assert np.isclose(ene1, ene2, atol=1e-6), f"{ene1} {ene2}"
@@ -122,7 +88,10 @@ def check_cc(mol, mf):
 
     pyscf_interface.prep_afqmc(mycc, tmpdir=tmpdir, chol_cut=chol_cut)
 
-    if isinstance(mf, scf.rhf.RHF):
+    if isinstance(mf, scf.rohf.ROHF):
+        options["trial"] = "ucisd"
+        options["walker_type"] = "unrestricted"
+    elif isinstance(mf, scf.rhf.RHF):
         options["trial"] = "cisd"
         options["walker_type"] = "restricted"
     elif isinstance(mf, scf.uhf.UHF):
@@ -133,9 +102,7 @@ def check_cc(mol, mf):
 
     # GCCSD
     ## GHF
-    gmf = scf.GHF(mol)
-    gmf.kernel()
-    assert np.isclose(mf.e_tot, gmf.e_tot, atol=1e-8), f"{mf.e_tot} {gmf.e_tot}"
+    gmf = scf.addons.convert_to_ghf(mf)
 
     ## GCCSD
     ccsd = cc.CCSD(gmf)
@@ -143,7 +110,7 @@ def check_cc(mol, mf):
     assert np.isclose(mycc.e_tot, ccsd.e_tot, atol=1e-8), f"{mycc.e_tot} vs {ccsd.e_tot}"
     np.savez(tmpdir+"/amplitudes.npz",t1=ccsd.t1, t2=ccsd.t2)
 
-    pyscf_interface.prep_afqmc_ghf_complex(mol, gmf.mo_coeff+0j, hcore_ao, n_ao, tmpdir, chol_cut=chol_cut)
+    pyscf_interface.prep_afqmc_ghf_complex(mol, gmf, tmpdir, chol_cut=chol_cut)
 
     options["trial"] = "gcisd_complex"
     options["walker_type"] = "generalized"
@@ -153,17 +120,16 @@ def check_cc(mol, mf):
     assert np.isclose(err1, err2, atol=1e-8), f"{err1} {err2}"
 
     # GCCSD with a complex rotation
-    mo_coeff = gmf.mo_coeff
     U_occ = random_orthogonal_complex(nelec)
     U_vir = random_orthogonal_complex(2*nmo-nelec)
     U = la.block_diag(U_occ, U_vir)
-    gmf.mo_coeff = mo_coeff @ U
+    gmf.mo_coeff = gmf.mo_coeff @ U
 
     ccsd.t1 = np.einsum("ia,ip,aq", ccsd.t1, U_occ, U_vir.conj())
     ccsd.t2 = np.einsum("ijab,ip,jq,ar,bs->pqrs", ccsd.t2, U_occ, U_occ, U_vir.conj(), U_vir.conj())
     np.savez(tmpdir+"/amplitudes.npz",t1=ccsd.t1, t2=ccsd.t2)
 
-    pyscf_interface.prep_afqmc_ghf_complex(mol, gmf.mo_coeff+0j, hcore_ao, n_ao, tmpdir, chol_cut=chol_cut)
+    pyscf_interface.prep_afqmc_ghf_complex(mol, gmf, tmpdir, chol_cut=chol_cut)
 
     ene2, err2 = run_afqmc.run_afqmc(options=options, mpi_prefix=None, nproc=None, tmpdir=tmpdir)
     assert np.isclose(ene1, ene2, atol=1e-6), f"{ene1} vs {ene2}"
@@ -194,7 +160,6 @@ def test_h2o():
         H       -0.2353791634      0.9268076728      0.0000000000
         ''',
         basis = 'sto-3g',
-        spin=0,
         verbose = 3)
     mf = scf.RHF(mol)
     mf.kernel()
