@@ -1,4 +1,5 @@
 import os
+import sys
 import pickle
 import shlex
 import subprocess
@@ -8,12 +9,13 @@ from typing import Optional, Union
 import numpy as np
 
 from ad_afqmc import config
+from ad_afqmc.options import Options
 
 print = partial(print, flush=True)
 
 
 def run_afqmc(
-    options: Optional[dict] = None,
+    options = None,
     mpi_prefix: Optional[str] = None,
     nproc: Optional[int] = None,
     tmpdir: Optional[str] = None,
@@ -31,6 +33,13 @@ def run_afqmc(
         tmpdir : str, optional
             Temporary directory where the input files are stored.
     """
+    if options is None:
+        options = Options()
+
+    # Backward compatibility
+    if isinstance(options, dict):
+        options = Options.from_dict(options)
+
     if tmpdir is None:
         try:
             with open("tmpdir.txt", "r") as f:
@@ -42,7 +51,7 @@ def run_afqmc(
 
     if options is not None:
         with open(tmpdir + "/options.bin", "wb") as f:
-            pickle.dump(options, f)
+            pickle.dump(options.to_dict(), f)
     path = os.path.abspath(__file__)
     dir_path = os.path.dirname(path)
     script = f"{dir_path}/launch_script.py"
@@ -117,9 +126,9 @@ def run_afqmc(
 
 def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None):
     if options is None:
-        options = {}
+        options = Options()
     with open("options.bin", "wb") as f:
-        pickle.dump(options, f)
+        pickle.dump(options.to_dict(), f)
     if script is None:
         path = os.path.abspath(__file__)
         dir_path = os.path.dirname(path)

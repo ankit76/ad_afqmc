@@ -1,4 +1,5 @@
 import os
+import sys
 import pickle
 from functools import partial
 from typing import Union
@@ -9,11 +10,12 @@ from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
 
 from ad_afqmc import pyscf_interface, run_afqmc
+from ad_afqmc.options import Options
 
 print = partial(print, flush=True)
 
 
-class AFQMC:
+class AFQMC(Options):
     """
     AFQMC class.
 
@@ -85,48 +87,7 @@ class AFQMC:
     ):
         self.mf_or_cc = mf_or_cc
         self.basis_coeff = None
-        frozen = getattr(mf_or_cc, "frozen", 0)
-        if isinstance(frozen, int):
-            self.norb_frozen = frozen
-        else:
-            print("Warning: Frozen is not an integer, assuming 0 frozen orbitals.")
-            self.norb_frozen = 0
-        self.chol_cut = 1e-5
-        self.integrals = None  # custom integrals
-        self.mpi_prefix = None
-        self.nproc = 1
-        self.dt = 0.005
-        self.n_walkers = 50
-        self.n_prop_steps = 50
-        self.n_ene_blocks = 1
-        self.n_sr_blocks = 5
-        self.n_blocks = 200
-        self.n_ene_blocks_eql = 1
-        self.n_sr_blocks_eql = 5
-        self.seed = np.random.randint(1, int(1e6))
-        self.n_eql = 20
-        self.ad_mode = None
-        self.orbital_rotation = True
-        self.do_sr = True
-        self.walker_type = "restricted"
-        self.symmetry = False
-        self.save_walkers = False
-        if isinstance(mf_or_cc, scf.uhf.UHF) or isinstance(mf_or_cc, scf.rohf.ROHF):
-            self.trial = "uhf"
-        elif isinstance(mf_or_cc, scf.rhf.RHF):
-            self.trial = "rhf"
-        elif isinstance(mf_or_cc, UCCSD):
-            self.trial = "ucisd"
-        elif isinstance(mf_or_cc, CCSD):
-            self.trial = "cisd"
-        else:
-            self.trial = None
-        self.ene0 = 0.0
-        self.n_batch = 1
-        self.vhs_mixed_precision = False
-        self.trial_mixed_precision = False
-        self.memory_mode = "low"
-        self.tmpdir = __config__.TMPDIR + f"/afqmc{np.random.randint(1, int(1e6))}/"
+        super().__init__()
 
     def kernel(self, dry_run=False):
         """
