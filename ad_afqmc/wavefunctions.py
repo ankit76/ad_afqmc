@@ -2782,7 +2782,7 @@ class ucisd(wave_function):
         chol_b = ham_data["chol_b"].reshape(-1, self.norb, self.norb)
         rot_chol_a = chol_a[:, :nocc_a, :]
         rot_chol_b = chol_b[:, :nocc_b, :]
-        h1_a = (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
+        h1_a = (ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0
         h1_b = ham_data["h1_b"]
         hg_a = jnp.einsum("pj,pj->", h1_a[:nocc_a, :], green_a)
         hg_b = jnp.einsum("pj,pj->", h1_b[:nocc_b, :], green_b)
@@ -3050,7 +3050,9 @@ class ucisd(wave_function):
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         mo_coeff_b = wave_data["mo_coeff"][1]
-        ham_data["h1_b"] = mo_coeff_b.T @ ham_data["h1"][1] @ mo_coeff_b
+        ham_data["h1_b"] = (
+            mo_coeff_b.T @ (ham_data["h1"][1] + ham_data["h1"][1].T) @ mo_coeff_b
+        ) / 2
         ham_data["chol_b"] = jnp.einsum(
             "pi,gij,jq->gpq",
             mo_coeff_b.T,
