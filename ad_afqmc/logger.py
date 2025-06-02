@@ -1,7 +1,7 @@
 from pyscf import lib
 
 class Logger(lib.logger.Logger):
-    def __init__(self, stdout, verbose, rank):
+    def __init__(self, stdout, verbose: int, rank: int = 0):
         super().__init__(stdout, verbose)
         self.rank = rank
 

@@ -1,9 +1,13 @@
 import os
+import sys
 import numpy as np
 import unittest
 
 from ad_afqmc import config
-config.setup_jax()
+from ad_afqmc.logger import Logger
+
+log = Logger(sys.stdout, 3)
+config.setup_jax(log)
 from ad_afqmc import run_afqmc
 
 seed = 98

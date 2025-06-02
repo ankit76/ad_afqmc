@@ -10,6 +10,7 @@ import numpy as np
 
 from ad_afqmc import config
 from ad_afqmc.options import Options
+from ad_afqmc.logger import Logger
 
 print = partial(print, flush=True)
 
@@ -40,11 +41,14 @@ def run_afqmc(
     if isinstance(options, dict):
         options = Options.from_dict(options)
 
+    # Logger
+    log = Logger(sys.stdout, options.verbose)
+
     if tmpdir is None:
         try:
             with open("tmpdir.txt", "r") as f:
                 tmpdir = f.read().strip()
-            print(f"# tmpdir.txt file found: tmpdir is set to '{tmpdir}'\n#")
+            log.log(f"# tmpdir.txt file found: tmpdir is set to '{tmpdir}'\n#")
         except:
             tmpdir = "."
     assert os.path.isdir(tmpdir), f"tmpdir directory '{tmpdir}' does not exist."
@@ -65,9 +69,9 @@ def run_afqmc(
             if not MPI.Is_finalized():
                 MPI.Finalize()
             use_mpi = True
-            print(f"# mpi4py found, using MPI.")
+            log.log(f"# mpi4py found, using MPI.")
             if nproc is None:
-                print(f"# Number of MPI ranks not specified, using 1 by default.")
+                log.warn(f"# Number of MPI ranks not specified, using 1 by default.")
                 nproc = 1
         except ImportError:
             use_mpi = False
@@ -76,7 +80,7 @@ def run_afqmc(
                     f"# MPI prefix or number of processes specified, but mpi4py not found. Please install mpi4py or remove the MPI options."
                 )
             else:
-                print(f"# Unable to import mpi4py, not using MPI.")
+                log.warn(f"# Unable to import mpi4py, not using MPI.")
 
     gpu_flag = "--use_gpu" if use_gpu else ""
     mpi_flag = "--use_mpi" if use_mpi else ""
@@ -93,7 +97,9 @@ def run_afqmc(
     env = os.environ.copy()
     env["OMP_NUM_THREADS"] = "1"
     env["MKL_NUM_THREADS"] = "1"
-    cmd = shlex.split(f"{mpi_prefix} python {script} {tmpdir} {gpu_flag} {mpi_flag}")
+    # Verbose value needed to be known before reading the options for the logger
+    verbose_flag = f"--verbose={options.verbose}"
+    cmd = shlex.split(f"{mpi_prefix} python {script} {tmpdir} {gpu_flag} {mpi_flag} {verbose_flag}")
     # Launch process with real-time output
     process = subprocess.Popen(
         cmd,
@@ -119,7 +125,7 @@ def run_afqmc(
     try:
         ene_err = np.loadtxt(tmpdir + "/ene_err.txt")
     except:
-        print("AFQMC did not execute correctly.")
+        log.error("AFQMC did not execute correctly.")
         ene_err = 0.0, 0.0
     return ene_err[0], ene_err[1]
 

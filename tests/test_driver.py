@@ -1,10 +1,14 @@
 import os
+import sys
 
 import numpy as np
 
 from ad_afqmc import config
+from ad_afqmc.logger import Logger
 
-config.setup_jax()
+log = Logger(sys.stdout, 3)
+config.setup_jax(log)
+
 import pytest
 
 from ad_afqmc import run_afqmc
@@ -30,6 +34,7 @@ def test_energy_mpi():
     ene, _ = run_afqmc.run_afqmc(
         options=options, mpi_prefix="mpirun ", nproc=2, tmpdir=tmpdir
     )
+    print("done")
     assert np.isclose(ene, -3.239302058353345, atol=1e-5)
 
 

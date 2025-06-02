@@ -1,10 +1,13 @@
 import os
+import sys
 
 import numpy as np
 
 from ad_afqmc import config
+from ad_afqmc.logger import Logger
 
-config.setup_jax()
+log = Logger(sys.stdout, 3)
+config.setup_jax(log)
 from jax import numpy as jnp
 
 from ad_afqmc import pyscf_interface, wavefunctions

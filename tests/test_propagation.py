@@ -1,8 +1,11 @@
+import sys
 import numpy as np
 
 from ad_afqmc import config
+from ad_afqmc.logger import Logger
 
-config.setup_jax()
+log = Logger(sys.stdout, 3)
+config.setup_jax(log)
 from jax import numpy as jnp
 from jax import random
 

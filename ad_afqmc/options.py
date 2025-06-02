@@ -133,7 +133,6 @@ class Options:
             "verbose",
         ]
 
-        print(type(options))
         filtered_dict = {k: v for k, v in options.items() if k in matching_keys}
 
         return Options(**options)
