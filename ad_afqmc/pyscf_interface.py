@@ -59,7 +59,7 @@ def prep_afqmc(
     chol_cut: float = 1e-5,
     integrals: Optional[dict] = None,
     tmpdir: str = "./",
-    verbose: int = 3,
+    verbose: int = 0,
 ):
     """Prepare AFQMC calculation with mean field trial wavefunction. Writes integrals and mo coefficients to disk.
 

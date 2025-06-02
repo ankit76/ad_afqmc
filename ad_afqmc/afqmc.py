@@ -105,6 +105,7 @@ class AFQMC(Options):
             chol_cut=self.chol_cut,
             integrals=self.integrals,
             tmpdir=self.tmpdir,
+            verbose=self.verbose,
         )
         options = {}
         for attr in dir(self):
