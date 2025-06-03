@@ -922,6 +922,9 @@ def _analyze_observable_results(
             )
         elif obs_afqmc is not None:
             print(f"AFQMC observable: {obs_afqmc}\n", flush=True)
+        else:
+            obs_afqmc = 0.0
+            obs_err_afqmc = 0.0
 
         observable_data = {"obs_afqmc": obs_afqmc, "obs_err_afqmc": obs_err_afqmc}
         np.savetxt(tmpdir + "/obs_err.txt", np.array([obs_afqmc, obs_err_afqmc]))
