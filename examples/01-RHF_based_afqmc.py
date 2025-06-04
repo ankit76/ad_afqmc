@@ -15,4 +15,6 @@ mf.kernel()
 
 # afqmc @ RHF
 af = afqmc.AFQMC(mf)
+af.n_walkers = 5 # !!! ONLY to make the example faster !!!
+af.n_blocks = 10 # !!! ONLY to make the example faster !!!
 af.kernel()

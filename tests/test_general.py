@@ -1,5 +1,6 @@
 from pyscf import scf, gto, cc
 from ad_afqmc import pyscf_interface, afqmc, run_afqmc
+from ad_afqmc.options import Options
 import numpy as np
 import os
 
@@ -17,9 +18,9 @@ options = {
 "n_prop_steps": 50,
 "n_walkers": 5,
 "seed": 8,
-"trial": "",
-"walker_type": "",
 }
+
+options = Options.from_dict(options)
 
 def check(obj, options, e, atol, mpi):
     pyscf_interface.prep_afqmc(obj, tmpdir="tmp", chol_cut=1e-12)
@@ -39,24 +40,24 @@ def check(obj, options, e, atol, mpi):
 
 # rhf
 def check_rhf_restricted_w(mf, e, atol, mpi):
-    options["trial"] = "rhf"
-    options["walker_type"] = "restricted"
+    options.trial = "rhf"
+    options.walker_type = "restricted"
     return check(mf, options, e, atol, mpi)
     
 def check_rhf_unrestricted_w(mf, e, atol, mpi):
-    options["trial"] = "rhf"
-    options["walker_type"] = "unrestricted"
+    options.trial = "rhf"
+    options.walker_type = "unrestricted"
     return check(mf, options, e, atol, mpi)
 
 # uhf
 def check_uhf_restricted_w(mf, e, atol, mpi):
-    options["trial"] = "uhf"
-    options["walker_type"] = "restricted"
+    options.trial = "uhf"
+    options.walker_type = "restricted"
     return check(mf, options, e, atol, mpi)
 
 def check_uhf_unrestricted_w(mf, e, atol, mpi):
-    options["trial"] = "uhf"
-    options["walker_type"] = "unrestricted"
+    options.trial = "uhf"
+    options.walker_type = "unrestricted"
     return check(mf, options, e, atol, mpi)
 
 # cisd
@@ -64,39 +65,39 @@ def check_uhf_unrestricted_w(mf, e, atol, mpi):
 def check_rcisd_restricted_w(mf, e, atol, mpi):
     mycc = cc.RCCSD(mf)
     mycc.kernel()
-    options["trial"] = "cisd"
-    options["walker_type"] = "restricted"
+    options.trial = "cisd"
+    options.walker_type = "restricted"
     return check(mycc, options, e, atol, mpi)
      
 def check_rcisd_fc_restricted_w(mf, nfrozen, e, atol, mpi):
     mycc = cc.RCCSD(mf)
     mycc.frozen = nfrozen
     mycc.kernel()
-    options["trial"] = "cisd"
-    options["walker_type"] = "restricted"
+    options.trial = "cisd"
+    options.walker_type = "restricted"
     return check(mycc, options, e, atol, mpi)
 
 ## uhf
 def check_ucisd_restricted_w(mf, e, atol, mpi):
     mycc = cc.UCCSD(mf)
     mycc.kernel()
-    options["trial"] = "ucisd"
-    options["walker_type"] = "restricted"
+    options.trial = "ucisd"
+    options.walker_type = "restricted"
     return check(mycc, options, e, atol, mpi)
 
 def check_ucisd_unrestricted_w(mf, e, atol, mpi):
     mycc = cc.UCCSD(mf)
     mycc.kernel()
-    options["trial"] = "ucisd"
-    options["walker_type"] = "unrestricted"
+    options.trial = "ucisd"
+    options.walker_type = "unrestricted"
     return check(mycc, options, e, atol, mpi)
 
 def check_ucisd_fc_restricted_w(mf, nfrozen, e, atol, mpi):
     mycc = cc.UCCSD(mf)
     mycc.frozen = nfrozen
     mycc.kernel()
-    options["trial"] = "ucisd"
-    options["walker_type"] = "restricted"
+    options.trial = "ucisd"
+    options.walker_type = "restricted"
     return check(mycc, options, e, atol, mpi)
 
 def run(l_flag, l_fun):
@@ -191,3 +192,22 @@ def test_handler(pytestconfig):
         
     check_h2o(l_flag_cs)
     check_nh2(l_flag_os)
+
+# To be able to run it as a python program for debug purposes
+class MockPytestConfig:
+    def __init__(self, mpi=False, all=False):
+        self.options = {"mpi": mpi, "all": all}
+
+    def getoption(self, name):
+        return self.options.get(name, False)
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mpi", action="store_true")
+    parser.add_argument("--all", action="store_true")
+    args = parser.parse_args()
+
+    mock_config = MockPytestConfig(mpi=args.mpi, all=args.all)
+    test_handler(mock_config)

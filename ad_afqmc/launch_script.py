@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import pickle
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -9,7 +10,9 @@ import numpy as np
 from jax import numpy as jnp
 
 from ad_afqmc import config, driver, hamiltonian, propagation, sampling, wavefunctions
-from ad_afqmc.config import mpi_print as print
+#from ad_afqmc.config import mpi_print as print
+from ad_afqmc.options import Options
+from ad_afqmc.logger import Logger
 
 tmpdir = "."
 
@@ -19,10 +22,11 @@ def parse_arguments() -> argparse.Namespace:
     Parse command line arguments.
 
     Returns:
-        args: Namespace containing the parsed arguments (tmpdir, use_gpu, use_mpi)
+        args: Namespace containing the parsed arguments (tmpdir, verbose, use_gpu, use_mpi)
     """
     parser = argparse.ArgumentParser(description="Run AD-AFQMC calculation")
     parser.add_argument("tmpdir", help="Directory for input/output files")
+    parser.add_argument("--verbose", default= 3, type=int, help="Verbose level")
     parser.add_argument(
         "--use_gpu", action="store_true", help="Enable GPU acceleration"
     )
@@ -84,7 +88,7 @@ def read_fcidump(tmp_dir: Optional[str] = None) -> Tuple:
     return h0, h1, chol, norb, nelec_sp
 
 
-def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) -> Dict:
+def read_options(options: Optional[Options] = None, tmp_dir: Optional[str] = None) -> Options:
     """
     Read calculation options from file or use provided options with defaults.
 
@@ -102,56 +106,11 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
             with open(directory + "/options.bin", "rb") as f:
                 options = pickle.load(f)
         except:
-            options = {}
+            raise FileNotFoundError
 
-    # Set default values for options
-    options["dt"] = options.get("dt", 0.01)
-    options["n_walkers"] = options.get("n_walkers", 50)
-    options["n_prop_steps"] = options.get("n_prop_steps", 50)
-    options["n_ene_blocks"] = options.get("n_ene_blocks", 50)
-    options["n_sr_blocks"] = options.get("n_sr_blocks", 1)
-    options["n_blocks"] = options.get("n_blocks", 50)
-    options["n_ene_blocks_eql"] = options.get("n_ene_blocks_eql", 5)
-    options["n_sr_blocks_eql"] = options.get("n_sr_blocks_eql", 10)
-    options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
-    options["n_eql"] = options.get("n_eql", 1)
+        options = Options.from_dict(options)
 
-    # AD mode options
-    options["ad_mode"] = options.get("ad_mode", None)
-    assert options["ad_mode"] in [None, "forward", "reverse", "2rdm"]
-
-    # Wavefunction and algorithm options
-    options["orbital_rotation"] = options.get("orbital_rotation", True)
-    options["do_sr"] = options.get("do_sr", True)
-    options["walker_type"] = options.get("walker_type", "restricted")
-
-    # Handle backwards compatibility for walker types
-    if options["walker_type"] == "rhf":
-        options["walker_type"] = "restricted"
-    elif options["walker_type"] == "uhf":
-        options["walker_type"] = "unrestricted"
-    assert options["walker_type"] in ["restricted", "unrestricted", "generalized"]
-
-    options["symmetry"] = options.get("symmetry", False)
-    options["save_walkers"] = options.get("save_walkers", False)
-    options["trial"] = options.get("trial", None)
-    assert options["trial"] in [None, "rhf", "uhf", "noci", "cisd", "ucisd", "ghf_complex", "gcisd_complex"]
-
-    if options["trial"] is None:
-        print(f"# No trial specified in options.")
-
-    options["ene0"] = options.get("ene0", 0.0)
-    options["free_projection"] = options.get("free_projection", False)
-
-    # performance and memory options
-    options["n_batch"] = options.get("n_batch", 1)
-    options["vhs_mixed_precision"] = options.get("vhs_mixed_precision", False)
-    options["trial_mixed_precision"] = options.get("trial_mixed_precision", False)
-    options["memory_mode"] = options.get("memory_mode", "low")
-
-    assert options is not None, "Options dictionary cannot be None."
     return options
-
 
 def read_observable(
     nmo: int, options: Dict, tmp_dir: Optional[str] = None
@@ -215,7 +174,7 @@ def set_ham(
     return ham, ham_data
 
 
-def apply_symmetry_mask(ham_data: Dict, options: Dict) -> Dict:
+def apply_symmetry_mask(ham_data: Dict, options: Options) -> Dict:
     """
     Apply symmetry mask to Hamiltonian data based on options.
 
@@ -226,7 +185,7 @@ def apply_symmetry_mask(ham_data: Dict, options: Dict) -> Dict:
     Returns:
         Updated ham_data with mask applied
     """
-    if options["symmetry"]:
+    if options.symmetry:
         ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
     else:
         ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
@@ -235,7 +194,8 @@ def apply_symmetry_mask(ham_data: Dict, options: Dict) -> Dict:
 
 
 def set_trial(
-    options: Dict,
+    log: Logger,
+    options: Options,
     mo_coeff: jnp.ndarray,
     norb: int,
     nelec_sp: Tuple[int, int],
@@ -264,10 +224,10 @@ def set_trial(
         rdm1 = jnp.array(np.load(directory + "/rdm1.npz")["rdm1"])
         assert rdm1.shape == (2, norb, norb)
         wave_data["rdm1"] = rdm1
-        print(f"# Read RDM1 from disk")
+        log.log_0(f"# Read RDM1 from disk")
     except:
         # Construct RDM1 from mo_coeff if file not found
-        if options["trial"] in ["ghf_complex", "gcisd_complex"]:
+        if options.trial in ["ghf_complex", "gcisd_complex"]:
             wave_data["rdm1"] = jnp.array(
             [
             mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
@@ -283,18 +243,18 @@ def set_trial(
             )
 
     # Set up trial wavefunction based on specified type
-    if options["trial"] == "rhf":
-        trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
+    if options.trial == "rhf":
+        trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options.n_batch)
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
-    elif options["trial"] == "uhf":
-        trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options["n_batch"])
+    elif options.trial == "uhf":
+        trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options.n_batch)
         wave_data["mo_coeff"] = [
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
         ]
 
-    elif options["trial"] == "noci":
+    elif options.trial == "noci":
         with open(directory + "/dets.pkl", "rb") as f:
             ci_coeffs_dets = pickle.load(f)
         ci_coeffs_dets = [
@@ -303,10 +263,10 @@ def set_trial(
         ]
         wave_data["ci_coeffs_dets"] = ci_coeffs_dets
         trial = wavefunctions.noci(
-            norb, nelec_sp, ci_coeffs_dets[0].size, n_batch=options["n_batch"]
+            norb, nelec_sp, ci_coeffs_dets[0].size, n_batch=options.n_batch
         )
 
-    elif options["trial"] == "cisd":
+    elif options.trial == "cisd":
         try:
             amplitudes = np.load(directory + "/amplitudes.npz")
             ci1 = jnp.array(amplitudes["ci1"])
@@ -314,7 +274,7 @@ def set_trial(
             trial_wave_data = {"ci1": ci1, "ci2": ci2}
             wave_data.update(trial_wave_data)
 
-            if options["trial_mixed_precision"]:
+            if options.trial_mixed_precision:
                 mixed_real_dtype = jnp.float32
                 mixed_complex_dtype = jnp.complex64
             else:
@@ -324,15 +284,15 @@ def set_trial(
             trial = wavefunctions.cisd(
                 norb,
                 nelec_sp,
-                n_batch=options["n_batch"],
+                n_batch=options.n_batch,
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
-                memory_mode=options["memory_mode"],
+                memory_mode=options.memory_mode,
             )
         except:
             raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
 
-    elif options["trial"] == "ucisd":
+    elif options.trial == "ucisd":
         try:
             amplitudes = np.load(directory + "/amplitudes.npz")
             ci1a = jnp.array(amplitudes["ci1a"])
@@ -350,7 +310,7 @@ def set_trial(
             }
             wave_data.update(trial_wave_data)
 
-            if options["trial_mixed_precision"]:
+            if options.trial_mixed_precision:
                 mixed_real_dtype = jnp.float32
                 mixed_complex_dtype = jnp.complex64
             else:
@@ -360,19 +320,19 @@ def set_trial(
             trial = wavefunctions.ucisd(
                 norb,
                 nelec_sp,
-                n_batch=options["n_batch"],
+                n_batch=options.n_batch,
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
-                memory_mode=options["memory_mode"],
+                memory_mode=options.memory_mode,
             )
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
 
-    elif options["trial"] == "ghf_complex":
-        trial = wavefunctions.ghf_complex(norb, nelec_sp, n_batch=options["n_batch"])
+    elif options.trial == "ghf_complex":
+        trial = wavefunctions.ghf_complex(norb, nelec_sp, n_batch=options.n_batch)
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]]
 
-    elif options["trial"] == "gcisd_complex":
+    elif options.trial == "gcisd_complex":
         try:
             amplitudes = np.load(tmpdir + "/amplitudes.npz")
 
@@ -389,7 +349,7 @@ def set_trial(
                 "mo_coeff": mo_coeff,
             }
             wave_data.update(trial_wave_data)
-            trial = wavefunctions.gcisd_complex(norb, nelec_sp, n_batch=options["n_batch"])
+            trial = wavefunctions.gcisd_complex(norb, nelec_sp, n_batch=options.n_batch)
         except:
             raise ValueError("Trial specified as gcisd_complex, but amplitudes.npz not found.")
 
@@ -399,15 +359,15 @@ def set_trial(
             with open(directory + "/trial.pkl", "rb") as f:
                 [trial, trial_wave_data] = pickle.load(f)
             wave_data.update(trial_wave_data)
-            print(f"# Read trial of type {type(trial).__name__} from trial.pkl.")
+            log.log_0(f"# Read trial of type {type(trial).__name__} from trial.pkl.")
         except:
-            print("# trial.pkl not found, make sure to construct the trial separately.")
+            log.log_0("# trial.pkl not found, make sure to construct the trial separately.")
             trial = None
 
     return trial, wave_data
 
 
-def set_prop(options: Dict) -> Any:
+def set_prop(options: Options) -> Any:
     """
     Set up the propagator for AFQMC calculation.
 
@@ -417,49 +377,49 @@ def set_prop(options: Dict) -> Any:
     Returns:
         Propagator object configured according to options
     """
-    if options["walker_type"] == "restricted":
-        if options["vhs_mixed_precision"]:
+    if options.walker_type == "restricted":
+        if options.vhs_mixed_precision:
             prop = propagation.propagator_restricted(
-                options["dt"],
-                options["n_walkers"],
-                n_batch=options["n_batch"],
+                options.dt,
+                options.n_walkers,
+                n_batch=options.n_batch,
                 vhs_real_dtype=jnp.float32,
                 vhs_complex_dtype=jnp.complex64,
             )
         else:
             prop = propagation.propagator_restricted(
-                options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+                options.dt, options.n_walkers, n_batch=options.n_batch
             )
 
-    elif options["walker_type"] == "unrestricted":
-        if options["free_projection"]:
+    elif options.walker_type == "unrestricted":
+        if options.free_projection:
             prop = propagation.propagator_unrestricted(
-                options["dt"],
-                options["n_walkers"],
+                options.dt,
+                options.n_walkers,
                 10,  # Hard-coded value for free projection
-                n_batch=options["n_batch"],
+                n_batch=options.n_batch,
             )
         else:
-            if options["vhs_mixed_precision"]:
+            if options.vhs_mixed_precision:
                 prop = propagation.propagator_unrestricted(
-                    options["dt"],
-                    options["n_walkers"],
-                    n_batch=options["n_batch"],
+                    options.dt,
+                    options.n_walkers,
+                    n_batch=options.n_batch,
                     vhs_real_dtype=jnp.float32,
                     vhs_complex_dtype=jnp.complex64,
                 )
             else:
                 prop = propagation.propagator_unrestricted(
-                    options["dt"],
-                    options["n_walkers"],
-                    n_batch=options["n_batch"],
+                    options.dt,
+                    options.n_walkers,
+                    n_batch=options.n_batch,
                 )
-    elif options["walker_type"] == "generalized":
+    elif options.walker_type == "generalized":
         prop = propagation.propagator_generalized(
-            options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+            options.dt, options.n_walkers, n_batch=options.n_batch
         )
     else:
-        raise ValueError(f"Invalid walker type {options['walker_type']}.")
+        raise ValueError(f"Invalid walker type {options.walker_type}.")
 
     return prop
 
@@ -475,10 +435,10 @@ def set_sampler(options: Dict) -> Any:
         Sampler object configured according to options
     """
     return sampling.sampler(
-        options["n_prop_steps"],
-        options["n_ene_blocks"],
-        options["n_sr_blocks"],
-        options["n_blocks"],
+        options.n_prop_steps,
+        options.n_ene_blocks,
+        options.n_sr_blocks,
+        options.n_blocks,
     )
 
 
@@ -502,7 +462,8 @@ def load_mo_coefficients(tmp_dir: Optional[str] = None) -> jnp.ndarray:
 
 
 def setup_afqmc(
-    options: Optional[Dict] = None,
+    log: Logger,
+    options: Optional[Options] = None,
     tmp_dir: Optional[str] = None,
 ) -> Tuple:
     """
@@ -527,29 +488,37 @@ def setup_afqmc(
 
     h0, h1, chol, norb, nelec_sp = read_fcidump(directory)
     options = read_options(options, directory)
+    assert log.verbose == options.verbose
     observable = read_observable(norb, options, directory)
-    ham, ham_data = set_ham(norb, h0, h1, chol, options["ene0"])
+    ham, ham_data = set_ham(norb, h0, h1, chol, options.ene0)
     ham_data = apply_symmetry_mask(ham_data, options)
     mo_coeff = load_mo_coefficients(directory)
-    trial, wave_data = set_trial(options, mo_coeff, norb, nelec_sp, directory)
+    trial, wave_data = set_trial(log, options, mo_coeff, norb, nelec_sp, directory)
     prop = set_prop(options)
     sampler = set_sampler(options)
 
-    print(f"# norb: {norb}")
-    print(f"# nelec: {nelec_sp}")
-    print("#")
-    for op in options:
-        if options[op] is not None:
-            print(f"# {op}: {options[op]}")
-    print("#")
+    ## MPI to get rank value
+    #mpi_comm = config.setup_comm_no_print()
+    #rank = mpi_comm.COMM_WORLD.Get_rank()
+
+    ## Logger
+    #log = Logger(sys.stdout, options.verbose, rank)
+
+    log.log_0(f"# norb: {norb}")
+    log.log_0(f"# nelec: {nelec_sp}")
+    log.log_0("#")
+    for k, v in options.__dict__.items():
+        log.log_0(f"# {k}: {v}")
+    log.log_0("#")
 
     return ham_data, ham, prop, trial, wave_data, sampler, observable, options
 
 
 def run_afqmc_calculation(
+    log: Logger,
     mpi_comm: Optional[Any] = None,
     tmp_dir: Optional[str] = None,
-    custom_options: Optional[Dict] = None,
+    custom_options: Optional[Options] = None,
 ) -> Tuple[float, float]:
     """
     Run the full AFQMC calculation.
@@ -571,7 +540,7 @@ def run_afqmc_calculation(
 
     # Prepare all components
     ham_data, ham, prop, trial, wave_data, sampler, observable, options = setup_afqmc(
-        options=custom_options, tmp_dir=directory
+        log, options=custom_options, tmp_dir=directory
     )
 
     assert trial is not None, "Trial wavefunction is None. Cannot run AFQMC."
@@ -584,7 +553,7 @@ def run_afqmc_calculation(
 
     # Run appropriate AFQMC algorithm
     e_afqmc, err_afqmc = 0.0, 0.0
-    if options["free_projection"]:
+    if options.free_projection:
         driver.fp_afqmc(
             ham_data,
             ham,
@@ -615,7 +584,7 @@ def run_afqmc_calculation(
     end_time = time.time()
 
     # Print timing and save results
-    print(f"AFQMC total walltime: {end_time - init_time}")
+    log.log_0(f"AFQMC total walltime: {end_time - init_time}")
     if rank == 0:
         np.savetxt(directory + "/ene_err.txt", np.array([e_afqmc, err_afqmc]))
 
@@ -629,9 +598,17 @@ def main() -> None:
     """
     args = parse_arguments()
     configure_environment(args)
-    config.setup_jax()
-    mpi_comm = config.setup_comm()
-    run_afqmc_calculation(mpi_comm=mpi_comm, tmp_dir=args.tmpdir)
+
+    # MPI rank needed for the logger
+    mpi_comm = config.setup_comm_no_print()
+    rank = mpi_comm.COMM_WORLD.Get_rank()
+
+    # Logger
+    log = Logger(sys.stdout, args.verbose, rank)    
+
+    mpi_comm = config.setup_comm(log)
+    config.setup_jax(log)
+    run_afqmc_calculation(log, mpi_comm=mpi_comm, tmp_dir=args.tmpdir)
 
 
 if __name__ == "__main__":

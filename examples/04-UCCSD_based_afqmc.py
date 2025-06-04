@@ -20,4 +20,6 @@ mycc.kernel()
 
 # afqmc @ UHF
 af = afqmc.AFQMC(mycc)
+af.n_walkers = 5 # !!! ONLY to make the example faster !!!
+af.n_blocks = 10 # !!! ONLY to make the example faster !!!
 af.kernel()

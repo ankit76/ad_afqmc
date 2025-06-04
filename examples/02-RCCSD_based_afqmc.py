@@ -19,6 +19,8 @@ mycc.kernel()
 
 # afqmc @ RCCSD
 af = afqmc.AFQMC(mycc)
+af.n_walkers = 5 # !!! ONLY to make the example faster !!!
+af.n_blocks = 10 # !!! ONLY to make the example faster !!!
 af.kernel()
 
 # Frozen-core RCCSD 
@@ -28,5 +30,6 @@ mycc.kernel()
 
 # Frozen-core afqmc @ RCCSD
 af = afqmc.AFQMC(mycc)
-af.norb_frozen = 1
+af.n_walkers = 5 # !!! ONLY to make the example faster !!!
+af.n_blocks = 10 # !!! ONLY to make the example faster !!!
 af.kernel()
