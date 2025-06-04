@@ -227,12 +227,20 @@ def set_trial(
         log.log_0(f"# Read RDM1 from disk")
     except:
         # Construct RDM1 from mo_coeff if file not found
-        wave_data["rdm1"] = jnp.array(
+        if options.trial in ["ghf_complex", "gcisd_complex"]:
+            wave_data["rdm1"] = jnp.array(
             [
-                mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
-                mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
-            ]
-        )
+            mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
+            mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
+            ])
+
+        else:
+            wave_data["rdm1"] = jnp.array(
+                [
+                    mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
+                    mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
+                ]
+            )
 
     # Set up trial wavefunction based on specified type
     if options.trial == "rhf":
@@ -320,6 +328,31 @@ def set_trial(
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
 
+    elif options.trial == "ghf_complex":
+        trial = wavefunctions.ghf_complex(norb, nelec_sp, n_batch=options.n_batch)
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]]
+
+    elif options.trial == "gcisd_complex":
+        try:
+            amplitudes = np.load(tmpdir + "/amplitudes.npz")
+
+            t1 = jnp.array(amplitudes["t1"])
+            t2 = jnp.array(amplitudes["t2"])
+
+            ci1 = t1
+            ci2 = np.einsum("ijab->iajb",t2) \
+                + np.einsum("ia,jb->iajb",t1,t1) \
+                - np.einsum("ib,ja->iajb",t1,t1)
+            trial_wave_data = {
+                "ci1": ci1,
+                "ci2": ci2,
+                "mo_coeff": mo_coeff,
+            }
+            wave_data.update(trial_wave_data)
+            trial = wavefunctions.gcisd_complex(norb, nelec_sp, n_batch=options.n_batch)
+        except:
+            raise ValueError("Trial specified as gcisd_complex, but amplitudes.npz not found.")
+
     else:
         # Try to load trial from pickle file
         try:
@@ -381,8 +414,12 @@ def set_prop(options: Options) -> Any:
                     options.n_walkers,
                     n_batch=options.n_batch,
                 )
+    elif options.walker_type == "generalized":
+        prop = propagation.propagator_generalized(
+            options.dt, options.n_walkers, n_batch=options.n_batch
+        )
     else:
-        raise ValueError(f"Invalid walker type {options['walker_type']}.")
+        raise ValueError(f"Invalid walker type {options.walker_type}.")
 
     return prop
 

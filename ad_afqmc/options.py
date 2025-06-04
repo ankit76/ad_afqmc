@@ -46,7 +46,7 @@ class Options:
             elif isinstance(mf_or_cc, CCSD):
                 trial = "cisd"
         self.trial = trial
-        assert self.trial in [None, "rhf", "uhf", "noci", "cisd", "ucisd"]
+        assert self.trial in [None, "rhf", "uhf", "noci", "cisd", "ucisd", "ghf_complex", "gcisd_complex"]
 
         # Set default values for options
         self.dt = dt
@@ -74,7 +74,7 @@ class Options:
             self.walker_type = "restricted"
         elif self.walker_type == "uhf":
             self.walker_type = "unrestricted"
-        assert self.walker_type in ["restricted", "unrestricted"]
+        assert self.walker_type in ["restricted", "unrestricted", "generalized"]
         
         self.symmetry = symmetry
         self.save_walkers = save_walkers
