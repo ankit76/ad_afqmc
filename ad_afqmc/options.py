@@ -46,7 +46,6 @@ class Options:
             elif isinstance(mf_or_cc, CCSD):
                 trial = "cisd"
         self.trial = trial
-        print("TRIAL", self.trial)
         assert self.trial in [None, "rhf", "uhf", "noci", "cisd", "ucisd"]
 
         # Set default values for options
