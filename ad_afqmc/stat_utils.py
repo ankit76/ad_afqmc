@@ -13,7 +13,7 @@ def blocking_analysis(log: Logger, weights, energies, neql=0, printQ=False, writ
     weightedEnergies = np.multiply(weights, energies)
     meanEnergy = weightedEnergies.sum() / weights.sum()
     if printQ:
-        log.log(f"#\n# Mean: {meanEnergy:.8e}")
+        log.log(f"#\n# Mean: {meanEnergy:.8f}")
         log.log("# Block size    # of blocks         Mean                Error")
     blockSizes = np.array([1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 1000, 10000])
     prevError = 0.0
@@ -41,7 +41,7 @@ def blocking_analysis(log: Logger, weights, energies, neql=0, printQ=False, writ
                 np.stack((blockedWeights, blockedEnergies)).T,
             )
         if printQ:
-            log.log(f"  {i:5d}           {nBlocks:6d}       {mean:.8e}       {error:.6e}")
+            log.log(f"  {i:5d}           {nBlocks:6d}       {mean:.8f}       {error:.6e}")
         if error < 1.05 * prevError and plateauError is None:
             plateauError = max(error, prevError)
         prevError = error

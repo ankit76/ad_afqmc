@@ -83,7 +83,7 @@ def afqmc_energy(
     # print("#   Iter        Block energy      Walltime")
     n = 0
     log.log_0(
-        f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
+        f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9f} {init_time:<10.2e} "
     )
     # print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
@@ -115,7 +115,7 @@ def afqmc_energy(
     # Sampling phase
     comm.Barrier()
     log.log_0("#\n# Sampling sweeps:")
-    log.log_0("#  Iter        Mean energy          Stochastic error       Walltime")
+    log.log_0("#  Iter      Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
     global_block_weights = None
@@ -256,7 +256,7 @@ def afqmc_observable(
     log.log_0("# Equilibration sweeps:")
     log.log_0("#   Iter        Block energy      Walltime")
     n = 0
-    log.log_0(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+    log.log_0(f"# {n:5d}      {prop_data['e_estimate']:.9f}     {init_time:.2e} ")
     comm.Barrier()
 
     n_ene_blocks_eql = options.n_ene_blocks_eql
@@ -287,7 +287,7 @@ def afqmc_observable(
     comm.Barrier()
     log.log_0("#\n# Sampling sweeps:")
     log.log_0(
-        "#  Iter        Mean energy          Stochastic error       Mean observable       Walltime"
+        "#  Iter      Mean energy          Stochastic error       Mean observable       Walltime"
     )
     comm.Barrier()
 
@@ -482,7 +482,7 @@ def _run_equilibration(
         comm.Barrier()
         if n % (max(sampler_eq.n_blocks // 5, 1)) == 0:
             log.log_0(
-                f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9e} {time.time() - init:<10.2e} ",
+                f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9f} {time.time() - init:<10.2e} ",
                 #flush=True,
             )
             # print(
@@ -733,12 +733,12 @@ def _print_progress_energy(
         )
         if energy_error is not None:
             log.log(
-                f" {n:5d}      {e_afqmc:.9e}        {energy_error:.9e}        {time.time() - init:.2e} ",
+                f" {n:5d}      {e_afqmc:.9f}        {energy_error:.9e}        {time.time() - init:.2e} ",
                 #flush=True,
             )
         else:
             log.log(
-                f" {n:5d}      {e_afqmc:.9e}                -              {time.time() - init:.2e} ",
+                f" {n:5d}      {e_afqmc:.9f}                -              {time.time() - init:.2e} ",
                 #flush=True,
             )
         np.savetxt(
@@ -783,12 +783,12 @@ def _print_progress_observable(
         )
         if energy_error is not None:
             log.log(
-                f" {n:5d}      {e_afqmc:.9e}        {energy_error:.9e}        {obs_afqmc:.9e}       {time.time() - init:.2e} ",
+                f" {n:5d}      {e_afqmc:.9f}        {energy_error:.9e}        {obs_afqmc:.9e}       {time.time() - init:.2e} ",
                 #flush=True,
             )
         else:
             log.log(
-                f" {n:5d}      {e_afqmc:.9e}                -              {obs_afqmc:.9e}       {time.time() - init:.2e} ",
+                f" {n:5d}      {e_afqmc:.9f}                -              {obs_afqmc:.9e}       {time.time() - init:.2e} ",
                 #flush=True,
             )
         np.savetxt(
@@ -1124,7 +1124,7 @@ def fp_afqmc(
     comm.Barrier()
     init_time = time.time() - init
     log.log_0("#\n# Sampling sweeps:")
-    log.log_0("#  Iter        Mean energy          Stochastic error       Walltime")
+    log.log_0("#  Iter      Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
     global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
