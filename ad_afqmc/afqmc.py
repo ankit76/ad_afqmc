@@ -15,7 +15,7 @@ from ad_afqmc.options import Options
 print = partial(print, flush=True)
 
 
-class AFQMC(Options):
+class AFQMC():
     """
     AFQMC class.
 
@@ -87,7 +87,21 @@ class AFQMC(Options):
     ):
         self.mf_or_cc = mf_or_cc
         self.basis_coeff = None
-        super().__init__()
+        frozen = getattr(mf_or_cc, "frozen", 0)
+        if isinstance(frozen, int):
+            self.norb_frozen = frozen
+        else:
+            print("Warning: Frozen is not an integer, assuming 0 frozen orbitals.")
+            self.norb_frozen = 0
+        self.chol_cut = 1e-5
+        self.integrals = None  # custom integrals
+        self.mpi_prefix = None
+        self.nproc = 1
+        self.tmpdir = __config__.TMPDIR + f"/afqmc{np.random.randint(1, int(1e6))}/"
+
+        # Set default options
+        for key, val in Options(mf_or_cc).to_dict().items():
+            setattr(self, key, val)
 
     def kernel(self, dry_run=False):
         """
@@ -107,30 +121,19 @@ class AFQMC(Options):
             tmpdir=self.tmpdir,
             verbose=self.verbose,
         )
+
         options = {}
         for attr in dir(self):
-            if (
-                attr
-                not in [
-                    "mf_or_cc",
-                    "basis_coeff",
-                    "norb_frozen",
-                    "chol_cut",
-                    "integrals",
-                    "mpi_prefix",
-                    "nproc",
-                ]
-                and not attr.startswith("__")
-                and not callable(getattr(self, attr))
-            ):
+            if attr in Options.get_keys():
                 options[attr] = getattr(self, attr)
         with open(self.tmpdir + "/options.bin", "wb") as f:
             pickle.dump(options, f)
+
         if dry_run:
             with open("tmpdir.txt", "w") as f:
                 f.write(self.tmpdir)
             return self.tmpdir
         else:
             return run_afqmc.run_afqmc(
-                mpi_prefix=self.mpi_prefix, nproc=self.nproc, tmpdir=self.tmpdir
+                options=Options.from_dict(options), mpi_prefix=self.mpi_prefix, nproc=self.nproc, tmpdir=self.tmpdir
             )

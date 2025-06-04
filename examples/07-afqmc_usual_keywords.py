@@ -25,13 +25,12 @@ mycc.kernel()
 # afqmc @ RCCSD
 af = afqmc.AFQMC(mycc)
 af.nproc = 1 # Number of MPI processes
-af.norb_frozen = 0 # Number of frozen orbitals
 af.chol_cut = 1e-5 # Threshold for the Cholesky decomposition
 af.dt = 0.005 # Time step
-af.n_walkers = 50 # Number of walkers
-af.n_blocks = 200 # Number of blocks
+af.n_walkers = 5 # Number of walkers, small here to make the example faster
+af.n_blocks = 10 # Number of blocks, small here to make the example faster
 af.seed = np.random.randint(1, int(1e6)) # Seed for random numbers generation
-af.n_eql = 20 # Number of equilibration steps at the beginning
-af.walker_type = "restricted" # Walker type, i.e., resticted, unrestricted or generalized
+af.n_eql = 3 # Number of equilibration steps at the beginning
+af.walker_type = "restricted" # Walker type, i.e., restricted, unrestricted or generalized
 af.tmpdir = "tmp" # Temporary directory
 af.kernel()

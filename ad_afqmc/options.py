@@ -10,8 +10,6 @@ class Options:
     def __init__(
         self,
         mf_or_cc = None,
-        norb_frozen: int = 0,
-        nproc: int = 1,
         dt: float = 0.01, #0.005,
         n_walkers: int = 50,
         n_prop_steps: int = 50,
@@ -35,17 +33,9 @@ class Options:
         vhs_mixed_precision: bool = False,
         trial_mixed_precision: bool = False,
         memory_mode: str = "low",
-        tmpdir: str = __config__.TMPDIR + f"/afqmc{np.random.randint(1, int(1e6))}/",
         verbose: int = 3,
         ):
 
-        frozen = getattr(mf_or_cc, "frozen", 0)
-        if isinstance(frozen, int):
-            self.norb_frozen = frozen
-        else:
-            print("Warning: Frozen is not an integer, assuming 0 frozen orbitals.")
-            self.norb_frozen = 0
-        
         if trial is None:
             if isinstance(mf_or_cc, scf.uhf.UHF) or isinstance(mf_or_cc, scf.rohf.ROHF):
                 trial = "uhf"
@@ -56,9 +46,8 @@ class Options:
             elif isinstance(mf_or_cc, CCSD):
                 trial = "cisd"
         self.trial = trial
+        print("TRIAL", self.trial)
         assert self.trial in [None, "rhf", "uhf", "noci", "cisd", "ucisd"]
-
-        self.nproc = nproc
 
         # Set default values for options
         self.dt = dt
@@ -99,13 +88,10 @@ class Options:
         self.vhs_mixed_precision = vhs_mixed_precision
         self.trial_mixed_precision = trial_mixed_precision
         self.memory_mode = memory_mode
-        self.tmpdir = tmpdir
         self.verbose = verbose
 
-    def from_dict(options: dict):
-        matching_keys = [
-            "norb_frozen",
-            "nproc",
+    def get_keys():
+        keys = [
             "dt",
             "n_walkers",
             "n_prop_steps",
@@ -129,13 +115,17 @@ class Options:
             "vhs_mixed_precision",
             "trial_mixed_precision",
             "memory_mode",
-            "tmpdir",
             "verbose",
         ]
 
-        filtered_dict = {k: v for k, v in options.items() if k in matching_keys}
+        return keys
+
+
+    def from_dict(options: dict):
+        assert type(options) == dict
+        filtered_dict = {key: val for key, val in options.items() if key in Options.get_keys()}
 
         return Options(**options)
 
     def to_dict(self):
-       return {k: v for k, v in self.__dict__.items()} 
+       return {key: val for key, val in self.__dict__.items()}

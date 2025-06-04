@@ -10,7 +10,7 @@ import numpy as np
 from jax import dtypes, jvp, random, vjp
 
 from ad_afqmc import hamiltonian, misc, propagation, sampling, stat_utils, wavefunctions
-from ad_afqmc.config import mpi_print as print
+#from ad_afqmc.config import mpi_print as print
 from ad_afqmc.options import Options
 from ad_afqmc.logger import Logger
 

@@ -10,7 +10,7 @@ import numpy as np
 from jax import numpy as jnp
 
 from ad_afqmc import config, driver, hamiltonian, propagation, sampling, wavefunctions
-from ad_afqmc.config import mpi_print as print
+#from ad_afqmc.config import mpi_print as print
 from ad_afqmc.options import Options
 from ad_afqmc.logger import Logger
 
