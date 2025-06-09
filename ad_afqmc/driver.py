@@ -457,7 +457,7 @@ def _run_equilibration(
         prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
         prop_data["e_estimate"] = (
             0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n[0]
-        )
+        ).astype("float64")
 
         comm.Barrier()
         if n % (max(sampler_eq.n_blocks // 5, 1)) == 0:
