@@ -1273,6 +1273,9 @@ class ghf(wave_function):
 
 @dataclass
 class ghf_cpmc(ghf, wave_function_cpmc):
+    """
+    CPMC with GHF trials with UHF walkers.
+    """
 
     @partial(jit, static_argnums=0)
     def calc_green_diagonal(
@@ -1360,6 +1363,115 @@ class ghf_cpmc(ghf, wave_function_cpmc):
             green[:, j],
             update_constants[0] * (green[j, i] * sg_i - green[i, i] * sg_j) - sg_j,
         )
+        return green
+
+    @partial(jit, static_argnums=0)
+    def update_greens_function_vmap(
+        self, greens, ratios, update_indices, update_constants
+    ):
+        return vmap(self.update_greens_function, in_axes=(0, 0, None, 0))(
+            greens, ratios, update_indices, update_constants
+        )
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class ghf_cpmc_2(ghf, wave_function_cpmc):
+    """
+    CPMC with GHF trials with GHF walkers.
+    """
+    
+    @partial(jit, static_argnums=0)
+    def calc_green_diagonal(
+        self, walker: jnp.array, wave_data: dict
+    ) -> jnp.array:
+        overlap_mat = (
+            wave_data["mo_coeff"][:, : self.nelec[0] + self.nelec[1]].T @ walker
+        )
+        inv = jnp.linalg.inv(overlap_mat)
+        green = (
+            walker
+            @ inv
+            @ wave_data["mo_coeff"][:, : self.nelec[0] + self.nelec[1]].T
+        ).diagonal()
+        return green
+
+    @partial(jit, static_argnums=0)
+    def calc_green_diagonal_vmap(self, walkers: jax.Array, wave_data: dict) -> jnp.array:
+        return vmap(self.calc_green_diagonal, in_axes=(0, None))(
+            walkers, wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap_ratio(
+        self, green: jnp.array, update_indices: jnp.array, update_constants: jnp.array
+    ) -> float:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+
+        # spin beta orbitals have indices between [self.norb, 2*self.norb).
+        i = i + (spin_i == 1) * self.norb
+        j = j + (spin_j == 1) * self.norb
+        ratio = (1 + update_constants[0] * green[i, i]) * (
+            1 + update_constants[1] * green[j, j]
+        ) - update_constants[0] * update_constants[1] * (green[i, j] * green[j, i])
+        return ratio
+
+    @partial(jit, static_argnums=0)
+    def calc_overlap_ratio_vmap(
+        self, greens: jnp.array, update_indices: jnp.array, update_constants: jnp.array
+    ) -> jnp.array:
+        return vmap(self.calc_overlap_ratio, in_axes=(0, None, None))(
+            greens, update_indices, update_constants
+        )
+    
+    @partial(jit, static_argnums=0)
+    def calc_full_green(
+        self, walker: jax.Array, wave_data: dict
+    ) -> jnp.array:
+        green = (
+            walker
+            @ jnp.linalg.inv(
+                wave_data["mo_coeff"][:, : self.nelec[0] + self.nelec[1]].T @ walker
+            )
+            @ wave_data["mo_coeff"][:, : self.nelec[0] + self.nelec[1]].T
+        ).T
+        return green
+    
+    @partial(jit, static_argnums=0)
+    def calc_full_green_vmap(self, walkers: jax.Array, wave_data: dict) -> jnp.array:
+        return vmap(self.calc_full_green, in_axes=(0, None))(
+            walkers, wave_data
+        )
+
+    @partial(jit, static_argnums=0)
+    def update_greens_function(
+        self,
+        green: jnp.array,
+        ratio: float,
+        update_indices: jnp.array,
+        update_constants: jnp.array,
+    ) -> jnp.array:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+
+        # spin beta orbitals have indices between [self.norb, 2*self.norb).
+        i = i + (spin_i == 1) * self.norb
+        j = j + (spin_j == 1) * self.norb
+        sg_i = green[i].at[i].add(-1)
+        sg_j = green[j].at[j].add(-1)
+        green += (update_constants[0] / ratio) * jnp.outer(
+            green[:, i],
+            update_constants[1] * (green[i, j] * sg_j - green[j, j] * sg_i) - sg_i,
+        ) + (update_constants[1] / ratio) * jnp.outer(
+            green[:, j],
+            update_constants[0] * (green[j, i] * sg_i - green[i, i] * sg_j) - sg_j,
+        )
+
+        green = jnp.where(jnp.isinf(green), 0.0, green)
+        green = jnp.where(jnp.isnan(green), 0.0, green)
         return green
 
     @partial(jit, static_argnums=0)
