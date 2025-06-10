@@ -359,5 +359,147 @@ class sampler:
         )
         return prop_data_tr, block_energy, block_weight, prop_data["key"]
 
+    @partial(jit, static_argnums=(0, 1, 6, 8))
+    def propagate_phaseless_nucgrad_norot(
+        self,
+        ham: hamiltonian,
+        ham_data: dict,
+        coupling: float,
+        rdm1op: jax.Array,
+        rdm2op: jax.Array,
+        propagator: propagator,
+        prop_data: dict,
+        trial: wave_function,
+        wave_data: dict,
+    ):
+        ham_data["h1"] = ham_data["h1"] + coupling * rdm1op
+        rdm2op = (rdm2op + jnp.transpose(rdm2op, (0, 2, 1))) / 2
+
+        ham_data["chol"] = rdm2op.reshape(-1, ham.norb * ham.norb)
+        ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+        ham_data = ham.build_propagation_intermediates(
+            ham_data, propagator, trial, wave_data
+        )
+        prop_data, (block_energy, block_weight) = self._ad_block(
+            prop_data, ham_data, propagator, trial, wave_data
+        )
+
+        return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
+
+    @partial(jit, static_argnums=(0, 1, 6, 8))
+    def propagate_phaseless_nucgrad_norot_nosr(
+        self,
+        ham: hamiltonian,
+        ham_data: dict,
+        coupling: float,
+        rdm1op: jax.Array,
+        rdm2op: jax.Array,
+        propagator: propagator,
+        prop_data: dict,
+        trial: wave_function,
+        wave_data: dict,
+    ):
+
+        ham_data["h1"] = ham_data["h1"] + coupling * rdm1op
+        rdm2op = (rdm2op + jnp.transpose(rdm2op, (0, 2, 1))) / 2
+
+        ham_data["chol"] = rdm2op.reshape(-1, ham.norb * ham.norb)
+        ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+        ham_data = ham.build_propagation_intermediates(
+            ham_data, propagator, trial, wave_data
+        )
+
+        def _block_scan_wrapper(x, y):
+            return self._block_scan(x, y, ham_data, propagator, trial, wave_data)
+
+        prop_data["overlaps"] = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["n_killed_walkers"] = 0
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data, (block_energy, block_weight) = lax.scan(
+            checkpoint(_block_scan_wrapper),
+            prop_data,
+            None,
+            length=propagator.n_ene_blocks,
+        )
+        prop_data["n_killed_walkers"] /= (
+            propagator.n_sr_blocks * propagator.n_ene_blocks * propagator.n_walkers
+        )
+
+        return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
+
+    @partial(jit, static_argnums=(0, 1, 6, 8))
+    def propagate_phaseless_nucgrad(  # do rot  do SR
+        self,
+        ham: hamiltonian,
+        ham_data: dict,
+        coupling: float,
+        rdm1op: jax.Array,
+        rdm2op: jax.Array,
+        propagator: propagator,
+        prop_data: dict,
+        trial: wave_function,
+        wave_data: dict,
+    ):
+
+        ham_data["h1"] = ham_data["h1"] + coupling * rdm1op
+        rdm2op = (rdm2op + jnp.transpose(rdm2op, (0, 2, 1))) / 2
+        ham_data["chol"] = rdm2op.reshape(-1, ham.norb * ham.norb)
+
+        wave_data = trial.optimize(ham_data, wave_data)
+        ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+        ham_data = ham.build_propagation_intermediates(
+            ham_data, propagator, trial, wave_data
+        )
+
+        prop_data, (block_energy, block_weight) = self._ad_block(
+            prop_data, ham_data, propagator, trial, wave_data
+        )
+
+        return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
+
+    @partial(jit, static_argnums=(0, 1, 6, 8))
+    def propagate_phaseless_nucgrad_rot_nosr(
+        self,
+        ham: hamiltonian,
+        ham_data: dict,
+        coupling: float,
+        rdm1op: jax.Array,
+        rdm2op: jax.Array,
+        propagator: propagator,
+        prop_data: dict,
+        trial: wave_function,
+        wave_data: dict,
+    ):
+
+        ham_data["h1"] = ham_data["h1"] + coupling * rdm1op
+        rdm2op = (rdm2op + jnp.transpose(rdm2op, (0, 2, 1))) / 2
+
+        ham_data["chol"] = rdm2op.reshape(-1, ham.norb * ham.norb)
+
+        mo_coeff = trial.optimize(ham_data, wave_data)
+        wave_data = mo_coeff
+        ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+        ham_data = ham.build_propagation_intermediates(
+            ham_data, propagator, trial, wave_data
+        )
+
+        def _block_scan_wrapper(x, y):
+            return self._block_scan(x, y, ham_data, propagator, trial, wave_data)
+
+        prop_data["overlaps"] = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["n_killed_walkers"] = 0
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data, (block_energy, block_weight) = lax.scan(
+            checkpoint(_block_scan_wrapper),
+            prop_data,
+            None,
+            length=propagator.n_ene_blocks,
+        )
+        prop_data["n_killed_walkers"] /= (
+            propagator.n_sr_blocks * propagator.n_ene_blocks * propagator.n_walkers
+        )
+
+        return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
+
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
