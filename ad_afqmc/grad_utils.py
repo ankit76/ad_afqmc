@@ -178,7 +178,7 @@ def reject_outliers(data, m=10.0):
     return data[non_outliers_mask], final_mask
 
 
-def find_nproc(tmpdir="./"):
+def find_nproc(tmpdir="./", printG=False):
     import glob
     import re
 
@@ -190,7 +190,8 @@ def find_nproc(tmpdir="./"):
         match = pattern.search(file)
         if match:
             indices.append(int(match.group(1)))
-    print(max(indices) + 1)
+    if printG:
+        print(max(indices) + 1)
     return max(indices) + 1
 
 
@@ -242,7 +243,7 @@ def calculate_nuc_gradients(
     rdm1, rdm2, weights = get_rdmsDer(
         h1_der.shape[2],
         h2_der.shape[2],
-        nproc=find_nproc(tmpdir=tmpdir),
+        nproc=find_nproc(tmpdir=tmpdir, printG=printG),
         filename=energy_der,
     )
     obs1 = np.einsum("rxpq,npq->nrx", h1_der, rdm1[:, 0, :, :]) + np.einsum(
