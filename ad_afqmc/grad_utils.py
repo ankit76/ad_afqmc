@@ -27,7 +27,7 @@ def _ao2mo(chol, C):  # Convert the 2e integrals from AO to MO basis
     return chol2
 
 
-def FD_integrals(mf, dR=0.00001):
+def FD_integrals(mf, dR=0.00001, tmpdir="./"):
     basis = mf.mol.basis
     mol = mf.mol
 
@@ -89,7 +89,7 @@ def FD_integrals(mf, dR=0.00001):
     elif isinstance(mf, scf.rhf.RHF):
         dm0 = basis0.T @ mf.get_ovlp() @ mf.make_rdm1() @ mf.get_ovlp() @ basis0
     np.savez(
-        "Integral_der.npz",
+        tmpdir + "/Integral_der.npz",
         array1=h1_der_array,
         array2=h2_der_array,
         array3=h0_der,
@@ -97,7 +97,7 @@ def FD_integrals(mf, dR=0.00001):
     )
 
 
-def write_integrals_lowdins(mf):
+def write_integrals_lowdins(mf, tmpdir="./"):
     mol = mf.mol
     basis0 = np.array(fractional_matrix_power(mf.get_ovlp(), -0.5), dtype="float64")
     X = basis0.copy()
@@ -126,14 +126,20 @@ def write_integrals_lowdins(mf):
 
     if isinstance(mf, scf.uhf.UHF):
         np.savez(
-            "mo_coeff.npz",
+            tmpdir + "/mo_coeff.npz",
             mo_coeff=np.array(q),
             X=X,
             X_inv=X_inv,
             can_mo=mf.mo_coeff,
         )
     elif isinstance(mf, scf.rhf.RHF):
-        np.savez("mo_coeff.npz", mo_coeff=[q, q], X=X, X_inv=X_inv, can_mo=mf.mo_coeff)
+        np.savez(
+            tmpdir + "/mo_coeff.npz",
+            mo_coeff=[q, q],
+            X=X,
+            X_inv=X_inv,
+            can_mo=mf.mo_coeff,
+        )
 
     pyscf_interface.write_dqmc(
         h1e,
@@ -143,15 +149,15 @@ def write_integrals_lowdins(mf):
         nbasis,
         enuc,
         ms=mol.spin,
-        filename="FCIDUMP_chol",
+        filename=tmpdir + "/FCIDUMP_chol",
     )
 
 
-def prep_afqmc_nuc_grad(mf, dR=1e-5):
+def prep_afqmc_nuc_grad(mf, dR=1e-5, tmpdir: str = "./"):
     print("Removing old files")
     os.system("rm -f en_der_afqmc_*.npz")
-    FD_integrals(mf, dR=dR)
-    write_integrals_lowdins(mf)
+    FD_integrals(mf, dR=dR, tmpdir=tmpdir)
+    write_integrals_lowdins(mf, tmpdir=tmpdir)
 
 
 def reject_outliers(data, m=10.0):
@@ -172,11 +178,11 @@ def reject_outliers(data, m=10.0):
     return data[non_outliers_mask], final_mask
 
 
-def find_nproc():
+def find_nproc(tmpdir="./"):
     import glob
     import re
 
-    files = glob.glob("en_der_afqmc_*.npz")
+    files = glob.glob(tmpdir + "/en_der_afqmc_*.npz")
     pattern = re.compile(r"en_der_afqmc_(\d+)\.npz")
 
     indices = []
@@ -193,13 +199,10 @@ def get_rdmsDer(norb, nchol, filename="en_der_afqmc.npz", nproc=4):
     rdm2 = []
     weight = []
     for i in range(nproc):
-        weighti = np.load(f"en_der_afqmc_{i}.npz")["weight"]
-        rdm1i = np.load(f"en_der_afqmc_{i}.npz")["rdm1"].reshape(
-            2, weighti.shape[0], norb, norb
-        )
-        rdm2i = np.load(f"en_der_afqmc_{i}.npz")["rdm2"].reshape(
-            weighti.shape[0], nchol, norb, norb
-        )
+        filenamei = filename[:-4] + f"_{i}.npz"
+        weighti = np.load(filenamei)["weight"]
+        rdm1i = np.load(filenamei)["rdm1"].reshape(2, weighti.shape[0], norb, norb)
+        rdm2i = np.load(filenamei)["rdm2"].reshape(weighti.shape[0], nchol, norb, norb)
         for j in range(rdm1i.shape[1]):
             rdm1.append(rdm1i[:, j, :, :])
             rdm2.append(rdm2i[j])  # ,:,:])
@@ -224,17 +227,23 @@ def weighted_std(data, weights):
 
 
 def calculate_nuc_gradients(
+    tmpdir="./",
     integral_der="Integral_der.npz",
     energy_der="en_der_afqmc.npz",
     printG=True,
     reject_outliers_enabled=True,
 ):
+    integral_der = tmpdir + "/" + integral_der
+    energy_der = tmpdir + "/" + energy_der
     h1_der = np.load(integral_der)["array1"]  # (natm,3,norb,norb)
     h2_der = np.load(integral_der)["array2"]  # (natm,3,nchol,norb,norb)
     h0_der = np.load(integral_der)["array3"]  # (natm,3)
 
     rdm1, rdm2, weights = get_rdmsDer(
-        h1_der.shape[2], h2_der.shape[2], nproc=find_nproc(), filename=energy_der
+        h1_der.shape[2],
+        h2_der.shape[2],
+        nproc=find_nproc(tmpdir=tmpdir),
+        filename=energy_der,
     )
     obs1 = np.einsum("rxpq,npq->nrx", h1_der, rdm1[:, 0, :, :]) + np.einsum(
         "rxpq,npq->nrx", h1_der, rdm1[:, 1, :, :]

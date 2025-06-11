@@ -22,13 +22,13 @@ mf = df.density_fit(scf.UHF(mol))
 mf.kernel()
 
 af = afqmc.AFQMC(mf)
-af.nproc = 4
+af.nproc = 2
 af.n_walkers = 50
 af.n_blocks = 10
 af.n_ene_blocks = 4
 af.n_sr_blocks = 50
 af.ad_mode = "nuc_grad"
-af.tmpdir = "./"
+af.tmpdir = "./tmp"
 af.kernel()
 
 #print(f"r = {r}")

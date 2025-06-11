@@ -148,7 +148,7 @@ class AFQMC:
                 tmpdir=self.tmpdir,
             )
         else:
-            grad_utils.prep_afqmc_nuc_grad(self.mf_or_cc, self.dR)
+            grad_utils.prep_afqmc_nuc_grad(self.mf_or_cc, self.dR, tmpdir=self.tmpdir)
         options = {}
         for attr in dir(self):
             if (

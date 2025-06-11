@@ -364,7 +364,11 @@ def afqmc_observable(
             comm=comm,
             ad_mode=options["ad_mode"],
         )
-
+        if options["ad_mode"] == "nuc_grad":
+            block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
+            _save_energy_derivatives(
+                block_rdm1_n, block_rdm2_n, block_weight_n, tmpdir, rank
+            )
         # Update walkers
         block_energy_n = comm.bcast(block_energy_n, root=0)
         prop_data = propagator.orthonormalize_walkers(prop_data)
@@ -681,13 +685,6 @@ def _gather_ad_results(
     block_rdm1_n = np.array(block_rdm1_n, dtype="float32")
     if ad_mode == "2rdm":
         block_rdm2_n = np.array(block_rdm2_n, dtype="float32")
-    elif ad_mode == "nuc_grad":
-        grad_utils.append_to_array(
-            f"en_der_afqmc_{comm.rank}.npz",
-            block_rdm1_n,
-            block_rdm2_n,
-            block_weight_n,
-        )
 
     gather_weights = np.zeros(0, dtype="float32")
     gather_energies = np.zeros(0, dtype="float32")
@@ -730,6 +727,16 @@ def _gather_ad_results(
         global_block_observables,
         global_block_rdm1s,
         global_block_rdm2s,
+    )
+
+
+def _save_energy_derivatives(block_rdm1_n, block_rdm2_n, block_weight_n, tmpdir, rank):
+    """Save energy derivatives to file"""
+    grad_utils.append_to_array(
+        tmpdir + f"/en_der_afqmc_{rank}.npz",
+        block_rdm1_n,
+        block_rdm2_n,
+        block_weight_n,
     )
 
 
@@ -1038,7 +1045,7 @@ def _analyze_observable_results(
             observable_data["rdm2_noise"] = rdm2_noise
             observable_data["rdm2_noise_err"] = rdm2_noise_err
         elif ad_mode == "nuc_grad":
-            grad_utils.calculate_nuc_gradients()
+            grad_utils.calculate_nuc_gradients(tmpdir=tmpdir)
 
         result_data = {
             "e_afqmc": e_afqmc,
