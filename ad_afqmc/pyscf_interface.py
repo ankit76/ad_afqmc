@@ -84,7 +84,9 @@ def prep_afqmc(
             basis_coeff = mf.mo_coeff
 
     # calculate cholesky integrals
-    h1e, chol, nelec, enuc, nbasis, nchol = compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, chol_cut)
+    h1e, chol, nelec, enuc, nbasis, nchol = compute_cholesky_integrals(
+        mol, mf, basis_coeff, integrals, norb_frozen, chol_cut
+    )
 
     print("# Finished calculating Cholesky integrals\n#")
 
@@ -99,7 +101,7 @@ def prep_afqmc(
     chol = chol.reshape((chol.shape[0], -1))
 
     # write trial mo coefficients
-    trial_coeffs = write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir) 
+    trial_coeffs = write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir)
 
     write_dqmc(
         h1e,
@@ -112,6 +114,7 @@ def prep_afqmc(
         filename=tmpdir + "/FCIDUMP_chol",
         mo_coeffs=trial_coeffs,
     )
+
 
 def getCollocationMatrices(
     mol, grid_level=0, thc_eps=1.0e-4, mo1=None, mo2=None, alpha=0.25
@@ -810,6 +813,7 @@ def parity(d0: np.ndarray, cre: Sequence, des: Sequence) -> float:
         d[D[i]] = 1
     return float(parity)
 
+
 def read_pyscf_ccsd(mf_or_cc, tmpdir):
     # raise warning about mpi
     print(
@@ -826,7 +830,7 @@ def read_pyscf_ccsd(mf_or_cc, tmpdir):
         ci2aa = (ci2aa - ci2aa.transpose(0, 1, 3, 2)) / 2
         ci2aa = ci2aa.transpose(0, 2, 1, 3)
         ci2bb = cc.t2[2] + 2 * np.einsum("ia,jb->ijab", cc.t1[1], cc.t1[1])
-        ci2bb = (ci2bb - ci2bb.transpose(0, 1, 3, 2)) / 2 
+        ci2bb = (ci2bb - ci2bb.transpose(0, 1, 3, 2)) / 2
         ci2bb = ci2bb.transpose(0, 2, 1, 3)
         ci2ab = cc.t2[1] + np.einsum("ia,jb->ijab", cc.t1[0], cc.t1[1])
         ci2ab = ci2ab.transpose(0, 2, 1, 3)
@@ -847,6 +851,7 @@ def read_pyscf_ccsd(mf_or_cc, tmpdir):
         np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2)
 
     return mf, cc, norb_frozen
+
 
 def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, chol_cut):
     print("# Calculating Cholesky integrals")
@@ -899,6 +904,7 @@ def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, cho
             chol = chol.reshape((-1, nbasis, nbasis))
             chol = chol[:, mc.ncore : mc.ncore + mc.ncas, mc.ncore : mc.ncore + mc.ncas]  # type: ignore
     return h1e, chol, nelec, enuc, nbasis, nchol
+
 
 def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
     assert basis_coeff.dtype == "float", "Only implemented for real-valued MOs"
@@ -969,15 +975,18 @@ def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
 
     return trial_coeffs
 
+
 def prep_afqmc_ghf_complex(mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5):
     import scipy.linalg as la
-    norb = np.shape(gmf.mo_coeff)[-1]//2
+
+    assert type(gmf.mo_coeff) is np.ndarray, "gmf.mo_coeff should be a numpy array"
+    norb = np.shape(gmf.mo_coeff)[-1] // 2
     mo_coeff = gmf.mo_coeff
 
     # Chol ao to mo
     chol_vecs = chunked_cholesky(mol, max_error=chol_cut)
     nchol = chol_vecs.shape[0]
-    chol = np.zeros((nchol, 2*norb, 2*norb), dtype=complex)
+    chol = np.zeros((nchol, 2 * norb, 2 * norb), dtype=complex)
     for i in range(nchol):
         chol_i = chol_vecs[i].reshape(norb, norb)
         chol_i = la.block_diag(chol_i, chol_i)
@@ -988,32 +997,46 @@ def prep_afqmc_ghf_complex(mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5):
 
     enuc = mol.energy_nuc()
     nbasis = h.shape[-1]
-    print(f'nelec: {mol.nelec}')
-    print(f'nbasis: {nbasis}')
-    print(f'chol.shape: {chol.shape}')
+    print(f"nelec: {mol.nelec}")
+    print(f"nbasis: {nbasis}")
+    print(f"chol.shape: {chol.shape}")
 
     # Modified one-electron integrals
     chol = chol.reshape((-1, nbasis, nbasis))
-    v0 = 0.5 * np.einsum('gik,gkj->ij', chol, chol, optimize='optimal')
+    v0 = 0.5 * np.einsum("gik,gkj->ij", chol, chol, optimize="optimal")
     h_mod = h - v0
     chol = chol.reshape((chol.shape[0], -1))
 
     # Save
-    write_dqmc(h, h_mod, chol, sum(mol.nelec), nbasis, enuc, ms=mol.spin, filename=tmpdir+'/FCIDUMP_chol')
+    write_dqmc(
+        h,
+        h_mod,
+        chol,
+        sum(mol.nelec),
+        nbasis,
+        enuc,
+        ms=mol.spin,
+        filename=tmpdir + "/FCIDUMP_chol",
+    )
 
     ovlp = gmf.get_ovlp(mol)
-    q, r = np.linalg.qr(
-        mo_coeff.T.conj() @ ovlp @ mo_coeff
-    )
+    q, r = np.linalg.qr(mo_coeff.T.conj() @ ovlp @ mo_coeff)
     sgn = np.sign(r.diagonal())
     q = np.einsum("ij,j->ij", q, sgn)
-    np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=[q,q])
+    np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=[q, q])
 
     return h, h_mod, chol
 
+
 def prep_afqmc_spinor(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
     import scipy.linalg as la
-    from socutils.scf import spinor_hf
+
+    try:
+        from socutils.scf import spinor_hf  # type: ignore
+    except ImportError:
+        raise ImportError(
+            "Please install socutils package to use spinor_hf module for AFQMC."
+        )
     norb = n_ao
 
     # Chol ao to mo
@@ -1021,7 +1044,7 @@ def prep_afqmc_spinor(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
     nchol = chol_vecs.shape[0]
     chol = np.zeros((nchol, norb, norb), dtype=complex)
     for i in range(nchol):
-        chol_i = chol_vecs[i].reshape(norb//2, norb//2)
+        chol_i = chol_vecs[i].reshape(norb // 2, norb // 2)
         chol_i = spinor_hf.sph2spinor(mol, la.block_diag(chol_i, chol_i))
         chol[i] = mo_coeff.T.conj() @ chol_i @ mo_coeff
 
@@ -1030,25 +1053,32 @@ def prep_afqmc_spinor(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
 
     enuc = mol.energy_nuc()
     nbasis = h.shape[-1]
-    print(f'nelec: {mol.nelec}')
-    print(f'nbasis: {nbasis}')
-    print(f'chol.shape: {chol.shape}')
+    print(f"nelec: {mol.nelec}")
+    print(f"nbasis: {nbasis}")
+    print(f"chol.shape: {chol.shape}")
 
     # Modified one-electron integrals
     chol = chol.reshape((-1, nbasis, nbasis))
-    v0 = 0.5 * np.einsum('gik,gkj->ij', chol, chol, optimize='optimal')
+    v0 = 0.5 * np.einsum("gik,gkj->ij", chol, chol, optimize="optimal")
     h_mod = h - v0
     chol = chol.reshape((chol.shape[0], -1))
 
     # Save
-    write_dqmc(h, h_mod, chol, sum(mol.nelec), nbasis, enuc, ms=mol.spin, filename=tmpdir+'/FCIDUMP_chol')
+    write_dqmc(
+        h,
+        h_mod,
+        chol,
+        sum(mol.nelec),
+        nbasis,
+        enuc,
+        ms=mol.spin,
+        filename=tmpdir + "/FCIDUMP_chol",
+    )
 
     ovlp = mol.intor("int1e_ovlp_spinor")
-    q, r = np.linalg.qr(
-        mo_coeff.T.conj() @ ovlp @ mo_coeff
-    )
+    q, r = np.linalg.qr(mo_coeff.T.conj() @ ovlp @ mo_coeff)
     sgn = np.sign(r.diagonal())
     q = np.einsum("ij,j->ij", q, sgn)
-    np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=[q,q])
+    np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=[q, q])
 
     return h, h_mod, chol
