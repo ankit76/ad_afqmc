@@ -351,12 +351,12 @@ class wave_function(ABC):
                 jnp.array([natorbs_dn + 0.0j] * n_walkers),
             ]
         elif walker_type == "generalized":
-            natorbs = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]+self.nelec[1]]
+            natorbs = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][
+                :, : self.nelec[0] + self.nelec[1]
+            ]
             return jnp.array([natorbs + 0.0j] * n_walkers)
         else:
-            raise Exception(
-                            "Unknown walker_type."
-                        )
+            raise Exception("Unknown walker_type.")
 
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         """Build intermediates for measurements in ham_data. This method is called by the hamiltonian class.
@@ -611,7 +611,7 @@ class rhf(wave_function):
         c = vmap(jnp.trace)(f)
         exc = jnp.sum(vmap(lambda x: x * x.T)(f))
         ene2 = 2.0 * jnp.sum(c * c) - exc
- 
+
         return ene2 + ene1 + ene0
 
     @partial(jit, static_argnums=0)
@@ -1028,8 +1028,22 @@ class uhf_cpmc(uhf, wave_function_cpmc):
             greens, ratios, update_indices, update_constants
         )
 
+    @partial(jit, static_argnums=0)
+    def _calc_energy(self, walker_up, walker_dn, ham_data, wave_data):
+        green = self.calc_full_green(walker_up, walker_dn, wave_data)
+        h1 = ham_data["h1"]
+        u = ham_data["u"]
+        energy_1 = jnp.sum(green[0] * h1[0]) + jnp.sum(green[1] * h1[1])
+        energy_2 = u * jnp.sum(green[0].diagonal() * green[1].diagonal())
+        return energy_1 + energy_2
+
+    @partial(jit, static_argnums=0)
+    def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
+        return ham_data
+
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
+
 
 @dataclass
 class ghf_complex(wave_function):
@@ -1092,13 +1106,27 @@ class ghf_complex(wave_function):
 
         # <ghf|H_2|w><ghf|w> = 0.5 \sum_\gamma Tr(rot_chol_\gamma . green_walker.T)^2
         # - Tr(rot_chol_\gamma . green_walker.T . rot_chol_\gamma . green_walker.T)
-        #f = jnp.einsum("gij,jk->gik", rot_chol, green_walker.T, optimize="optimal")
-        #c = vmap(jnp.trace)(f)
-        #exc = jnp.sum(vmap(lambda x: x * x.T)(f))
-        #ene2 = (jnp.sum(c * c) - exc) / 2.0
+        # f = jnp.einsum("gij,jk->gik", rot_chol, green_walker.T, optimize="optimal")
+        # c = vmap(jnp.trace)(f)
+        # exc = jnp.sum(vmap(lambda x: x * x.T)(f))
+        # ene2 = (jnp.sum(c * c) - exc) / 2.0
 
-        p1 = jnp.einsum("ri,gir,sj,gjs->", green_walker.T, rot_chol, green_walker.T, rot_chol, optimize="optimal")
-        p2 = jnp.einsum("sk,gkr,rl,gls->", green_walker.T, rot_chol, green_walker.T, rot_chol, optimize="optimal")
+        p1 = jnp.einsum(
+            "ri,gir,sj,gjs->",
+            green_walker.T,
+            rot_chol,
+            green_walker.T,
+            rot_chol,
+            optimize="optimal",
+        )
+        p2 = jnp.einsum(
+            "sk,gkr,rl,gls->",
+            green_walker.T,
+            rot_chol,
+            green_walker.T,
+            rot_chol,
+            optimize="optimal",
+        )
         ene2 = 0.5 * (p1 - p2)
 
         return ene2 + ene1 + ene0
@@ -1110,12 +1138,12 @@ class ghf_complex(wave_function):
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         """Builds half rotated integrals for efficient force bias and energy calculations."""
-        #ham_data["h1"] = (
+        # ham_data["h1"] = (
         #    ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
-        #)
-        #ham_data["h1"] = (
+        # )
+        # ham_data["h1"] = (
         #    ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
-        #)
+        # )
         ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ (
             (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
         )
@@ -1128,6 +1156,7 @@ class ghf_complex(wave_function):
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
+
 
 @dataclass
 class ghf(wave_function):
@@ -1348,6 +1377,30 @@ class ghf_cpmc(ghf, wave_function_cpmc):
         return vmap(self.update_greens_function, in_axes=(0, 0, None, 0))(
             greens, ratios, update_indices, update_constants
         )
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy(self, walker_up, walker_dn, ham_data, wave_data):
+        green = self.calc_full_green(walker_up, walker_dn, wave_data)
+        u = ham_data["u"]
+        h1 = ham_data["h1"]
+        energy_1 = jnp.sum(green[: self.norb, : self.norb] * h1[0]) + jnp.sum(
+            green[self.norb :, self.norb :] * h1[1]
+        )
+        energy_2 = u * (
+            jnp.sum(
+                green[: self.norb, : self.norb].diagonal()
+                * green[self.norb :, self.norb :].diagonal()
+            )
+            - jnp.sum(
+                green[: self.norb, self.norb :].diagonal()
+                * green[self.norb :, : self.norb].diagonal()
+            )
+        )
+        return energy_1 + energy_2
+
+    @partial(jit, static_argnums=0)
+    def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
+        return ham_data
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
@@ -2093,6 +2146,7 @@ class CISD(wave_function_auto):
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
+
 @dataclass
 class gcisd_complex(wave_function_auto):
     """This class contains functions for the CISD wavefunction
@@ -2117,7 +2171,7 @@ class gcisd_complex(wave_function_auto):
         o0 = jnp.linalg.det(walker[: walker.shape[1], :])
         o1 = jnp.einsum("ia,ia", ci1.conj(), GF[:, nocc:])
         o2 = 2.0 * jnp.einsum("iajb, ia, jb", ci2.conj(), GF[:, nocc:], GF[:, nocc:])
-        o = (1.0 + o1 + 0.25*o2) * o0
+        o = (1.0 + o1 + 0.25 * o2) * o0
         return o
 
     @partial(jit, static_argnums=0)
@@ -2135,28 +2189,39 @@ class gcisd_complex(wave_function_auto):
         rot_chol = chol[:, :nocc, :]
 
         # Ref
-        nu0 = jnp.einsum("gpq,pq->g", chol[:,:nocc,:], green)
+        nu0 = jnp.einsum("gpq,pq->g", chol[:, :nocc, :], green)
 
         # Single excitations
-        nu1 = jnp.einsum("gpq,ia,pq,ia->g", chol[:,:nocc,:], ci1.conj(), green, green_occ)
+        nu1 = jnp.einsum(
+            "gpq,ia,pq,ia->g", chol[:, :nocc, :], ci1.conj(), green, green_occ
+        )
         nu1 -= jnp.einsum("gpq,ia,iq,pa->g", chol, ci1.conj(), green, greenp)
 
-        #nu1  = jnp.einsum("grq,rq,ia,ia->g", rot_chol[:,:,:], green, ci1.conj(), green_occ)
-        #nu1 -= jnp.einsum("gpq,ia,iq,pa->g", chol[:,:,:], ci1.conj(), green, greenp)
+        # nu1  = jnp.einsum("grq,rq,ia,ia->g", rot_chol[:,:,:], green, ci1.conj(), green_occ)
+        # nu1 -= jnp.einsum("gpq,ia,iq,pa->g", chol[:,:,:], ci1.conj(), green, greenp)
 
         # Double excitations
-        nu2  = 2.0*jnp.einsum("gpq,iajb,pq,ia,jb->g", chol[:,:nocc,:], ci2.conj(), green, green_occ, green_occ)
-        #nu2 -= jnp.einsum("gpq,iajb,pq,ib,ja->g", chol[:,:nocc,:], ci2.conj(), green, green_occ, green_occ)
-        nu2 -= 4.0*jnp.einsum("gpq,iajb,pa,iq,jb->g", chol[:,:,:], ci2.conj(), greenp, green, green_occ)
-        #nu2 += 2.0*jnp.einsum("gpq,iajb,pa,ib,jq->g", chol[:,:,:], ci2.conj(), greenp, green_occ, green)
-        #nu2 += jnp.einsum("gpq,iajb,pb,iq,ja->g", chol[:,:,:], ci2.conj(), greenp, green, green_occ)
-        #nu2 -= jnp.einsum("gpq,iajb,pb,ia,jq->g", chol[:,:,:], ci2.conj(), greenp, green_occ, green)
+        nu2 = 2.0 * jnp.einsum(
+            "gpq,iajb,pq,ia,jb->g",
+            chol[:, :nocc, :],
+            ci2.conj(),
+            green,
+            green_occ,
+            green_occ,
+        )
+        # nu2 -= jnp.einsum("gpq,iajb,pq,ib,ja->g", chol[:,:nocc,:], ci2.conj(), green, green_occ, green_occ)
+        nu2 -= 4.0 * jnp.einsum(
+            "gpq,iajb,pa,iq,jb->g", chol[:, :, :], ci2.conj(), greenp, green, green_occ
+        )
+        # nu2 += 2.0*jnp.einsum("gpq,iajb,pa,ib,jq->g", chol[:,:,:], ci2.conj(), greenp, green_occ, green)
+        # nu2 += jnp.einsum("gpq,iajb,pb,iq,ja->g", chol[:,:,:], ci2.conj(), greenp, green, green_occ)
+        # nu2 -= jnp.einsum("gpq,iajb,pb,ia,jq->g", chol[:,:,:], ci2.conj(), greenp, green_occ, green)
 
         # V2
-        #nu2 = 2.0*jnp.einsum("grq,rq,iajb,ia,jb->g", rot_chol[:,:,:], green, ci2.conj(), green_occ, green_occ)
-        #nu2 -= 4.0*jnp.einsum("gpq,iajb,pa,iq,jb->g", chol, ci2.conj(), greenp, green, green_occ) 
+        # nu2 = 2.0*jnp.einsum("grq,rq,iajb,ia,jb->g", rot_chol[:,:,:], green, ci2.conj(), green_occ, green_occ)
+        # nu2 -= 4.0*jnp.einsum("gpq,iajb,pa,iq,jb->g", chol, ci2.conj(), greenp, green, green_occ)
         nu2 *= 0.25
-    
+
         nu = nu0 + nu1 + nu2
         o1 = jnp.einsum("ia,ia->", ci1.conj(), green_occ)
         o2 = 0.25 * 2.0 * jnp.einsum("iajb, ia, jb->", ci2.conj(), green_occ, green_occ)
@@ -2175,7 +2240,7 @@ class gcisd_complex(wave_function_auto):
         greenp = jnp.vstack((green_occ, -jnp.eye(self.norb - nocc)))
 
         chol = ham_data["chol"].reshape(-1, self.norb, self.norb)
-        rot_chol = chol[:, : nocc, :]
+        rot_chol = chol[:, :nocc, :]
         h1 = ham_data["h1"][0]
         rot_h1 = h1[:nocc, :]
 
@@ -2187,20 +2252,28 @@ class gcisd_complex(wave_function_auto):
         e1_0 = jnp.einsum("pq,pq->", rot_h1, green)
 
         # single excitations
-        e1_1  = jnp.einsum("pq,ia,pq,ia->", rot_h1, ci1.conj(), green, green_occ, optimize="optimal")
-        e1_1 -= jnp.einsum("pq,ia,iq,pa->", h1, ci1.conj(), green, greenp, optimize="optimal")
+        e1_1 = jnp.einsum(
+            "pq,ia,pq,ia->", rot_h1, ci1.conj(), green, green_occ, optimize="optimal"
+        )
+        e1_1 -= jnp.einsum(
+            "pq,ia,iq,pa->", h1, ci1.conj(), green, greenp, optimize="optimal"
+        )
 
         # double excitations
-        #e1_2  = jnp.einsum("pq,iajb,pq,ia,jb->", h1[nocc:,:], ci2.conj(), green, green_occ, green_occ)
-        #e1_2 -= jnp.einsum("pq,iajb,pq,ib,ja->", h1[nocc:,:], ci2.conj(), green, green_occ, green_occ)
-        #e1_2 -= jnp.einsum("pq,iajb,pa,iq,jb->", h1, ci2.conj(), greenp, green, green_occ)
-        #e1_2 += jnp.einsum("pq,iajb,pa,ib,jq->", h1, ci2.conj(), greenp, green_occ, green)
-        #e1_2 += jnp.einsum("pq,iajb,pb,iq,ja->", h1, ci2.conj(), greenp, green, green_occ)
-        #e1_2 -= jnp.einsum("pq,iajb,pb,ia,jq->", h1, ci2.conj(), greenp, green_occ, green)
+        # e1_2  = jnp.einsum("pq,iajb,pq,ia,jb->", h1[nocc:,:], ci2.conj(), green, green_occ, green_occ)
+        # e1_2 -= jnp.einsum("pq,iajb,pq,ib,ja->", h1[nocc:,:], ci2.conj(), green, green_occ, green_occ)
+        # e1_2 -= jnp.einsum("pq,iajb,pa,iq,jb->", h1, ci2.conj(), greenp, green, green_occ)
+        # e1_2 += jnp.einsum("pq,iajb,pa,ib,jq->", h1, ci2.conj(), greenp, green_occ, green)
+        # e1_2 += jnp.einsum("pq,iajb,pb,iq,ja->", h1, ci2.conj(), greenp, green, green_occ)
+        # e1_2 -= jnp.einsum("pq,iajb,pb,ia,jq->", h1, ci2.conj(), greenp, green_occ, green)
 
-        e1_2  = 2.0*jnp.einsum("rq,rq,iajb,ia,jb", rot_h1, green, ci2.conj(), green_occ, green_occ)
-        e1_2 -= 4.0*jnp.einsum("pq,iajb,pa,iq,jb", h1, ci2.conj(), greenp, green, green_occ) 
-        e1_2 *= 0.25      
+        e1_2 = 2.0 * jnp.einsum(
+            "rq,rq,iajb,ia,jb", rot_h1, green, ci2.conj(), green_occ, green_occ
+        )
+        e1_2 -= 4.0 * jnp.einsum(
+            "pq,iajb,pa,iq,jb", h1, ci2.conj(), greenp, green, green_occ
+        )
+        e1_2 *= 0.25
 
         # 2 body energy
         # ref
@@ -2210,33 +2283,144 @@ class gcisd_complex(wave_function_auto):
         e2_0 = (jnp.sum(c * c) - exc) / 2.0
 
         # single excitations
-        e2_1  = jnp.einsum("gpr,gqs,ia,ir,ps,qa->", chol[:,:nocc,:], chol[:,:,:]    , ci1.conj(), green, green    , greenp)
-        e2_1 -= jnp.einsum("gpr,gqs,ia,ir,pa,qs->", chol[:,:,:]    , chol[:,:nocc,:], ci1.conj(), green, greenp   , green )
-        e2_1 -= jnp.einsum("gpr,gqs,ia,pr,is,qa->", chol[:,:nocc,:], chol[:,:,:]    , ci1.conj(), green, green    , greenp)
-        e2_1 += jnp.einsum("gpr,gqs,ia,pr,ia,qs->", chol[:,:nocc,:], chol[:,:nocc,:], ci1.conj(), green, green_occ, green )
-        e2_1 += jnp.einsum("gpr,gqs,ia,qr,is,pa->", chol[:,:,:]    , chol[:,:nocc,:], ci1.conj(), green, green    , greenp)
-        e2_1 -= jnp.einsum("gpr,gqs,ia,qr,ia,ps->", chol[:,:nocc,:], chol[:,:nocc,:], ci1.conj(), green, green_occ, green )
-        e2_1 *= 0.5 
-    
+        e2_1 = jnp.einsum(
+            "gpr,gqs,ia,ir,ps,qa->",
+            chol[:, :nocc, :],
+            chol[:, :, :],
+            ci1.conj(),
+            green,
+            green,
+            greenp,
+        )
+        e2_1 -= jnp.einsum(
+            "gpr,gqs,ia,ir,pa,qs->",
+            chol[:, :, :],
+            chol[:, :nocc, :],
+            ci1.conj(),
+            green,
+            greenp,
+            green,
+        )
+        e2_1 -= jnp.einsum(
+            "gpr,gqs,ia,pr,is,qa->",
+            chol[:, :nocc, :],
+            chol[:, :, :],
+            ci1.conj(),
+            green,
+            green,
+            greenp,
+        )
+        e2_1 += jnp.einsum(
+            "gpr,gqs,ia,pr,ia,qs->",
+            chol[:, :nocc, :],
+            chol[:, :nocc, :],
+            ci1.conj(),
+            green,
+            green_occ,
+            green,
+        )
+        e2_1 += jnp.einsum(
+            "gpr,gqs,ia,qr,is,pa->",
+            chol[:, :, :],
+            chol[:, :nocc, :],
+            ci1.conj(),
+            green,
+            green,
+            greenp,
+        )
+        e2_1 -= jnp.einsum(
+            "gpr,gqs,ia,qr,ia,ps->",
+            chol[:, :nocc, :],
+            chol[:, :nocc, :],
+            ci1.conj(),
+            green,
+            green_occ,
+            green,
+        )
+        e2_1 *= 0.5
+
         # double excitations
-        e2_2  = 2.0*jnp.einsum("gpr,gqs,iajb,ir,js,pa,qb->", chol           , chol           , ci2.conj(), green, green, greenp   , greenp) 
-        #e2_2 -= jnp.einsum("gpr,gqs,iajb,ir,js,pb,qa->", chol           , chol           , ci2.conj(), green, green, greenp   , greenp) 
-        e2_2 -= 2.0*jnp.einsum("gpr,gqs,iajb,ir,ps,ja,qb->", chol[:,:nocc,:], chol           , ci2.conj(), green, green, green_occ, greenp) 
-        #e2_2 += jnp.einsum("gpr,gqs,iajb,ir,ps,jb,qa->", chol[:,:nocc,:], chol           , ci2.conj(), green, green, green_occ, greenp) 
-        e2_2 += 2.0*jnp.einsum("gpr,gqs,iajb,ir,qs,ja,pb->", chol           , chol[:,:nocc,:], ci2.conj(), green, green, green_occ, greenp) 
-        #e2_2 -= jnp.einsum("gpr,gqs,iajb,ir,qs,jb,pa->", chol           , chol[:,:nocc,:], ci2.conj(), green, green, green_occ, greenp)
+        e2_2 = 2.0 * jnp.einsum(
+            "gpr,gqs,iajb,ir,js,pa,qb->",
+            chol,
+            chol,
+            ci2.conj(),
+            green,
+            green,
+            greenp,
+            greenp,
+        )
+        # e2_2 -= jnp.einsum("gpr,gqs,iajb,ir,js,pb,qa->", chol           , chol           , ci2.conj(), green, green, greenp   , greenp)
+        e2_2 -= 2.0 * jnp.einsum(
+            "gpr,gqs,iajb,ir,ps,ja,qb->",
+            chol[:, :nocc, :],
+            chol,
+            ci2.conj(),
+            green,
+            green,
+            green_occ,
+            greenp,
+        )
+        # e2_2 += jnp.einsum("gpr,gqs,iajb,ir,ps,jb,qa->", chol[:,:nocc,:], chol           , ci2.conj(), green, green, green_occ, greenp)
+        e2_2 += 2.0 * jnp.einsum(
+            "gpr,gqs,iajb,ir,qs,ja,pb->",
+            chol,
+            chol[:, :nocc, :],
+            ci2.conj(),
+            green,
+            green,
+            green_occ,
+            greenp,
+        )
+        # e2_2 -= jnp.einsum("gpr,gqs,iajb,ir,qs,jb,pa->", chol           , chol[:,:nocc,:], ci2.conj(), green, green, green_occ, greenp)
         # P_ij
         e2_2 *= 2.0
 
-        e2_2 += 4.0 * jnp.einsum("gpr,gqs,iajb,pr,is,ja,qb->", chol[:,:nocc,:], chol           , ci2.conj(), green, green, green_occ, greenp   ) 
-        #e2_2 -= 2.0 * jnp.einsum("gpr,gqs,iajb,pr,is,jb,qa->", chol[:,:nocc,:], chol           , ci2.conj(), green, green, green_occ, greenp   )
-        e2_2 += 2.0 * jnp.einsum("gpr,gqs,iajb,pr,qs,ia,jb->", chol[:,:nocc,:], chol[:,:nocc,:], ci2.conj(), green, green, green_occ, green_occ) 
-        #e2_2 -=       jnp.einsum("gpr,gqs,iajb,pr,qs,ib,ja->", chol[:,:nocc,:], chol[:,:nocc,:], ci2.conj(), green, green, green_occ, green_occ)
+        e2_2 += 4.0 * jnp.einsum(
+            "gpr,gqs,iajb,pr,is,ja,qb->",
+            chol[:, :nocc, :],
+            chol,
+            ci2.conj(),
+            green,
+            green,
+            green_occ,
+            greenp,
+        )
+        # e2_2 -= 2.0 * jnp.einsum("gpr,gqs,iajb,pr,is,jb,qa->", chol[:,:nocc,:], chol           , ci2.conj(), green, green, green_occ, greenp   )
+        e2_2 += 2.0 * jnp.einsum(
+            "gpr,gqs,iajb,pr,qs,ia,jb->",
+            chol[:, :nocc, :],
+            chol[:, :nocc, :],
+            ci2.conj(),
+            green,
+            green,
+            green_occ,
+            green_occ,
+        )
+        # e2_2 -=       jnp.einsum("gpr,gqs,iajb,pr,qs,ib,ja->", chol[:,:nocc,:], chol[:,:nocc,:], ci2.conj(), green, green, green_occ, green_occ)
         # P_pq
-        e2_2 -= 4.0 * jnp.einsum("gpr,gqs,iajb,qr,is,ja,pb->", chol           , chol[:,:nocc,:], ci2.conj(), green, green, green_occ, greenp   ) 
-        #e2_2 += 2.0 * jnp.einsum("gpr,gqs,iajb,qr,is,jb,pa->", chol           , chol[:,:nocc,:], ci2.conj(), green, green, green_occ, greenp   )
-        e2_2 -= 2.0 * jnp.einsum("gpr,gqs,iajb,qr,ps,ia,jb->", chol[:,:nocc,:], chol[:,:nocc,:], ci2.conj(), green, green, green_occ, green_occ) 
-        #e2_2 +=       jnp.einsum("gpr,gqs,iajb,qr,ps,ib,ja->", chol[:,:nocc,:], chol[:,:nocc,:], ci2.conj(), green, green, green_occ, green_occ)
+        e2_2 -= 4.0 * jnp.einsum(
+            "gpr,gqs,iajb,qr,is,ja,pb->",
+            chol,
+            chol[:, :nocc, :],
+            ci2.conj(),
+            green,
+            green,
+            green_occ,
+            greenp,
+        )
+        # e2_2 += 2.0 * jnp.einsum("gpr,gqs,iajb,qr,is,jb,pa->", chol           , chol[:,:nocc,:], ci2.conj(), green, green, green_occ, greenp   )
+        e2_2 -= 2.0 * jnp.einsum(
+            "gpr,gqs,iajb,qr,ps,ia,jb->",
+            chol[:, :nocc, :],
+            chol[:, :nocc, :],
+            ci2.conj(),
+            green,
+            green,
+            green_occ,
+            green_occ,
+        )
+        # e2_2 +=       jnp.einsum("gpr,gqs,iajb,qr,ps,ib,ja->", chol[:,:nocc,:], chol[:,:nocc,:], ci2.conj(), green, green, green_occ, green_occ)
         e2_2 *= 0.5 * 0.25
 
         e = e1_0 + e1_1 + e1_2 + e2_0 + e2_1 + e2_2
@@ -2249,6 +2433,7 @@ class gcisd_complex(wave_function_auto):
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
+
 
 @dataclass
 class UCISD(wave_function_auto):

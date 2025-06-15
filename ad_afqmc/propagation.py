@@ -659,7 +659,7 @@ class propagator_cpmc(propagator_unrestricted):
     def _build_propagation_intermediates(
         self, ham_data: dict, trial: wave_function, wave_data: dict
     ) -> dict:
-        ham_data = super()._build_propagation_intermediates(ham_data, trial, wave_data)
+        # ham_data = super()._build_propagation_intermediates(ham_data, trial, wave_data)
         # no mean field shift
         ham_data["exp_h1"] = jnp.array(
             [

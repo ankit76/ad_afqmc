@@ -361,3 +361,54 @@ class sampler:
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class sampler_cpmc(sampler):
+
+    @partial(jit, static_argnums=(0, 4, 5))
+    def _block_scan(
+        self,
+        prop_data: dict,
+        _x: Any,
+        ham_data: dict,
+        prop: propagator,
+        trial: wave_function,
+        wave_data: dict,
+    ) -> Tuple[dict, Tuple[jax.Array, jax.Array]]:
+        """Block scan function. Propagation and energy calculation."""
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(
+                self.n_prop_steps,
+                prop.n_walkers,
+                trial.norb,
+            ),
+        )
+        _step_scan_wrapper = lambda x, y: self._step_scan(
+            x, y, ham_data, prop, trial, wave_data
+        )
+        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(
+            prop_data["weights"]
+        )
+        prop_data = prop.orthonormalize_walkers(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        energy_samples = jnp.real(
+            trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+        )
+        energy_samples = jnp.where(
+            jnp.abs(energy_samples - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt),
+            prop_data["e_estimate"],
+            energy_samples,
+        )
+        block_weight = jnp.sum(prop_data["weights"])
+        block_energy = jnp.sum(energy_samples * prop_data["weights"]) / block_weight
+        prop_data["pop_control_ene_shift"] = (
+            0.9 * prop_data["pop_control_ene_shift"] + 0.1 * block_energy
+        )
+        return prop_data, (block_energy, block_weight)
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))

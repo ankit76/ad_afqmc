@@ -135,7 +135,16 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
-    assert options["trial"] in [None, "rhf", "uhf", "noci", "cisd", "ucisd", "ghf_complex", "gcisd_complex"]
+    assert options["trial"] in [
+        None,
+        "rhf",
+        "uhf",
+        "noci",
+        "cisd",
+        "ucisd",
+        "ghf_complex",
+        "gcisd_complex",
+    ]
 
     if options["trial"] is None:
         print(f"# No trial specified in options.")
@@ -269,10 +278,13 @@ def set_trial(
         # Construct RDM1 from mo_coeff if file not found
         if options["trial"] in ["ghf_complex", "gcisd_complex"]:
             wave_data["rdm1"] = jnp.array(
-            [
-            mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
-            mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
-            ])
+                [
+                    mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
+                    @ mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]].T.conj(),
+                    mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
+                    @ mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]].T.conj(),
+                ]
+            )
 
         else:
             wave_data["rdm1"] = jnp.array(
@@ -370,7 +382,7 @@ def set_trial(
 
     elif options["trial"] == "ghf_complex":
         trial = wavefunctions.ghf_complex(norb, nelec_sp, n_batch=options["n_batch"])
-        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]]
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
 
     elif options["trial"] == "gcisd_complex":
         try:
@@ -380,18 +392,24 @@ def set_trial(
             t2 = jnp.array(amplitudes["t2"])
 
             ci1 = t1
-            ci2 = np.einsum("ijab->iajb",t2) \
-                + np.einsum("ia,jb->iajb",t1,t1) \
-                - np.einsum("ib,ja->iajb",t1,t1)
+            ci2 = (
+                np.einsum("ijab->iajb", t2)
+                + np.einsum("ia,jb->iajb", t1, t1)
+                - np.einsum("ib,ja->iajb", t1, t1)
+            )
             trial_wave_data = {
                 "ci1": ci1,
                 "ci2": ci2,
                 "mo_coeff": mo_coeff,
             }
             wave_data.update(trial_wave_data)
-            trial = wavefunctions.gcisd_complex(norb, nelec_sp, n_batch=options["n_batch"])
+            trial = wavefunctions.gcisd_complex(
+                norb, nelec_sp, n_batch=options["n_batch"]
+            )
         except:
-            raise ValueError("Trial specified as gcisd_complex, but amplitudes.npz not found.")
+            raise ValueError(
+                "Trial specified as gcisd_complex, but amplitudes.npz not found."
+            )
 
     else:
         # Try to load trial from pickle file

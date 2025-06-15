@@ -85,7 +85,7 @@ def afqmc_energy(
     n_ene_blocks_eql = options["n_ene_blocks_eql"]
     n_sr_blocks_eql = options["n_sr_blocks_eql"]
     n_eql = options["n_eql"]
-    sampler_eq = sampling.sampler(
+    sampler_eq = type(sampler)(
         n_prop_steps=50,
         n_ene_blocks=n_ene_blocks_eql,
         n_sr_blocks=n_sr_blocks_eql,
