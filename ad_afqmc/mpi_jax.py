@@ -10,6 +10,7 @@ from functools import partial
 from ad_afqmc import config
 
 tmpdir = "."
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("tmpdir")
@@ -19,9 +20,11 @@ if __name__ == "__main__":
 
     if args.use_gpu:
         config.afqmc_config["use_gpu"] = True
+
     if args.use_mpi:
         assert config.afqmc_config["use_gpu"] is False, "Inter GPU MPI not supported."
         config.afqmc_config["use_mpi"] = True
+
     tmpdir = args.tmpdir
 
 config.setup_jax()
@@ -39,6 +42,8 @@ def _prep_afqmc(options=None, tmpdir="."):
     if rank == 0:
         print(f"# Number of MPI ranks: {size}\n#")
 
+    # -------------------------------------------------------------------------
+    # Integrals.
     with h5py.File(tmpdir + "/FCIDUMP_chol", "r") as fh5:
         [nelec, nmo, ms, nchol] = fh5["header"]
         h0 = jnp.array(fh5.get("energy_core"))
@@ -51,13 +56,15 @@ def _prep_afqmc(options=None, tmpdir="."):
     assert type(nchol) is np.int64
     ms, nelec, nmo, nchol = int(ms), int(nelec), int(nmo), int(nchol)
     nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
-
     norb = nmo
 
+    # -------------------------------------------------------------------------
+    # Options.
     if options is None:
         try:
             with open(tmpdir + "/options.bin", "rb") as f:
                 options = pickle.load(f)
+
         except:
             options = {}
 
@@ -79,9 +86,11 @@ def _prep_afqmc(options=None, tmpdir="."):
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
+
     if options["trial"] is None:
         if rank == 0:
             print(f"# No trial specified in options.")
+
     options["ene0"] = options.get("ene0", 0.0)
     options["free_projection"] = options.get("free_projection", False)
     options["n_batch"] = options.get("n_batch", 1)
@@ -95,12 +104,17 @@ def _prep_afqmc(options=None, tmpdir="."):
         with h5py.File(tmpdir + "/observable.h5", "r") as fh5:
             [observable_constant] = fh5["constant"]
             observable_op = np.array(fh5.get("op")).reshape(nmo, nmo)
+            
             if options["walker_type"] == "unrestricted":
                 observable_op = jnp.array([observable_op, observable_op])
+            
             observable = [observable_op, observable_constant]
+
     except:
         observable = None
-
+    
+    # -------------------------------------------------------------------------
+    # Hamiltonian.
     ham = hamiltonian.hamiltonian(nmo)
     ham_data = {}
     ham_data["h0"] = h0
@@ -114,13 +128,17 @@ def _prep_afqmc(options=None, tmpdir="."):
     ham_data["chol"] = chol.reshape(nchol, -1)
     ham_data["ene0"] = options["ene0"]
 
+    # -------------------------------------------------------------------------
+    # Trial.
     wave_data = {}
     mo_coeff = jnp.array(np.load(tmpdir + "/mo_coeff.npz")["mo_coeff"])
+
     try:
         rdm1 = jnp.array(np.load(tmpdir + "/rdm1.npz")["rdm1"])
         assert rdm1.shape == (2, norb, norb)
         wave_data["rdm1"] = rdm1
         print(f"# Read RDM1 from disk")
+
     except:
         if options["walker_type"] == "unrestricted":
             wave_data["rdm1"] = jnp.array(
@@ -129,26 +147,32 @@ def _prep_afqmc(options=None, tmpdir="."):
                     mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
                 ]
             )
+
         elif options["walker_type"] == "generalized":
             wave_data["rdm1"] = (
                 mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]] @ 
                 mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]].T
             )
+
     if options["trial"] == "rhf":
         trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
+
     elif options["trial"] == "uhf":
         trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = [
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
         ]
+
     elif options["trial"] == "ghf":
         trial = wavefunctions.ghf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
+
     elif options["trial"] == "noci":
         with open(tmpdir + "/dets.pkl", "rb") as f:
             ci_coeffs_dets = pickle.load(f)
+
         ci_coeffs_dets = [
             jnp.array(ci_coeffs_dets[0]),
             [jnp.array(ci_coeffs_dets[1][0]), jnp.array(ci_coeffs_dets[1][1])],
@@ -157,6 +181,7 @@ def _prep_afqmc(options=None, tmpdir="."):
         trial = wavefunctions.noci(
             norb, nelec_sp, ci_coeffs_dets[0].size, n_batch=options["n_batch"]
         )
+
     elif options["trial"] == "cisd":
         try:
             amplitudes = np.load(tmpdir + "/amplitudes.npz")
@@ -180,6 +205,7 @@ def _prep_afqmc(options=None, tmpdir="."):
             )
         except:
             raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
+
     elif options["trial"] == "ucisd":
         try:
             amplitudes = np.load(tmpdir + "/amplitudes.npz")
@@ -212,6 +238,7 @@ def _prep_afqmc(options=None, tmpdir="."):
             )
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
+
     else:
         try:
             with open(tmpdir + "/trial.pkl", "rb") as f:
@@ -226,6 +253,8 @@ def _prep_afqmc(options=None, tmpdir="."):
                 )
             trial = None
 
+    # -------------------------------------------------------------------------
+    # Propagator.
     if options["walker_type"] == "restricted":
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
@@ -271,33 +300,16 @@ def _prep_afqmc(options=None, tmpdir="."):
                     options["n_walkers"],
                     n_batch=options["n_batch"],
                 )
+
     elif options["walker_type"] == "generalized":
-        if options["symmetry"]:
-            ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
-        else:
-            ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
-        if options["free_projection"]:
-            prop = propagation.propagator_generalized(
-                options["dt"],
-                options["n_walkers"],
-                10,
-                n_batch=options["n_batch"],
-            )
-        else:
-            if options["vhs_mixed_precision"]:
-                prop = propagation.propagator_generalized(
-                    options["dt"],
-                    options["n_walkers"],
-                    n_batch=options["n_batch"],
-                    vhs_real_dtype=jnp.float32,
-                    vhs_complex_dtype=jnp.complex64,
-                )
-            else:
-                prop = propagation.propagator_generalized(
-                    options["dt"],
-                    options["n_walkers"],
-                    n_batch=options["n_batch"],
-                )
+        prop = propagation.propagator_generalized(
+            options["dt"],
+            options["n_walkers"],
+            n_batch=options["n_batch"],
+        )
+    
+    # -------------------------------------------------------------------------
+    # Sampler.
     if options["ad_mode"] == "mixed":
         sampler = sampling.sampler_mixed(
             options["n_prop_steps"],
@@ -334,10 +346,12 @@ if __name__ == "__main__":
     init = time.time()
     comm.Barrier()
     e_afqmc, err_afqmc = 0.0, 0.0
+
     if options["free_projection"]:
         driver.fp_afqmc(
             ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI
         )
+
     else:
         e_afqmc, err_afqmc = driver.afqmc(
             ham_data,
@@ -351,9 +365,12 @@ if __name__ == "__main__":
             MPI,
             tmpdir=tmpdir,
         )
+
     comm.Barrier()
     end = time.time()
+
     if rank == 0:
         print(f"ph_afqmc walltime: {end - init}", flush=True)
         np.savetxt(tmpdir + "/ene_err.txt", np.array([e_afqmc, err_afqmc]))
+    
     comm.Barrier()
