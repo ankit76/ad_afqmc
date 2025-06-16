@@ -979,8 +979,7 @@ def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
 def prep_afqmc_ghf_complex(mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5):
     import scipy.linalg as la
 
-    assert type(gmf.mo_coeff) is np.ndarray, "gmf.mo_coeff should be a numpy array"
-    norb = np.shape(gmf.mo_coeff)[-1] // 2
+    norb = np.shape(gmf.mo_coeff)[-1] // 2  # type: ignore
     mo_coeff = gmf.mo_coeff
 
     # Chol ao to mo
