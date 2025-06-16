@@ -8,7 +8,7 @@ from pyscf import __config__, scf
 from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
 
-from ad_afqmc import pyscf_interface, run_afqmc
+from ad_afqmc import pyscf_interface, run_afqmc, grad_utils
 
 print = partial(print, flush=True)
 
@@ -111,6 +111,7 @@ class AFQMC:
         self.walker_type = "restricted"
         self.symmetry = False
         self.save_walkers = False
+        self.dR = 1e-5  # displacement used in finite difference to calculate integral gradients for ad_mode = nuc_grad
         if isinstance(mf_or_cc, scf.uhf.UHF) or isinstance(mf_or_cc, scf.rohf.ROHF):
             self.trial = "uhf"
         elif isinstance(mf_or_cc, scf.rhf.RHF):
@@ -137,14 +138,17 @@ class AFQMC:
                 If True, writes input files like integrals to disk, useful for large calculations where one would like to run the trial generation and AFQMC calculations on different machines, on CPU and GPU, for example.
         """
         os.makedirs(self.tmpdir, exist_ok=True)
-        pyscf_interface.prep_afqmc(
-            self.mf_or_cc,
-            basis_coeff=self.basis_coeff,
-            norb_frozen=self.norb_frozen,
-            chol_cut=self.chol_cut,
-            integrals=self.integrals,
-            tmpdir=self.tmpdir,
-        )
+        if self.ad_mode != "nuc_grad":
+            pyscf_interface.prep_afqmc(
+                self.mf_or_cc,
+                basis_coeff=self.basis_coeff,
+                norb_frozen=self.norb_frozen,
+                chol_cut=self.chol_cut,
+                integrals=self.integrals,
+                tmpdir=self.tmpdir,
+            )
+        else:
+            grad_utils.prep_afqmc_nuc_grad(self.mf_or_cc, self.dR, tmpdir=self.tmpdir)
         options = {}
         for attr in dir(self):
             if (
