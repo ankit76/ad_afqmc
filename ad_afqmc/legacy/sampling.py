@@ -409,14 +409,14 @@ class sampler_mixed(sampler):
         )
         
         rdm1_samples = None
-        
+
         if isinstance(trial, wave_function_cpmc) or isinstance(trial, sum_state):
-            rdm1_samples = trial.calc_green_full(
+            rdm1_samples = trial.calc_full_green_vmap(
                     prop_data["walkers"], wave_data
             )
             
         else:
-            raise NotImplementedError("rdm1 samples only collected for CPMC")
+            raise NotImplementedEror("rdm1 samples only collected for CPMC")
 
         block_weight = jnp.sum(prop_data["weights"])
         block_energy = jnp.sum(energy_samples * prop_data["weights"]) / block_weight

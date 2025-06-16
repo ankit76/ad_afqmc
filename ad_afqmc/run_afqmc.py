@@ -3,7 +3,6 @@ import pickle
 from functools import partial
 
 import numpy as np
-
 from ad_afqmc import config
 
 print = partial(print, flush=True)

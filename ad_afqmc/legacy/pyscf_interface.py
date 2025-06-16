@@ -6,7 +6,7 @@ from typing import Any, Optional, Sequence, Tuple, Union
 import h5py
 import jax.numpy as jnp
 import numpy as np
-import scipy as sp
+import scipy
 from pyscf import __config__, ao2mo, df, dft, lib, mcscf, scf
 from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
@@ -50,7 +50,7 @@ def modified_cholesky(mat: np.ndarray, max_error: float = 1e-6) -> np.ndarray:
 
 # prepare phaseless afqmc with mf trial
 def prep_afqmc(
-    mf_or_cc: Union[scf.rhf.RHF, scf.uhf.UHF, CCSD, UCCSD],
+    mf_or_cc: Union[scf.uhf.UHF, scf.rhf.RHF, CCSD, UCCSD],
     basis_coeff: Optional[np.ndarray] = None,
     norb_frozen: int = 0,
     chol_cut: float = 1e-5,
@@ -140,7 +140,7 @@ def prep_afqmc(
         if h1e.ndim == 3: # Shape (2, nmo, nmo)
             h1e[0] = basis_coeff.T @ h1e[0] @ basis_coeff
             h1e[1] = basis_coeff.T @ h1e[1] @ basis_coeff
-
+        
         else: h1e = basis_coeff.T @ h1e @ basis_coeff
 
         for gamma in range(nchol):
@@ -229,7 +229,7 @@ def prep_afqmc(
             q = np.einsum("ij,j->ij", q, sgn)
             uhfCoeffs[:, :nbasis] = q
             uhfCoeffs[:, nbasis:] = q
-
+        
         trial_coeffs[0] = uhfCoeffs[:, :nbasis]
         trial_coeffs[1] = uhfCoeffs[:, nbasis:]
         # np.savetxt("uhf.txt", uhfCoeffs)
@@ -256,108 +256,8 @@ def prep_afqmc(
         filename=tmpdir + "/FCIDUMP_chol",
         mo_coeffs=trial_coeffs,
     )
-
     return h1e, h1e_mod, chol
 
-# prepare phaseless afqmc with mf trial
-def prep_afqmc_ghf(
-    mf: scf.ghf.GHF,
-    basis_coeff: Optional[np.ndarray] = None,
-    norb_frozen: int = 0,
-    chol_cut: float = 1e-5,
-    integrals: Optional[dict] = None,
-    tmpdir: str = "./",
-):
-    """Prepare AFQMC calculation with mean field trial wavefunction. Writes integrals and mo coefficients to disk.
-
-    Args:
-        mf (scf.ghf.GHF): pyscf mean field object. Used for generating integrals (if not provided) and trial.
-        basis_coeff (np.ndarray, optional): Orthonormal basis used for afqmc, given in the basis of ao's. If not provided mo_coeff of mf is used as the basis.
-        norb_frozen (int, optional): Number of frozen orbitals. Not supported for custom integrals.
-        chol_cut (float, optional): Cholesky decomposition cutoff.
-        integrals (dict, optional): Dictionary of integrals in an orthonormal basis, {"h0": enuc, "h1": h1e, "h2": eri}.
-        tmpdir (str, optional): Directory to write integrals and mo coefficients. Defaults to "./".
-    """
-
-    print("#\n# Preparing AFQMC calculation")
-
-    mol = mf.mol
-    # choose the orbital basis
-    if basis_coeff is None:
-        basis_coeff = mf.mo_coeff
-
-    # calculate cholesky integrals
-    print("# Calculating Cholesky integrals")
-    h1e, chol, nelec, enuc, nbasis, nchol = [None] * 6
-
-    if integrals is not None:
-        assert norb_frozen == 0, "Frozen orbitals not supported for custom integrals"
-        enuc = integrals["h0"]
-        h1e = integrals["h1"] # (2*norb, 2*norb)
-        eri = integrals["h2"] # (norb, norb, norb, norb)
-        nelec = mol.nelec
-        nbasis = h1e.shape[-1]
-        norb = nbasis // 2
-        eri = ao2mo.restore(4, eri, norb)
-        chol0 = modified_cholesky(eri, chol_cut)
-        nchol = chol0.shape[0]
-        chol = np.zeros((nchol, nbasis, nbasis))
-
-        for i in range(nchol):
-            _chol_i = np.zeros((norb, norb))
-
-            for m in range(norb):
-                for n in range(m + 1):
-                    triind = m * (m + 1) // 2 + n
-                    _chol_i[m, n] = chol0[i, triind]
-                    _chol_i[n, m] = chol0[i, triind]
-            
-            chol[i] = sp.linalg.block_diag(_chol_i, _chol_i)
-
-        # basis transformation
-        h1e = basis_coeff.T @ h1e @ basis_coeff
-
-        for gamma in range(nchol):
-            chol[gamma] = basis_coeff.T @ chol[gamma] @ basis_coeff
-
-    else:
-        raise NotImplementedError("Integrals must be provided for now.")
-
-    print("# Finished calculating Cholesky integrals\n#")
-    print("# Size of the correlation space:")
-    print(f"# Number of electrons: {nelec}")
-    print(f"# Number of spin basis functions: {nbasis}")
-    print(f"# Number of Cholesky vectors: {chol.shape[0]}\n#")
-
-    # modified one-electron integrals
-    chol = chol.reshape((-1, nbasis, nbasis))
-    v0 = 0.5 * np.einsum("nik,njk->ij", chol, chol, optimize="optimal")
-    h1e_mod = h1e - v0
-    chol = chol.reshape((chol.shape[0], -1))
-    
-    # save
-    write_dqmc(
-        h1e,
-        h1e_mod,
-        chol,
-        sum(nelec),
-        nbasis,
-        enuc,
-        ms=mol.spin,
-        filename=tmpdir + "/FCIDUMP_chol",
-    )
-
-    # write trial mo coefficients
-    #ovlp = mf.get_ovlp(mol)
-    #q, r = np.linalg.qr(mf.mo_coeff.T.conj() @ ovlp @ mf.mo_coeff)
-    #sgn = np.sign(r.diagonal())
-    #q = np.einsum("ij,j->ij", q, sgn)
-    #print(q)
-    #np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=[q, q])
-
-    np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=[mf.mo_coeff])
-    
-    return h1e, h1e_mod, chol
 
 def getCollocationMatrices(
     mol, grid_level=0, thc_eps=1.0e-4, mo1=None, mo2=None, alpha=0.25
@@ -408,7 +308,7 @@ def doISDF(X1: np.ndarray, X2: np.ndarray, thc_eps=1.0e-4):
     """
 
     S = np.einsum("ri,si->rs", X1, X1) * np.einsum("ri,si->rs", X2, X2)
-    R, P, rankc, info = sp.linalg.lapack.dpstrf(S, thc_eps**2)
+    R, P, rankc, info = scipy.linalg.lapack.dpstrf(S, thc_eps**2)
     P = P[:rankc] - 1
     return P
 
@@ -432,8 +332,8 @@ def solveLS(T, X1, X2):
     X12 = jnp.einsum("Pa,Pb->abP", X1, X2)
     Stilde = jnp.einsum("abP, abM->PM", X12, T)
 
-    L = sp.linalg.cholesky(S, lower=True)
-    Xi = sp.linalg.cho_solve((L, True), Stilde, overwrite_b=True)
+    L = scipy.linalg.cholesky(S, lower=True)
+    Xi = scipy.linalg.cho_solve((L, True), Stilde, overwrite_b=True)
 
     return Xi
 
@@ -454,15 +354,15 @@ def solveLS_twoSided(T, X1, X2):
     """
 
     S = np.einsum("Pa,Qa->PQ", X1, X1) * np.einsum("Pb,Qb->PQ", X2, X2)
-    L = sp.linalg.cholesky(S, lower=True)
+    L = scipy.linalg.cholesky(S, lower=True)
 
     X12 = jnp.einsum("Pa,Pb->abP", X1, X2)
     E = jnp.einsum("abP, abcd->Pcd", X12, T).reshape(X1.shape[0], -1)
 
-    E = sp.linalg.cho_solve((L, True), E).reshape(-1, T.shape[2], T.shape[3])
+    E = scipy.linalg.cho_solve((L, True), E).reshape(-1, T.shape[2], T.shape[3])
 
     E = jnp.einsum("Pcd, cdQ->PQ", E, X12).T
-    V = sp.linalg.cho_solve((L, True), E)
+    V = scipy.linalg.cho_solve((L, True), E)
 
     ##symmetrize it
     V = 0.5 * (V + V.T)

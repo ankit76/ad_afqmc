@@ -5,11 +5,10 @@ from typing import Any, List, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
-import jax.scipy as jsp
 import numpy as np
 from jax import dtypes, jvp, random, vjp
 
-from ad_afqmc import hamiltonian, wavefunctions, propagation, sampling, misc, stat_utils
+from ad_afqmc import hamiltonian, misc, propagation, sampling, stat_utils, wavefunctions
 from ad_afqmc.wavefunctions import ghf
 
 print = partial(print, flush=True)
@@ -231,7 +230,6 @@ def afqmc_observable(
     trial_rdm1 = trial.get_rdm1(wave_data)
     if "rdm1" not in wave_data:
         wave_data["rdm1"] = trial_rdm1
-
     if isinstance(trial, ghf):
         trial_rdm1 = jsp.linalg.block_diag(*trial_rdm1)
 
@@ -1043,7 +1041,7 @@ def _analyze_observable_results(
             )
 
             # Save RDM1 data
-            np.savez(tmpdir + "/rdm1_afqmc.npz", 
+            np.savez(tmpdir + "/rdm1_afqmc.npz",
                      rdm1_avg=avg_rdm1,
                      rdm1_err=errors_rdm1, 
                      rdm1_noise=rdm_noise,

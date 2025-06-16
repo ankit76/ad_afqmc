@@ -1,11 +1,9 @@
-import time
-import pickle
 import argparse
+import pickle
+import time
 
 import h5py
 import numpy as np
-from jax import numpy as jnp
-from functools import partial
 
 from ad_afqmc import config
 
@@ -30,7 +28,11 @@ comm = MPI.COMM_WORLD
 size = comm.Get_size()
 rank = comm.Get_rank()
 
-from ad_afqmc import driver, sampling, wavefunctions, propagation, hamiltonian
+from functools import partial
+
+from jax import numpy as jnp
+
+from ad_afqmc import driver, hamiltonian, propagation, sampling, wavefunctions
 
 print = partial(print, flush=True)
 
@@ -75,7 +77,7 @@ def _prep_afqmc(options=None, tmpdir="."):
     assert options["ad_mode"] in [None, "forward", "reverse", "2rdm", "mixed"]
     options["orbital_rotation"] = options.get("orbital_rotation", True)
     options["do_sr"] = options.get("do_sr", True)
-    options["walker_type"] = options.get("walker_type", "restricted")
+    options["walker_type"] = options.get("walker_type", "rhf")
     options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
@@ -95,7 +97,7 @@ def _prep_afqmc(options=None, tmpdir="."):
         with h5py.File(tmpdir + "/observable.h5", "r") as fh5:
             [observable_constant] = fh5["constant"]
             observable_op = np.array(fh5.get("op")).reshape(nmo, nmo)
-            if options["walker_type"] == "unrestricted":
+            if options["walker_type"] == "uhf":
                 observable_op = jnp.array([observable_op, observable_op])
             observable = [observable_op, observable_constant]
     except:
@@ -104,13 +106,8 @@ def _prep_afqmc(options=None, tmpdir="."):
     ham = hamiltonian.hamiltonian(nmo)
     ham_data = {}
     ham_data["h0"] = h0
-
-    if (h1.ndim == 3) or (options["walker_type"] == "generalized"): 
-        ham_data["h1"] = jnp.array(h1)
-
-    else: 
-        ham_data["h1"] = jnp.array([h1, h1])
-
+    if h1.ndim == 3: ham_data["h1"] = jnp.array(h1)
+    else: ham_data["h1"] = jnp.array([h1, h1])
     ham_data["chol"] = chol.reshape(nchol, -1)
     ham_data["ene0"] = options["ene0"]
 
@@ -122,18 +119,13 @@ def _prep_afqmc(options=None, tmpdir="."):
         wave_data["rdm1"] = rdm1
         print(f"# Read RDM1 from disk")
     except:
-        if options["walker_type"] == "unrestricted":
-            wave_data["rdm1"] = jnp.array(
-                [
-                    mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
-                    mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
-                ]
-            )
-        elif options["walker_type"] == "generalized":
-            wave_data["rdm1"] = (
-                mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]] @ 
-                mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]].T
-            )
+        wave_data["rdm1"] = jnp.array(
+            [
+                mo_coeff[0][:, : nelec_sp[0]] @ mo_coeff[0][:, : nelec_sp[0]].T,
+                mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
+            ]
+        )
+
     if options["trial"] == "rhf":
         trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
@@ -143,9 +135,6 @@ def _prep_afqmc(options=None, tmpdir="."):
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
         ]
-    elif options["trial"] == "ghf":
-        trial = wavefunctions.ghf(norb, nelec_sp, n_batch=options["n_batch"])
-        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
     elif options["trial"] == "noci":
         with open(tmpdir + "/dets.pkl", "rb") as f:
             ci_coeffs_dets = pickle.load(f)
@@ -226,7 +215,7 @@ def _prep_afqmc(options=None, tmpdir="."):
                 )
             trial = None
 
-    if options["walker_type"] == "restricted":
+    if options["walker_type"] == "rhf":
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
@@ -244,7 +233,7 @@ def _prep_afqmc(options=None, tmpdir="."):
                 options["dt"], options["n_walkers"], n_batch=options["n_batch"]
             )
 
-    elif options["walker_type"] == "unrestricted":
+    elif options["walker_type"] == "uhf":
         if options["symmetry"]:
             ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
         else:
@@ -267,33 +256,6 @@ def _prep_afqmc(options=None, tmpdir="."):
                 )
             else:
                 prop = propagation.propagator_unrestricted(
-                    options["dt"],
-                    options["n_walkers"],
-                    n_batch=options["n_batch"],
-                )
-    elif options["walker_type"] == "generalized":
-        if options["symmetry"]:
-            ham_data["mask"] = jnp.where(jnp.abs(ham_data["h1"]) > 1.0e-10, 1.0, 0.0)
-        else:
-            ham_data["mask"] = jnp.ones(ham_data["h1"].shape)
-        if options["free_projection"]:
-            prop = propagation.propagator_generalized(
-                options["dt"],
-                options["n_walkers"],
-                10,
-                n_batch=options["n_batch"],
-            )
-        else:
-            if options["vhs_mixed_precision"]:
-                prop = propagation.propagator_generalized(
-                    options["dt"],
-                    options["n_walkers"],
-                    n_batch=options["n_batch"],
-                    vhs_real_dtype=jnp.float32,
-                    vhs_complex_dtype=jnp.complex64,
-                )
-            else:
-                prop = propagation.propagator_generalized(
                     options["dt"],
                     options["n_walkers"],
                     n_batch=options["n_batch"],

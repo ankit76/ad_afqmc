@@ -1,15 +1,14 @@
 import numpy as np
 
 from ad_afqmc import config
-
 config.setup_jax()
 
 from ad_afqmc.spin_utils import (
-        get_spin_covariance, 
-        spin_collinearity_test,
-        get_spin_rotation_matrix,
-        align_spin_axis
-        )
+    get_spin_covariance, 
+    spin_collinearity_test,
+    get_spin_rotation_matrix,
+    align_spin_axis
+)
 
 seed = 102
 np.random.seed(seed)

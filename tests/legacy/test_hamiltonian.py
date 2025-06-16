@@ -1,51 +1,32 @@
 import numpy as np
 
 from ad_afqmc import config
-config.setup_jax()
 
+config.setup_jax()
 from jax import numpy as jnp
-from jax import scipy as jsp
 
 from ad_afqmc import hamiltonian, propagation, wavefunctions
 
-# -----------------------------------------------------------------------------
-# Fixed Hamiltonian objects.
 seed = 102
 np.random.seed(seed)
 norb, nelec, nchol = 10, (5, 5), 5
-h0 = np.random.rand(1)[0]
-h1 = jnp.array(np.random.rand(2, norb, norb))
-chol = jnp.array(np.random.rand(nchol, norb * norb))
-_chol = np.zeros((nchol, 2*norb, 2*norb))
-for i in range(nchol):
-    chol_i = chol[i].reshape((norb, norb))
-    _chol[i] = jsp.linalg.block_diag(chol_i, chol_i)
-
-_chol = _chol.reshape((nchol, -1))
 ham_handler = hamiltonian.hamiltonian(norb)
-mo_coeff = jnp.array(np.random.rand(norb, norb))
-
-# -----------------------------------------------------------------------------
-# RHF.
 trial = wavefunctions.rhf(norb, nelec)
-prop_r = propagation.propagator_restricted(dt=0.005)
-
+ham_data = {}
+ham_data["h0"] = np.random.rand(
+    1,
+)[0]
+ham_data["h1"] = jnp.array(np.random.rand(norb, norb))
+ham_data["h1"] = jnp.array([ham_data["h1"], ham_data["h1"]])
+ham_data["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
+ham_data["ene0"] = 0.0
 wave_data = {}
 wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec[0]]
 wave_data["rdm1"] = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
+mo_coeff = jnp.array(np.random.rand(norb, norb))
+prop_r = propagation.propagator_restricted(dt=0.005)
 
-ham_data = {}
-ham_data["ene0"] = 0.0
-ham_data["h0"] = h0
-ham_data["h1"] = h1
-ham_data["chol"] = chol
-
-# -----------------------------------------------------------------------------
-# UHF.
 nelec_sp = 5, 4
-trial_u = wavefunctions.uhf(norb, nelec_sp)
-prop_u = propagation.propagator_unrestricted(dt=0.005)
-
 wave_data_u = {}
 wave_data_u["mo_coeff"] = [
     jnp.array(np.random.rand(norb, nelec_sp[0])),
@@ -57,45 +38,41 @@ wave_data_u["rdm1"] = jnp.array(
         jnp.array(wave_data_u["mo_coeff"][1] @ wave_data_u["mo_coeff"][1].T),
     ]
 )
-
+trial_u = wavefunctions.uhf(norb, nelec_sp)
 ham_data_u = {}
+ham_data_u["h0"] = np.random.rand(
+    1,
+)[0]
+ham_data_u["h1"] = jnp.array(np.random.rand(2, norb, norb))
+ham_data_u["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
 ham_data_u["ene0"] = 0.0
-ham_data_u["h0"] = h0
-ham_data_u["h1"] = h1
-ham_data_u["chol"] = chol
+prop_u = propagation.propagator_unrestricted(dt=0.005)
 
-# -----------------------------------------------------------------------------
-# NOCI.
 ndets = 5
-trial_noci = wavefunctions.noci(norb, nelec_sp, ndets)
 ci_coeffs = jnp.array(np.random.randn(ndets))
 dets = [
     jnp.array(np.random.rand(ndets, norb, nelec_sp[0])),
     jnp.array(np.random.rand(ndets, norb, nelec_sp[1])),
 ]
-
 wave_data_noci = {}
 wave_data_noci["ci_coeffs_dets"] = [ci_coeffs, dets]
 wave_data_noci["rdm1"] = wave_data_u["rdm1"]
+trial_noci = wavefunctions.noci(norb, nelec_sp, ndets)
 
-# -----------------------------------------------------------------------------
-# GHF.
-nocc = sum(nelec_sp)
-trial_g = wavefunctions.ghf(norb, nelec_sp)
-prop_g = propagation.propagator_generalized(dt=0.005)
-
+nelec_sp = 5, 4
 wave_data_g = {}
-wave_data_g["mo_coeff"] = jsp.linalg.block_diag(*wave_data_u["mo_coeff"])
-wave_data_g["rdm1"] = jsp.linalg.block_diag(*wave_data_u["rdm1"])
-
+wave_data_g["mo_coeff"] = jnp.array(np.random.rand(2 * norb, nelec_sp[0] + nelec_sp[1]))
+wave_data_g["rdm1"] = wave_data_u["rdm1"]
+trial_g = wavefunctions.ghf(norb, nelec_sp)
 ham_data_g = {}
+ham_data_g["h0"] = np.random.rand(
+    1,
+)[0]
+ham_data_g["h1"] = jnp.array(np.random.rand(2, norb, norb))
+ham_data_g["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
 ham_data_g["ene0"] = 0.0
-ham_data_g["h0"] = h0
-ham_data_g["h1"] = jsp.linalg.block_diag(*h1)
-ham_data_g["chol"] = _chol
 
-# -----------------------------------------------------------------------------
-# Test RHF.
+
 def test_rot_orbs():
     ham_rot = ham_handler.rotate_orbs(ham_data, mo_coeff)
     assert ham_rot["h1"].shape == (2, norb, norb)
@@ -116,8 +93,6 @@ def test_prop_ham():
     assert prop_ham["exp_h1"].shape == (norb, norb)
 
 
-# -----------------------------------------------------------------------------
-# Test UHF.
 def test_rot_ham_u():
     rot_ham = ham_handler.build_measurement_intermediates(
         ham_data_u, trial_u, wave_data_u
@@ -136,26 +111,22 @@ def test_prop_ham_u():
     assert prop_ham["exp_h1"].shape == (2, norb, norb)
 
 
-# -----------------------------------------------------------------------------
-# Test GHF.
 def test_rot_ham_g():
     rot_ham = ham_handler.build_measurement_intermediates(
         ham_data_g, trial_g, wave_data_g
     )
-    assert rot_ham["rot_h1"].shape == (nocc, 2 * norb)
-    assert rot_ham["rot_chol"].shape == (nchol, nocc, 2 * norb)
+    assert rot_ham["rot_h1"].shape == (nelec_sp[0] + nelec_sp[1], 2 * norb)
+    assert rot_ham["rot_chol"].shape == (nchol, nelec_sp[0] + nelec_sp[1], 2 * norb)
 
 
 def test_prop_ham_g():
     prop_ham = ham_handler.build_propagation_intermediates(
-        ham_data_g, prop_g, trial_g, wave_data_g
+        ham_data_g, prop_u, trial_g, wave_data_g
     )
     assert prop_ham["mf_shifts"].shape == (nchol,)
-    assert prop_ham["exp_h1"].shape == (2 * norb, 2 * norb)
+    assert prop_ham["exp_h1"].shape == (2, norb, norb)
 
 
-# -----------------------------------------------------------------------------
-# Test NOCI.
 def test_rot_ham_noci():
     rot_ham = ham_handler.build_measurement_intermediates(
         ham_data_u, trial_noci, wave_data_noci
@@ -174,7 +145,6 @@ def test_prop_ham_noci():
     assert prop_ham["exp_h1"].shape == (2, norb, norb)
 
 
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     test_rot_orbs()
     test_rot_ham()

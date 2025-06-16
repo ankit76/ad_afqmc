@@ -15,7 +15,7 @@ class hamiltonian:
     This class is fairly light, could be useful in the future for different kinds of Hamiltonians.
 
     Attributes:
-        norb (int): Number of spatial orbitals.
+        norb (int): Number of spatial (spin) orbitals for RHF/UHF (GHF) walkers. 
     """
 
     norb: int

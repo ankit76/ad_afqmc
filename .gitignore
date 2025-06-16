@@ -3,6 +3,8 @@
 *.npz
 *.dat
 *.sw*
+*.bin
+*.txt
 *__pycache__/
 *.ipynb_checkpoints/
 hubbard_tri/ghf/

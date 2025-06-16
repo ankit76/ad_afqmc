@@ -87,7 +87,7 @@ def test_energy():
 
 
 if __name__ == "__main__":
-    test_energy_mpi()
+    #test_energy_mpi()
     test_jvp_h1e()
     test_vjp_rdm()
     test_energy()
