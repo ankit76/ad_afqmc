@@ -1,5 +1,5 @@
-import sys
 import pickle
+import sys
 import time
 from functools import partial
 from typing import Any, List, Optional, Tuple, Union
@@ -10,9 +10,11 @@ import numpy as np
 from jax import dtypes, jvp, random, vjp
 
 from ad_afqmc import hamiltonian, misc, propagation, sampling, stat_utils, wavefunctions
-#from ad_afqmc.config import mpi_print as print
-from ad_afqmc.options import Options
 from ad_afqmc.logger import Logger
+
+# from ad_afqmc.config import mpi_print as print
+from ad_afqmc.options import Options
+
 
 def afqmc_energy(
     ham_data: dict,
@@ -91,7 +93,7 @@ def afqmc_energy(
     n_ene_blocks_eql = options.n_ene_blocks_eql
     n_sr_blocks_eql = options.n_sr_blocks_eql
     n_eql = options.n_eql
-    sampler_eq = sampling.sampler(
+    sampler_eq = type(sampler)(
         n_prop_steps=50,
         n_ene_blocks=n_ene_blocks_eql,
         n_sr_blocks=n_sr_blocks_eql,
@@ -406,7 +408,9 @@ def afqmc_observable(
         op=MPI.SUM,
         root=0,
     )
-    log.log_0(f"#\n# Number of large deviations: {global_large_deviations}") #, flush=True)
+    log.log_0(
+        f"#\n# Number of large deviations: {global_large_deviations}"
+    )  # , flush=True)
 
     # Analysis phase
     comm.Barrier()
@@ -477,13 +481,13 @@ def _run_equilibration(
         prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
         prop_data["e_estimate"] = (
             0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n[0]
-        )
+        ).astype("float64")
 
         comm.Barrier()
         if n % (max(sampler_eq.n_blocks // 5, 1)) == 0:
             log.log_0(
                 f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9f} {time.time() - init:<10.2e} ",
-                #flush=True,
+                # flush=True,
             )
             # print(
             #    f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ",
@@ -734,12 +738,12 @@ def _print_progress_energy(
         if energy_error is not None:
             log.log(
                 f" {n:5d}      {e_afqmc:.9f}        {energy_error:.9e}        {time.time() - init:.2e} ",
-                #flush=True,
+                # flush=True,
             )
         else:
             log.log(
                 f" {n:5d}      {e_afqmc:.9f}                -              {time.time() - init:.2e} ",
-                #flush=True,
+                # flush=True,
             )
         np.savetxt(
             tmpdir + "/samples_raw.dat",
@@ -784,12 +788,12 @@ def _print_progress_observable(
         if energy_error is not None:
             log.log(
                 f" {n:5d}      {e_afqmc:.9f}        {energy_error:.9e}        {obs_afqmc:.9e}       {time.time() - init:.2e} ",
-                #flush=True,
+                # flush=True,
             )
         else:
             log.log(
                 f" {n:5d}      {e_afqmc:.9f}                -              {obs_afqmc:.9e}       {time.time() - init:.2e} ",
-                #flush=True,
+                # flush=True,
             )
         np.savetxt(
             tmpdir + "/samples_raw.dat",
@@ -846,8 +850,10 @@ def _analyze_energy_results(
             sig_e = np.around(e_afqmc, sig_dec)
             log.log(f"AFQMC energy: {sig_e:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n")
         elif e_afqmc is not None:
-            log.log(f"Could not determine stochastic error automatically\n") #, flush=True)
-            log.log(f"AFQMC energy: {e_afqmc}\n") #, flush=True)
+            log.log(
+                f"Could not determine stochastic error automatically\n"
+            )  # , flush=True)
+            log.log(f"AFQMC energy: {e_afqmc}\n")  # , flush=True)
             e_err_afqmc = 0.0
 
     comm.Barrier()
@@ -959,6 +965,9 @@ def _analyze_observable_results(
             )
         elif obs_afqmc is not None:
             log.log(f"AFQMC observable: {obs_afqmc}\n", flush=True)
+        else:
+            obs_afqmc = 0.0
+            obs_err_afqmc = 0.0
 
         observable_data = {"obs_afqmc": obs_afqmc, "obs_err_afqmc": obs_err_afqmc}
         np.savetxt(tmpdir + "/obs_err.txt", np.array([obs_afqmc, obs_err_afqmc]))
@@ -980,7 +989,7 @@ def _analyze_observable_results(
                 list(map(np.linalg.norm, clean_rdm1s - avg_rdm1))
             ) / np.linalg.norm(avg_rdm1)
 
-            log.log(f"# RDM noise:") #, flush=True)
+            log.log(f"# RDM noise:")  # , flush=True)
             rdm_noise, rdm_noise_err = stat_utils.blocking_analysis(
                 log, clean_weights_rdm, errors_rdm1, neql=0, printQ=True
             )

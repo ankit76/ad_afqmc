@@ -1,7 +1,7 @@
 import argparse
 import os
-import sys
 import pickle
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -10,9 +10,10 @@ import numpy as np
 from jax import numpy as jnp
 
 from ad_afqmc import config, driver, hamiltonian, propagation, sampling, wavefunctions
-#from ad_afqmc.config import mpi_print as print
-from ad_afqmc.options import Options
 from ad_afqmc.logger import Logger
+
+# from ad_afqmc.config import mpi_print as print
+from ad_afqmc.options import Options
 
 tmpdir = "."
 
@@ -26,7 +27,7 @@ def parse_arguments() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description="Run AD-AFQMC calculation")
     parser.add_argument("tmpdir", help="Directory for input/output files")
-    parser.add_argument("--verbose", default= 3, type=int, help="Verbose level")
+    parser.add_argument("--verbose", default=3, type=int, help="Verbose level")
     parser.add_argument(
         "--use_gpu", action="store_true", help="Enable GPU acceleration"
     )
@@ -88,7 +89,9 @@ def read_fcidump(tmp_dir: Optional[str] = None) -> Tuple:
     return h0, h1, chol, norb, nelec_sp
 
 
-def read_options(options: Optional[Options] = None, tmp_dir: Optional[str] = None) -> Options:
+def read_options(
+    options: Optional[Options] = None, tmp_dir: Optional[str] = None
+) -> Options:
     """
     Read calculation options from file or use provided options with defaults.
 
@@ -111,6 +114,7 @@ def read_options(options: Optional[Options] = None, tmp_dir: Optional[str] = Non
         options = Options.from_dict(options)
 
     return options
+
 
 def read_observable(
     nmo: int, options: Dict, tmp_dir: Optional[str] = None
@@ -229,10 +233,13 @@ def set_trial(
         # Construct RDM1 from mo_coeff if file not found
         if options.trial in ["ghf_complex", "gcisd_complex"]:
             wave_data["rdm1"] = jnp.array(
-            [
-            mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
-            mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]] @ mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]].T.conj(),
-            ])
+                [
+                    mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
+                    @ mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]].T.conj(),
+                    mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
+                    @ mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]].T.conj(),
+                ]
+            )
 
         else:
             wave_data["rdm1"] = jnp.array(
@@ -330,7 +337,7 @@ def set_trial(
 
     elif options.trial == "ghf_complex":
         trial = wavefunctions.ghf_complex(norb, nelec_sp, n_batch=options.n_batch)
-        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]+nelec_sp[1]]
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
 
     elif options.trial == "gcisd_complex":
         try:
@@ -340,9 +347,11 @@ def set_trial(
             t2 = jnp.array(amplitudes["t2"])
 
             ci1 = t1
-            ci2 = np.einsum("ijab->iajb",t2) \
-                + np.einsum("ia,jb->iajb",t1,t1) \
-                - np.einsum("ib,ja->iajb",t1,t1)
+            ci2 = (
+                np.einsum("ijab->iajb", t2)
+                + np.einsum("ia,jb->iajb", t1, t1)
+                - np.einsum("ib,ja->iajb", t1, t1)
+            )
             trial_wave_data = {
                 "ci1": ci1,
                 "ci2": ci2,
@@ -351,7 +360,9 @@ def set_trial(
             wave_data.update(trial_wave_data)
             trial = wavefunctions.gcisd_complex(norb, nelec_sp, n_batch=options.n_batch)
         except:
-            raise ValueError("Trial specified as gcisd_complex, but amplitudes.npz not found.")
+            raise ValueError(
+                "Trial specified as gcisd_complex, but amplitudes.npz not found."
+            )
 
     else:
         # Try to load trial from pickle file
@@ -361,7 +372,9 @@ def set_trial(
             wave_data.update(trial_wave_data)
             log.log_0(f"# Read trial of type {type(trial).__name__} from trial.pkl.")
         except:
-            log.log_0("# trial.pkl not found, make sure to construct the trial separately.")
+            log.log_0(
+                "# trial.pkl not found, make sure to construct the trial separately."
+            )
             trial = None
 
     return trial, wave_data
@@ -498,11 +511,11 @@ def setup_afqmc(
     sampler = set_sampler(options)
 
     ## MPI to get rank value
-    #mpi_comm = config.setup_comm_no_print()
-    #rank = mpi_comm.COMM_WORLD.Get_rank()
+    # mpi_comm = config.setup_comm_no_print()
+    # rank = mpi_comm.COMM_WORLD.Get_rank()
 
     ## Logger
-    #log = Logger(sys.stdout, options.verbose, rank)
+    # log = Logger(sys.stdout, options.verbose, rank)
 
     log.log_0(f"# norb: {norb}")
     log.log_0(f"# nelec: {nelec_sp}")
@@ -599,12 +612,12 @@ def main() -> None:
     args = parse_arguments()
     configure_environment(args)
 
-    # MPI rank needed for the logger
+    # MPI rank needed for the logger
     mpi_comm = config.setup_comm_no_print()
     rank = mpi_comm.COMM_WORLD.Get_rank()
 
     # Logger
-    log = Logger(sys.stdout, args.verbose, rank)    
+    log = Logger(sys.stdout, args.verbose, rank)
 
     mpi_comm = config.setup_comm(log)
     config.setup_jax(log)

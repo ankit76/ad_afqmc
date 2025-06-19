@@ -237,16 +237,20 @@ class propagator_restricted(propagator):
     def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_restricted(
-            prop_data["walkers"], prop_data["weights"], zeta
+        prop_data["walkers"], prop_data["weights"] = (
+            sr.stochastic_reconfiguration_restricted(
+                prop_data["walkers"], prop_data["weights"], zeta
+            )
         )
         return prop_data
 
     def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_mpi_restricted(
-            prop_data["walkers"], prop_data["weights"], zeta, comm
+        prop_data["walkers"], prop_data["weights"] = (
+            sr.stochastic_reconfiguration_mpi_restricted(
+                prop_data["walkers"], prop_data["weights"], zeta, comm
+            )
         )
         return prop_data
 
@@ -406,8 +410,10 @@ class propagator_unrestricted(propagator_restricted):
     def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = sr.stochastic_reconfiguration_unrestricted(
-            prop_data["walkers"], prop_data["weights"], zeta
+        prop_data["walkers"], prop_data["weights"] = (
+            sr.stochastic_reconfiguration_unrestricted(
+                prop_data["walkers"], prop_data["weights"], zeta
+            )
         )
         return prop_data
 
@@ -423,11 +429,15 @@ class propagator_unrestricted(propagator_restricted):
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"], _ = linalg_utils.qr_vmap_unrestricted(prop_data["walkers"])
+        prop_data["walkers"], _ = linalg_utils.qr_vmap_unrestricted(
+            prop_data["walkers"]
+        )
         return prop_data
 
     def _orthogonalize_walkers(self, prop_data: dict) -> Tuple:
-        prop_data["walkers"], norms = linalg_utils.qr_vmap_unrestricted(prop_data["walkers"])
+        prop_data["walkers"], norms = linalg_utils.qr_vmap_unrestricted(
+            prop_data["walkers"]
+        )
         return prop_data, norms
 
     @partial(jit, static_argnums=(0))
@@ -512,6 +522,7 @@ class propagator_unrestricted(propagator_restricted):
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
+
 @dataclass
 class propagator_generalized(propagator_restricted):
 
@@ -548,8 +559,8 @@ class propagator_generalized(propagator_restricted):
 
     @partial(jit, static_argnums=(0,))
     def _apply_trotprop(
-        self, ham_data: dict, walkers: Sequence, fields: jax.Array
-    ) -> List:
+        self, ham_data: dict, walkers: jax.Array, fields: jax.Array
+    ) -> jax.Array:
         n_walkers = walkers.shape[0]
         batch_size = n_walkers // self.n_batch
 
@@ -588,7 +599,7 @@ class propagator_generalized(propagator_restricted):
 
         # <\Psi_T|\nu_\gamma|\Psi_T><\Psi_T|\Psi_T> = -i Tr(chol_\gamma rdm1)
         ham_data["mf_shifts"] = 1.0j * vmap(
-            lambda x: jnp.sum(x.reshape(trial.norb, trial.norb) * rdm1) 
+            lambda x: jnp.sum(x.reshape(trial.norb, trial.norb) * rdm1)
         )(ham_data["chol"])
         ham_data["h0_prop"] = (
             -ham_data["h0"] - jnp.sum(ham_data["mf_shifts"] ** 2) / 2.0
@@ -648,7 +659,7 @@ class propagator_cpmc(propagator_unrestricted):
     def _build_propagation_intermediates(
         self, ham_data: dict, trial: wave_function, wave_data: dict
     ) -> dict:
-        ham_data = super()._build_propagation_intermediates(ham_data, trial, wave_data)
+        # ham_data = super()._build_propagation_intermediates(ham_data, trial, wave_data)
         # no mean field shift
         ham_data["exp_h1"] = jnp.array(
             [

@@ -193,7 +193,7 @@ class two_dimensional_grid(lattice):
     bond_shell_distances: Optional[Sequence] = None
     sites: Optional[Sequence] = None
     bonds: Optional[Sequence] = None
-    n_sites: Optional[int] = None
+    n_sites: int = 0
     hop_signs: Sequence = (-1.0, -1.0, 1.0, 1.0)
     coord_num: int = 4
 
@@ -464,27 +464,26 @@ class triangular_grid(lattice):
 
     def get_site_num(self, pos):
         return pos[1] + self.l_y * pos[0]
-    
+
     def get_site_coordinate(self, pos):
         """
         Returns the real space coordinate of the site specified by `pos`,
         assuming a primitive lattice vector of unit length.
         """
-        theta = np.pi / 3.
-        lattice_vecs = np.array([[np.cos(theta), 1.],
-                                 [np.sin(theta), 0.]])
+        theta = np.pi / 3.0
+        lattice_vecs = np.array([[np.cos(theta), 1.0], [np.sin(theta), 0.0]])
         if self.open_x:
             L2, L1 = lattice_vecs.T
             L3 = L2 - L1
             Ly = [L2, L3]
             coords = np.zeros(2)
 
-            for i in range(1, pos[0]+1):
-                coords += Ly[(i-1) % 2]
+            for i in range(1, pos[0] + 1):
+                coords += Ly[(i - 1) % 2]
 
             coords += pos[1] * L1
 
-        else: # PBC and OBC.
+        else:  # PBC and OBC.
             coords = pos @ lattice_vecs.T
 
         return coords
