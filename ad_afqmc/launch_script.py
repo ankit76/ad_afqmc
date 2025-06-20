@@ -118,7 +118,7 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
 
     # AD mode options
     options["ad_mode"] = options.get("ad_mode", None)
-    assert options["ad_mode"] in [None, "forward", "reverse", "2rdm"]
+    assert options["ad_mode"] in [None, "forward", "reverse", "2rdm", "nuc_grad"]
 
     # Wavefunction and algorithm options
     options["orbital_rotation"] = options.get("orbital_rotation", True)
