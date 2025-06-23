@@ -554,3 +554,113 @@ class sampler_cpmc(sampler):
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class sampler_lno(sampler):
+
+    @partial(jit, static_argnums=(0, 4, 5))
+    def _block_scan(
+        self,
+        prop_data: dict,
+        _x: Any,
+        ham_data: dict,
+        propagator: propagator,
+        trial: wave_function,
+        wave_data: dict,
+    ):
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(self.n_prop_steps, propagator.n_walkers, ham_data["chol"].shape[0]),
+        )
+        _step_scan_wrapper = lambda x, y: self._step_scan(
+            x, y, ham_data, propagator, trial, wave_data
+        )
+        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(
+            prop_data["weights"]
+        )
+        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        energy_samples = jnp.real(
+            trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+        )
+        energy_samples = jnp.where(
+            jnp.abs(energy_samples - prop_data["pop_control_ene_shift"])
+            > jnp.sqrt(2.0 / propagator.dt),
+            prop_data["pop_control_ene_shift"],
+            energy_samples,
+        )
+        orbE_samples = jnp.real(
+            trial.calc_orbenergy(prop_data["walkers"], ham_data, wave_data)
+        )
+        orbE_samples = jnp.where(
+            jnp.abs(energy_samples - prop_data["pop_control_ene_shift"])
+            > jnp.sqrt(2.0 / propagator.dt),
+            prop_data["pop_control_ene_shift"],
+            orbE_samples,
+        )
+        block_weight = jnp.sum(prop_data["weights"])
+        block_energy = jnp.sum(energy_samples * prop_data["weights"]) / block_weight
+        block_orbE = jnp.sum(orbE_samples * prop_data["weights"]) / block_weight
+        prop_data["pop_control_ene_shift"] = (
+            0.9 * prop_data["pop_control_ene_shift"] + 0.1 * block_energy
+        )
+        return prop_data, (block_energy, block_weight, block_orbE)
+
+    @partial(jit, static_argnums=(0, 4, 5))
+    def _sr_block_scan(
+        self,
+        prop_data: dict,
+        _x: Any,
+        ham_data: dict,
+        propagator: propagator,
+        trial: wave_function,
+        wave_data: dict,
+    ):
+        _block_scan_wrapper = lambda x, y: self._block_scan(
+            x,
+            y,
+            ham_data,
+            propagator,
+            trial,
+            wave_data,
+        )
+        prop_data, (block_energy, block_weight, block_orbE) = lax.scan(
+            checkpoint(_block_scan_wrapper), prop_data, None, length=self.n_ene_blocks
+        )
+        prop_data = propagator.stochastic_reconfiguration_local(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        return prop_data, (block_energy, block_weight, block_orbE)
+
+    @partial(jit, static_argnums=(0, 1, 3, 5))
+    def propagate_phaseless(
+        self,
+        ham: hamiltonian,
+        ham_data: dict,
+        propagator: propagator,
+        prop_data: dict,
+        trial: wave_function,
+        wave_data: dict,
+    ):
+        def _sr_block_scan_wrapper(x, y):
+            return self._sr_block_scan(x, y, ham_data, propagator, trial, wave_data)
+
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["n_killed_walkers"] = 0
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data, (block_energy, block_weight, block_orbE) = lax.scan(
+            _sr_block_scan_wrapper, prop_data, None, length=self.n_sr_blocks
+        )
+        prop_data["n_killed_walkers"] /= (
+            self.n_sr_blocks * self.n_ene_blocks * propagator.n_walkers
+        )
+        return (
+            jnp.sum(block_energy * block_weight) / jnp.sum(block_weight),
+            prop_data,
+            jnp.sum(block_orbE * block_weight) / jnp.sum(block_weight),
+        )
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))

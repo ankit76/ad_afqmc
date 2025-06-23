@@ -184,6 +184,209 @@ def afqmc_energy(
     return e_afqmc, e_err_afqmc
 
 
+def afqmc_LNOenergy(
+    ham_data: dict,
+    ham: hamiltonian.hamiltonian,
+    propagator: propagation.propagator,
+    trial: wavefunctions.wave_function,
+    wave_data: dict,
+    sampler: sampling.sampler,
+    options: dict,
+    MPI: Any,
+    init_walkers: Optional[Union[List, jax.Array]] = None,
+    tmpdir: str = ".",
+) -> Tuple[float, float]:
+    """
+    Run AFQMC simulation for calculating energy.
+
+    Args:
+        ham_data (dict): Hamiltonian data.
+        ham (hamiltonian.hamiltonian): Hamiltonian object.
+        propagator (propagation.propagator): Propagator object.
+        trial (wavefunctions.wave_function): Trial wavefunction.
+        wave_data (dict): Wavefunction data.
+        sampler (sampling.sampler): Sampler object.
+        options (dict): Options for the simulation.
+        MPI: MPI object. Either mpi4py object or a dummy handler config.not_MPI.
+        init_walkers (Optional[Union[List, jax.Array]], optional): Initial walkers.
+        tmpdir (str, optional): Directory for temporary files.
+
+    Returns:
+        Tuple[float, float]: AFQMC energy and error
+    """
+
+    init = time.time()
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    rank = comm.Get_rank()
+    seed = options["seed"]
+    truncate = 0  # Message to pass if I need to truncate the n_blocks in all ranks
+    truncate_at_n = (
+        sampler.n_blocks
+    )  # block at which to truncate the n_blocks in all ranks
+    maxError = options["maxError"]
+
+    if rank == 0:
+        sha1, branch, local_mods = misc.get_git_info()
+        sys_info = misc.print_env_info(sha1, branch, local_mods)
+
+    # Initialize data
+    trial_rdm1 = trial.get_rdm1(wave_data)
+    if "rdm1" not in wave_data:
+        wave_data["rdm1"] = trial_rdm1
+    ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+    ham_data = ham.build_propagation_intermediates(
+        ham_data, propagator, trial, wave_data
+    )
+    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
+    if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
+        raise ValueError(
+            "Initial overlaps are zero. Pass walkers with non-zero overlap."
+        )
+    prop_data["key"] = random.PRNGKey(seed + rank)
+
+    # Equilibration phase
+    comm.Barrier()
+    init_time = time.time() - init
+    print("# Equilibration sweeps:")
+    print(
+        f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}"
+    )
+    # print("#   Iter        Block energy      Walltime")
+    n = 0
+    print(
+        f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
+    )
+    # print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+    comm.Barrier()
+
+    n_ene_blocks_eql = options["n_ene_blocks_eql"]
+    n_sr_blocks_eql = options["n_sr_blocks_eql"]
+    n_eql = options["n_eql"]
+    sampler_eq = sampling.sampler(
+        n_prop_steps=50,
+        n_ene_blocks=n_ene_blocks_eql,
+        n_sr_blocks=n_sr_blocks_eql,
+        n_blocks=n_eql,
+    )
+
+    # Run equilibration
+    prop_data = _run_equilibration(
+        ham,
+        ham_data,
+        propagator,
+        prop_data,
+        trial,
+        wave_data,
+        sampler_eq,
+        init,
+        MPI,
+    )
+
+    # Sampling phase
+    comm.Barrier()
+    print("#\n# Sampling sweeps:")
+    print("#  Iter        Mean energy          Stochastic error       Walltime")
+    comm.Barrier()
+
+    global_block_weights = None
+    global_block_energies = None
+    global_block_orbEs = None
+    if rank == 0:
+        global_block_weights = np.zeros(sampler.n_blocks)
+        global_block_energies = np.zeros(sampler.n_blocks)
+        global_block_orbEs = np.zeros(sampler.n_blocks)
+
+    # Run sampling
+    for n in range(sampler.n_blocks):
+        block_energy_n, prop_data, block_orbE_n = sampler.propagate_phaseless(
+            ham, ham_data, propagator, prop_data, trial, wave_data
+        )
+
+        block_energy_n = np.array([block_energy_n], dtype="float32")
+        block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
+        block_orbE_n = np.array([block_orbE_n], dtype="float32")
+
+        gather_weights = np.zeros(0, dtype="float32")
+        gather_energies = np.zeros(0, dtype="float32")
+        gather_orbE = np.zeros(0, dtype="float32")
+
+        if rank == 0:
+            gather_weights = np.zeros(size, dtype="float32")
+            gather_energies = np.zeros(size, dtype="float32")
+            gather_orbE = np.zeros(size, dtype="float32")
+
+        comm.Gather(block_weight_n, gather_weights, root=0)
+        comm.Gather(block_energy_n, gather_energies, root=0)
+        comm.Gather(block_orbE_n, gather_orbE, root=0)
+        block_energy_n = 0.0
+        block_orbE_n = 0.0
+        if rank == 0:
+            global_block_weights[n] = np.sum(gather_weights)
+            block_energy_n = np.sum(gather_weights * gather_energies) / np.sum(
+                gather_weights
+            )
+            block_orbE_n = np.sum(gather_weights * gather_orbE) / np.sum(gather_weights)
+            global_block_energies[n] = block_energy_n
+            global_block_orbEs[n] = block_orbE_n
+
+        block_energy_n = comm.bcast(block_energy_n, root=0)
+        block_orbE_n = comm.bcast(block_orbE_n, root=0)
+        prop_data = propagator.orthonormalize_walkers(prop_data)
+
+        if options["save_walkers"] == True:
+            _save_walkers(prop_data, n, tmpdir, rank)
+
+        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
+
+        # Print progress and save intermediate results
+        if n % (max(sampler.n_blocks // 10, 1)) == 0:
+            _print_progress_energy(
+                n,
+                global_block_weights,
+                global_block_energies,
+                rank,
+                init,
+                comm,
+                tmpdir,
+                global_block_orbEs=global_block_orbEs,
+            )
+            try:
+                print(f"node encounters on proc 0: {prop_data['node_crossings']}")
+            except:
+                pass
+
+        if rank == 0:
+            if n % (max(sampler.n_blocks // 5, 1)) == 0 and n > 4:
+                orbE_sem = jnp.std(global_block_orbEs[: n + 1]) / jnp.sqrt(n + 1)
+                if orbE_sem < maxError:
+                    print(
+                        f"#\n# Orbital energy convergence achieved: {orbE_sem:.6e} < {maxError:.6e}"
+                    )
+                    truncate = 1
+                    truncate_at_n = n
+
+        truncate = comm.bcast(truncate, root=0)
+        truncate_at_n = comm.bcast(truncate_at_n, root=0)
+        if truncate == 1:
+            break
+
+    # Analysis phase
+    comm.Barrier()
+    e_afqmc, e_err_afqmc = _analyze_LNOenergy_results(
+        global_block_weights,
+        global_block_energies,
+        rank,
+        comm,
+        tmpdir,
+        global_block_orbEs=global_block_orbEs,
+        truncate_at_n=truncate_at_n,
+    )
+
+    return e_afqmc, e_err_afqmc
+
+
 def afqmc_observable(
     ham_data: dict,
     ham: hamiltonian.hamiltonian,
@@ -751,7 +954,14 @@ def _save_walkers(prop_data, n, tmpdir, rank):
 
 
 def _print_progress_energy(
-    n, global_block_weights, global_block_energies, rank, init, comm, tmpdir
+    n,
+    global_block_weights,
+    global_block_energies,
+    rank,
+    init,
+    comm,
+    tmpdir,
+    global_block_orbEs=None,
 ):
     """Print progress information for energy calculations"""
     comm.Barrier()
@@ -761,7 +971,24 @@ def _print_progress_energy(
             global_block_energies[: (n + 1)],
             neql=0,
         )
-        if energy_error is not None:
+        if global_block_orbEs is not None:
+            orbE_avg, orbE_error = stat_utils.blocking_analysis(
+                global_block_weights[: (n + 1)],
+                global_block_orbEs[: (n + 1)],
+                neql=0,
+            )
+            if energy_error is not None and orbE_error is not None:
+                print(
+                    f" {n:5d}      {e_afqmc:.9e}        {energy_error:.9e}        {orbE_avg:.9e}        {orbE_error:.9e}      {time.time() - init:.2e} ",
+                    flush=True,
+                )
+            else:
+                print(
+                    f" {n:5d}      {e_afqmc:.9e}                -              {orbE_avg:.9e}                -              {time.time() - init:.2e} ",
+                    flush=True,
+                )
+
+        elif energy_error is not None:
             print(
                 f" {n:5d}      {e_afqmc:.9e}        {energy_error:.9e}        {time.time() - init:.2e} ",
                 flush=True,
@@ -1069,6 +1296,82 @@ def _analyze_observable_results(
         return {"e_afqmc": e_afqmc, "e_err_afqmc": e_err_afqmc, "observable_data": None}
 
 
+def _analyze_LNOenergy_results(
+    global_block_weights: np.ndarray,
+    global_block_energies: np.ndarray,
+    rank: int,
+    comm,
+    tmpdir: str,
+    global_block_orbEs: np.ndarray = None,
+    truncate_at_n: int = None,
+):
+    """Analyze energy results and calculate statistics"""
+    e_afqmc, e_err_afqmc = None, None
+    if rank == 0:
+        if truncate_at_n is not None:
+            global_block_weights = global_block_weights[: truncate_at_n + 1]
+            global_block_energies = global_block_energies[: truncate_at_n + 1]
+            global_block_orbEs = global_block_orbEs[: truncate_at_n + 1]
+        np.savetxt(
+            tmpdir + "/samples_raw.dat",
+            np.stack((global_block_weights, global_block_energies)).T,
+        )
+
+        # Clean up outliers
+        samples_clean, _ = stat_utils.reject_outliers(
+            np.stack((global_block_weights, global_block_energies)).T, 1
+        )
+        print(
+            f"# Number of outliers in post: {global_block_weights.size - samples_clean.shape[0]} "
+        )
+        np.savetxt(tmpdir + "/samples.dat", samples_clean)
+
+        clean_weights = samples_clean[:, 0]
+        clean_energies = samples_clean[:, 1]
+
+        # Calculate final statistics
+        e_afqmc, e_err_afqmc = stat_utils.blocking_analysis(
+            clean_weights, clean_energies, neql=0, printQ=True
+        )
+        orbE_afqmc, orbE_err_afqmc = stat_utils.blocking_analysis(
+            global_block_weights, global_block_orbEs, neql=0, printQ=True
+        )
+        if orbE_err_afqmc is not None:
+            sig_dec_orbe = int(abs(np.floor(np.log10(orbE_err_afqmc))))
+            sig_err_orbe = np.around(
+                np.round(orbE_err_afqmc * 10**sig_dec_orbe) * 10 ** (-sig_dec_orbe),
+                sig_dec_orbe,
+            )
+            sig_e_orbe = np.around(orbE_afqmc, sig_dec_orbe)
+            print(
+                f"Orbital energy: {sig_e_orbe:.{sig_dec_orbe}f} +/- {sig_err_orbe:.{sig_dec_orbe}f}\n"
+            )
+        else:
+            print(f"Could not determine orbital energy automatically\n", flush=True)
+            print(f"Orbital energy: {orbE_afqmc}\n", flush=True)
+            orbE_err_afqmc = 0.0
+
+        # Print formatted results
+        if e_err_afqmc is not None:
+            sig_dec = int(abs(np.floor(np.log10(e_err_afqmc))))
+            sig_err = np.around(
+                np.round(e_err_afqmc * 10**sig_dec) * 10 ** (-sig_dec), sig_dec
+            )
+            sig_e = np.around(e_afqmc, sig_dec)
+            print(f"AFQMC energy: {sig_e:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n")
+        elif e_afqmc is not None:
+            print(f"Could not determine stochastic error automatically\n", flush=True)
+            print(f"AFQMC energy: {e_afqmc}\n", flush=True)
+            e_err_afqmc = 0.0
+
+    comm.Barrier()
+    e_afqmc = comm.bcast(e_afqmc, root=0)
+    e_err_afqmc = comm.bcast(e_err_afqmc, root=0)
+    comm.Barrier()
+
+    return e_afqmc, e_err_afqmc
+
+
 # Keep the original function for backward compatibility
 def afqmc(
     ham_data: dict,
@@ -1088,18 +1391,33 @@ def afqmc(
     based on options["ad_mode"].
     """
     if options["ad_mode"] is None:
-        return afqmc_energy(
-            ham_data=ham_data,
-            ham=ham,
-            propagator=propagator,
-            trial=trial,
-            wave_data=wave_data,
-            sampler=sampler,
-            options=options,
-            MPI=MPI,
-            init_walkers=init_walkers,
-            tmpdir=tmpdir,
-        )
+        if options["prjlo"] is not None:
+            return afqmc_LNOenergy(
+                ham_data=ham_data,
+                ham=ham,
+                propagator=propagator,
+                trial=trial,
+                wave_data=wave_data,
+                sampler=sampler,
+                options=options,
+                MPI=MPI,
+                init_walkers=init_walkers,
+                tmpdir=tmpdir,
+            )
+
+        else:
+            return afqmc_energy(
+                ham_data=ham_data,
+                ham=ham,
+                propagator=propagator,
+                trial=trial,
+                wave_data=wave_data,
+                sampler=sampler,
+                options=options,
+                MPI=MPI,
+                init_walkers=init_walkers,
+                tmpdir=tmpdir,
+            )
     else:
         e_afqmc, e_err_afqmc, _ = afqmc_observable(
             ham_data=ham_data,
