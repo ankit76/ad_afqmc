@@ -1337,14 +1337,9 @@ def _analyze_LNOenergy_results(
             global_block_weights, global_block_orbEs, neql=0, printQ=True
         )
         if orbE_err_afqmc is not None:
-            sig_dec_orbe = int(abs(np.floor(np.log10(orbE_err_afqmc))))
-            sig_err_orbe = np.around(
-                np.round(orbE_err_afqmc * 10**sig_dec_orbe) * 10 ** (-sig_dec_orbe),
-                sig_dec_orbe,
-            )
-            sig_e_orbe = np.around(orbE_afqmc, sig_dec_orbe)
             print(
-                f"Orbital energy: {sig_e_orbe:.{sig_dec_orbe}f} +/- {sig_err_orbe:.{sig_dec_orbe}f}\n"
+                f"Orbital energy: {orbE_afqmc:.9e} +/- {orbE_err_afqmc:.9e}\n",
+                flush=True,
             )
         else:
             print(f"Could not determine orbital energy automatically\n", flush=True)

@@ -168,13 +168,19 @@ def impurity_solve(
                 n_ene_blocks=n_ene_blocks,
                 n_sr_blocks=n_sr_blocks,
             )
+            sig_dec_orbe = int(abs(np.floor(np.log10(err_afqmc))))
+            sig_err_orbe = np.around(
+                np.round(err_afqmc * 10**sig_dec_orbe) * 10 ** (-sig_dec_orbe),
+                sig_dec_orbe,
+            )
+            sig_e_orbe = np.around(elcorr_afqmc, sig_dec_orbe)
 
             # elcorr_afqmc = 0.0
 
     frag_msg = "  ".join(
         [
             f"E_corr(MP2) = {elcorr_pt2:.15g}",
-            f"E_corr(AFQMC) = {elcorr_afqmc:.15g} +/- {err_afqmc:.15g}",
+            f"E_corr(AFQMC) = {sig_e_orbe:.{sig_dec_orbe}f} +/- {sig_err_orbe:.{sig_dec_orbe}f}",
         ]
     )
 
