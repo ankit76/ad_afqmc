@@ -154,8 +154,10 @@ def write_integrals_lowdins(mf, tmpdir="./"):
 
 
 def prep_afqmc_nuc_grad(mf, dR=1e-5, tmpdir: str = "./"):
+    if not os.path.exists(tmpdir):
+        os.makedirs(tmpdir)
     print("Removing old files")
-    os.system("rm -f en_der_afqmc_*.npz")
+    os.system("rm -f "+tmpdir+"/en_der_afqmc_*.npz")
     FD_integrals(mf, dR=dR, tmpdir=tmpdir)
     write_integrals_lowdins(mf, tmpdir=tmpdir)
 

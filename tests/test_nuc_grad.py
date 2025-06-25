@@ -1,13 +1,12 @@
+import os
 import sys
 import numpy as np
 import pytest
 from ad_afqmc import config, pyscf_interface, run_afqmc, grad_utils
 from pyscf import gto, scf, df
+import shutil
 
-from ad_afqmc.logger import Logger
-
-log = Logger(sys.stdout, 3)
-config.setup_jax(log)
+config.setup_jax()
 
 options = {
     "dt": 0.005,
@@ -24,7 +23,15 @@ options = {
 
 # The actual check
 def run_check(obj, options, expected_energy, expected_grad, atol, mpi):
-    tmpdir = "./"
+    tmpdir = "tmp"
+
+    #curr_file = os.path.abspath(__file__)
+    #curr_dir = os.path.dirname(curr_file)
+
+    #tmp = curr_dir + "/" + tmpdir
+    #if not os.path.exists(tmp):
+    #    os.makedirs(tmp)
+
     grad_utils.prep_afqmc_nuc_grad(obj, dR=1e-5, tmpdir=tmpdir)
 
     # mpi_prefix = "mpirun" if mpi else None
