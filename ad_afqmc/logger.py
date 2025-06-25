@@ -1,7 +1,8 @@
+import sys
 from pyscf import lib
 
 class Logger(lib.logger.Logger):
-    def __init__(self, stdout, verbose: int, rank: int = 0):
+    def __init__(self, stdout = sys.stdout, verbose: int = 3, rank: int = 0):
         super().__init__(stdout, verbose)
         self.rank = rank
 
@@ -102,4 +103,14 @@ class Logger(lib.logger.Logger):
     
     def timer_debug1(self, msg, cpu0=None, wall0=None):
         return lib.logger.timer_debug1(self, msg, cpu0=None, wall0=None)
- 
+
+#import sys
+#from mpi4py import MPI 
+#from ad_afqmc import config
+
+## MPI rank needed for the logger
+#mpi_comm = config.setup_comm_no_print()
+#rank = mpi_comm.COMM_WORLD.Get_rank()
+
+# Logger
+log = Logger()

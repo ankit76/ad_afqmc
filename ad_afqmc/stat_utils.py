@@ -2,11 +2,11 @@ from functools import partial
 
 import numpy as np
 
-from ad_afqmc.logger import Logger
+from ad_afqmc.logger import log
 
 #print = partial(print, flush=True)
 
-def blocking_analysis(log: Logger, weights, energies, neql=0, printQ=False, writeBlockedQ=False):
+def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=False):
     nSamples = weights.shape[0] - neql
     weights = weights[neql:]
     energies = energies[neql:]

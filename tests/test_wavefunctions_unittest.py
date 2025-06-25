@@ -5,10 +5,8 @@ import numpy as np
 import unittest
 
 from ad_afqmc import config
-from ad_afqmc.logger import Logger
 
-log = Logger(sys.stdout, 3)
-config.setup_jax(log)
+config.setup_jax()
 from jax import numpy as jnp
 from ad_afqmc import pyscf_interface, wavefunctions
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ad_afqmc.logger import Logger
+from ad_afqmc.logger import log
 
 afqmc_config = {"use_gpu": False, "use_mpi": None}
 rank = 0
@@ -70,7 +70,7 @@ class not_MPI:
         pass
 
 
-def setup_jax(log: Logger):
+def setup_jax():
     from jax import config
 
     config.update("jax_enable_x64", True)
@@ -106,7 +106,7 @@ def setup_jax(log: Logger):
         )
 
 
-def setup_comm(log):
+def setup_comm():
     MPI = setup_comm_no_print()
     if rank == 0 and afqmc_config["use_gpu"] == False:
         hostname = socket.gethostname()

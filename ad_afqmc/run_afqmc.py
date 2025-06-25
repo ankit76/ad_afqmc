@@ -10,7 +10,7 @@ import numpy as np
 
 from ad_afqmc import config
 from ad_afqmc.options import Options
-from ad_afqmc.logger import Logger
+from ad_afqmc.logger import log
 
 print = partial(print, flush=True)
 
@@ -42,7 +42,7 @@ def run_afqmc(
         options = Options.from_dict(options)
 
     # Logger
-    log = Logger(sys.stdout, options.verbose)
+    log.verbose = options.verbose
 
     if tmpdir is None:
         try:

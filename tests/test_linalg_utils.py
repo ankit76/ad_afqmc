@@ -2,10 +2,8 @@ import sys
 import numpy as np
 
 from ad_afqmc import config
-from ad_afqmc.logger import Logger
 
-log = Logger(sys.stdout, 3)
-config.setup_jax(log)
+config.setup_jax()
 from jax import numpy as jnp
 
 from ad_afqmc import linalg_utils

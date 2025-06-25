@@ -18,7 +18,7 @@ from ad_afqmc import (
     wavefunctions,
     grad_utils,
 )
-from ad_afqmc.logger import Logger
+from ad_afqmc.logger import log
 # from ad_afqmc.config import mpi_print as print
 from ad_afqmc.options import Options
 
@@ -59,12 +59,9 @@ def afqmc_energy(
     rank = comm.Get_rank()
     seed = options.seed
 
-    # Logger
-    log = Logger(sys.stdout, options.verbose, rank)
-
     if rank == 0:
-        sha1, branch, local_mods = misc.get_git_info(log)
-        sys_info = misc.print_env_info(log, sha1, branch, local_mods)
+        sha1, branch, local_mods = misc.get_git_info()
+        sys_info = misc.print_env_info(sha1, branch, local_mods)
 
     # Initialize data
     trial_rdm1 = trial.get_rdm1(wave_data)
@@ -109,7 +106,6 @@ def afqmc_energy(
 
     # Run equilibration
     prop_data = _run_equilibration(
-        log,
         ham,
         ham_data,
         propagator,
@@ -170,7 +166,6 @@ def afqmc_energy(
         # Print progress and save intermediate results
         if n % (max(sampler.n_blocks // 10, 1)) == 0:
             _print_progress_energy(
-                log,
                 n,
                 global_block_weights,
                 global_block_energies,
@@ -187,7 +182,6 @@ def afqmc_energy(
     # Analysis phase
     comm.Barrier()
     e_afqmc, e_err_afqmc = _analyze_energy_results(
-        log,
         global_block_weights,
         global_block_energies,
         rank,
@@ -225,9 +219,6 @@ def afqmc_observable(
     size = comm.Get_size()
     rank = comm.Get_rank()
     seed = options.seed
-
-    # Logger
-    log = Logger(sys.stdout, options.verbose, rank)
 
     # Set up observable operators
     if observable is not None:
@@ -280,7 +271,6 @@ def afqmc_observable(
 
     # Run equilibration
     prop_data = _run_equilibration(
-        log,
         ham,
         ham_data,
         propagator,
@@ -398,7 +388,6 @@ def afqmc_observable(
         # Print progress and save intermediate results
         if n % (max(sampler.n_blocks // 10, 1)) == 0:
             _print_progress_observable(
-                log,
                 n,
                 global_block_weights,
                 global_block_energies,
@@ -426,7 +415,6 @@ def afqmc_observable(
     # Analysis phase
     comm.Barrier()
     result_data = _analyze_observable_results(
-        log,
         global_block_weights,
         global_block_energies,
         global_block_observables,
@@ -447,7 +435,6 @@ def afqmc_observable(
 
 
 def _run_equilibration(
-    log: Logger,
     ham: hamiltonian.hamiltonian,
     ham_data: dict,
     propagator: propagation.propagator,
@@ -774,7 +761,6 @@ def _save_walkers(prop_data, n, tmpdir, rank):
 
 
 def _print_progress_energy(
-    log: Logger,
     n,
     global_block_weights,
     global_block_energies,
@@ -787,7 +773,6 @@ def _print_progress_energy(
     comm.Barrier()
     if rank == 0:
         e_afqmc, energy_error = stat_utils.blocking_analysis(
-            log,
             global_block_weights[: (n + 1)],
             global_block_energies[: (n + 1)],
             neql=0,
@@ -815,7 +800,6 @@ def _print_progress_energy(
 
 
 def _print_progress_observable(
-    log: Logger,
     n,
     global_block_weights,
     global_block_energies,
@@ -831,13 +815,11 @@ def _print_progress_observable(
     comm.Barrier()
     if rank == 0:
         e_afqmc, energy_error = stat_utils.blocking_analysis(
-            log,
             global_block_weights[: (n + 1) * size],
             global_block_energies[: (n + 1) * size],
             neql=0,
         )
         obs_afqmc, _ = stat_utils.blocking_analysis(
-            log,
             global_block_weights[: (n + 1) * size],
             global_block_observables[: (n + 1) * size],
             neql=0,
@@ -866,7 +848,6 @@ def _print_progress_observable(
 
 
 def _analyze_energy_results(
-    log: Logger,
     global_block_weights,
     global_block_energies,
     rank,
@@ -895,7 +876,7 @@ def _analyze_energy_results(
 
         # Calculate final statistics
         e_afqmc, e_err_afqmc = stat_utils.blocking_analysis(
-            log, clean_weights, clean_energies, neql=0, printQ=True
+            clean_weights, clean_energies, neql=0, printQ=True
         )
 
         # Print formatted results
@@ -922,7 +903,6 @@ def _analyze_energy_results(
 
 
 def _analyze_observable_results(
-    log: Logger,
     global_block_weights,
     global_block_energies,
     global_block_observables,
@@ -990,7 +970,7 @@ def _analyze_observable_results(
 
         # Calculate energy statistics
         e_afqmc, e_err_afqmc = stat_utils.blocking_analysis(
-            log, clean_weights, clean_energies, neql=0, printQ=True
+            clean_weights, clean_energies, neql=0, printQ=True
         )
 
         # Print formatted energy results
@@ -1007,7 +987,7 @@ def _analyze_observable_results(
 
         # Calculate observable statistics
         obs_afqmc, obs_err_afqmc = stat_utils.blocking_analysis(
-            log, clean_weights, clean_observables, neql=0, printQ=True
+            clean_weights, clean_observables, neql=0, printQ=True
         )
 
         # Print formatted observable results
@@ -1049,7 +1029,7 @@ def _analyze_observable_results(
 
             log.log(f"# RDM noise:")  # , flush=True)
             rdm_noise, rdm_noise_err = stat_utils.blocking_analysis(
-                log, clean_weights_rdm, errors_rdm1, neql=0, printQ=True
+                clean_weights_rdm, errors_rdm1, neql=0, printQ=True
             )
 
             # Save RDM1 data
@@ -1076,7 +1056,7 @@ def _analyze_observable_results(
 
             log.log(f"# 2RDM noise:") #, flush=True)
             rdm2_noise, rdm2_noise_err = stat_utils.blocking_analysis(
-                log, clean_weights_rdm, errors_rdm2, neql=0, printQ=True
+                clean_weights_rdm, errors_rdm2, neql=0, printQ=True
             )
 
             # Save RDM2 data
@@ -1176,9 +1156,6 @@ def fp_afqmc(
     size = comm.Get_size()
     rank = comm.Get_rank()
     seed = options.seed
-
-    # Logger
-    log = Logger(sys.stdout, options.verbose, rank)
 
     trial_rdm1 = trial.get_rdm1(wave_data)
     if "rdm1" not in wave_data:

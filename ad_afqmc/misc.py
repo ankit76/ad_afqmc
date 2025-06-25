@@ -9,6 +9,7 @@ import subprocess
 from typing import Dict
 
 import numpy
+from ad_afqmc.logger import log
 
 def get_node_mem():
     try:
@@ -16,7 +17,7 @@ def get_node_mem():
     except:
         return 0.0
 
-def get_numpy_blas_info(log) -> Dict[str, str]:
+def get_numpy_blas_info() -> Dict[str, str]:
     """Get useful numpy blas / lapack info."""
     info = {}
     try:
@@ -46,7 +47,7 @@ def get_numpy_blas_info(log) -> Dict[str, str]:
         }
     return info
 
-def get_git_info(log):
+def get_git_info():
     """Return git info.
 
     Adapted from:
@@ -98,7 +99,7 @@ def get_git_info(log):
     else:
         return None, None, []
 
-def print_env_info(log, sha1, branch, local_mods):
+def print_env_info(sha1, branch, local_mods):
     import ad_afqmc
 
     version = getattr(ad_afqmc, "__version__", "Unknown")
@@ -131,7 +132,7 @@ def print_env_info(log, sha1, branch, local_mods):
             log.log(f"# Using {lib:s} v{vers:s} from: {path:s}.")
             info[f"{lib:s}"] = {"version": vers, "path": path}
             if lib == "numpy":
-                info[f"{lib:s}"] = get_numpy_blas_info(log)
+                info[f"{lib:s}"] = get_numpy_blas_info()
             elif lib == "mpi4py":
                 mpicc = l.get_config().get("mpicc", "none")
                 log.log(f"# - mpicc: {mpicc:s}")

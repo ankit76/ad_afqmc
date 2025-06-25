@@ -14,6 +14,7 @@ from ad_afqmc.logger import Logger
 
 # from ad_afqmc.config import mpi_print as print
 from ad_afqmc.options import Options
+from ad_afqmc.logger import log
 
 tmpdir = "."
 
@@ -198,7 +199,6 @@ def apply_symmetry_mask(ham_data: Dict, options: Options) -> Dict:
 
 
 def set_trial(
-    log: Logger,
     options: Options,
     mo_coeff: jnp.ndarray,
     norb: int,
@@ -475,7 +475,6 @@ def load_mo_coefficients(tmp_dir: Optional[str] = None) -> jnp.ndarray:
 
 
 def setup_afqmc(
-    log: Logger,
     options: Optional[Options] = None,
     tmp_dir: Optional[str] = None,
 ) -> Tuple:
@@ -506,16 +505,9 @@ def setup_afqmc(
     ham, ham_data = set_ham(norb, h0, h1, chol, options.ene0)
     ham_data = apply_symmetry_mask(ham_data, options)
     mo_coeff = load_mo_coefficients(directory)
-    trial, wave_data = set_trial(log, options, mo_coeff, norb, nelec_sp, directory)
+    trial, wave_data = set_trial(options, mo_coeff, norb, nelec_sp, directory)
     prop = set_prop(options)
     sampler = set_sampler(options)
-
-    ## MPI to get rank value
-    # mpi_comm = config.setup_comm_no_print()
-    # rank = mpi_comm.COMM_WORLD.Get_rank()
-
-    ## Logger
-    # log = Logger(sys.stdout, options.verbose, rank)
 
     log.log_0(f"# norb: {norb}")
     log.log_0(f"# nelec: {nelec_sp}")
@@ -528,7 +520,6 @@ def setup_afqmc(
 
 
 def run_afqmc_calculation(
-    log: Logger,
     mpi_comm: Optional[Any] = None,
     tmp_dir: Optional[str] = None,
     custom_options: Optional[Options] = None,
@@ -553,7 +544,7 @@ def run_afqmc_calculation(
 
     # Prepare all components
     ham_data, ham, prop, trial, wave_data, sampler, observable, options = setup_afqmc(
-        log, options=custom_options, tmp_dir=directory
+        options=custom_options, tmp_dir=directory
     )
 
     assert trial is not None, "Trial wavefunction is None. Cannot run AFQMC."
@@ -616,12 +607,12 @@ def main() -> None:
     mpi_comm = config.setup_comm_no_print()
     rank = mpi_comm.COMM_WORLD.Get_rank()
 
-    # Logger
-    log = Logger(sys.stdout, args.verbose, rank)
+    log.rank = rank
+    log.verbose = args.verbose
 
-    mpi_comm = config.setup_comm(log)
-    config.setup_jax(log)
-    run_afqmc_calculation(log, mpi_comm=mpi_comm, tmp_dir=args.tmpdir)
+    mpi_comm = config.setup_comm()
+    config.setup_jax()
+    run_afqmc_calculation(mpi_comm=mpi_comm, tmp_dir=args.tmpdir)
 
 
 if __name__ == "__main__":

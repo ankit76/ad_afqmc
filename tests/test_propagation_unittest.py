@@ -5,10 +5,8 @@ from jax import random
 import unittest
 
 from ad_afqmc import config
-from ad_afqmc.logger import Logger
 
-log = Logger(sys.stdout, 3)
-config.setup_jax(log)
+config.setup_jax()
 from ad_afqmc import hamiltonian, propagation, wavefunctions
 
 seed = 102

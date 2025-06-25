@@ -12,7 +12,7 @@ from pyscf import __config__, ao2mo, df, dft, lib, mcscf, scf
 from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
 
-from ad_afqmc.logger import Logger
+from ad_afqmc.logger import log
 
 print = partial(print, flush=True)
 
@@ -71,8 +71,6 @@ def prep_afqmc(
         integrals (dict, optional): Dictionary of integrals in an orthonormal basis, {"h0": enuc, "h1": h1e, "h2": eri}.
         tmpdir (str, optional): Directory to write integrals and mo coefficients. Defaults to "./".
     """
-    log = Logger(sys.stdout, verbose)
-
     log.log("#\n# Preparing AFQMC calculation")
 
     if isinstance(mf_or_cc, (CCSD, UCCSD)):
@@ -987,8 +985,6 @@ def prep_afqmc_ghf_complex(
 ):
     import scipy.linalg as la
 
-    log = Logger(sys.stdout, verbose)
-
     norb = np.shape(gmf.mo_coeff)[-1] // 2  # type: ignore
     mo_coeff = gmf.mo_coeff
 
@@ -1049,7 +1045,6 @@ def prep_afqmc_spinor(
             "Please install socutils package to use spinor_hf module for AFQMC."
         )
 
-    log = Logger(sys.stdout, verbose)
     norb = n_ao
 
     # Chol ao to mo
