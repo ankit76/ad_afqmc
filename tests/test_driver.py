@@ -18,7 +18,7 @@ seed = 98
 # __test__ = False
 
 tmpdir = os.path.dirname(os.path.abspath(__file__))
-
+print(tmpdir)
 
 def test_energy_mpi():
     options = {

@@ -62,7 +62,7 @@ class Options:
 
         # AD mode options
         self.ad_mode = ad_mode
-        assert self.ad_mode in [None, "forward", "reverse", "2rdm"]
+        assert self.ad_mode in [None, "forward", "reverse", "2rdm", "nuc_grad"]
 
         # Wavefunction and algorithm options
         self.orbital_rotation = orbital_rotation
