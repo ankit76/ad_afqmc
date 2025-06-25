@@ -71,10 +71,11 @@ def prep_afqmc(
         integrals (dict, optional): Dictionary of integrals in an orthonormal basis, {"h0": enuc, "h1": h1e, "h2": eri}.
         tmpdir (str, optional): Directory to write integrals and mo coefficients. Defaults to "./".
     """
+    log.set_verbose(verbose)
     log.log("#\n# Preparing AFQMC calculation")
 
     if isinstance(mf_or_cc, (CCSD, UCCSD)):
-        mf, cc, norb_frozen = read_pyscf_ccsd(log, mf_or_cc, tmpdir)
+        mf, cc, norb_frozen = read_pyscf_ccsd(mf_or_cc, tmpdir)
     else:
         mf = mf_or_cc
 
@@ -88,7 +89,7 @@ def prep_afqmc(
 
     # calculate cholesky integrals
     h1e, chol, nelec, enuc, nbasis, nchol = compute_cholesky_integrals(
-        log, mol, mf, basis_coeff, integrals, norb_frozen, chol_cut
+        mol, mf, basis_coeff, integrals, norb_frozen, chol_cut
     )
 
     log.log("# Finished calculating Cholesky integrals\n#")
@@ -231,7 +232,7 @@ def solveLS_twoSided(T, X1, X2):
 
 
 # cholesky generation functions are from pauxy
-def generate_integrals(log, mol, hcore, X, chol_cut=1e-5, DFbas=None):
+def generate_integrals(mol, hcore, X, chol_cut=1e-5, DFbas=None):
     # Unpack SCF data.
     # Step 1. Rotate core Hamiltonian to orthogonal basis.
     log.log(" # Transforming hcore and eri to ortho AO basis.")
@@ -247,7 +248,7 @@ def generate_integrals(log, mol, hcore, X, chol_cut=1e-5, DFbas=None):
         # nbasis = h1e.shape[-1]
         # Step 2. Genrate Cholesky decomposed ERIs in non-orthogonal AO basis.
         log.log(" # Performing modified Cholesky decomposition on ERI tensor.")
-        chol_vecs = chunked_cholesky(log, mol, max_error=chol_cut)
+        chol_vecs = chunked_cholesky(mol, max_error=chol_cut)
 
     log.log(" # Orthogonalising Cholesky vectors.")
     start = time.time()
@@ -283,7 +284,7 @@ def ao2mo_chol_copy(eri, C):
     return eri_copy
 
 
-def chunked_cholesky(log, mol, max_error=1e-6, cmax=10):
+def chunked_cholesky(mol, max_error=1e-6, cmax=10):
     """Modified cholesky decomposition from pyscf eris.
 
     See, e.g. [Motta17]_
@@ -811,7 +812,7 @@ def parity(d0: np.ndarray, cre: Sequence, des: Sequence) -> float:
     return float(parity)
 
 
-def read_pyscf_ccsd(log, mf_or_cc, tmpdir):
+def read_pyscf_ccsd(mf_or_cc, tmpdir):
     # raise warning about mpi
     log.warn(
         "# Note that PySCF CC module uses MPI. This could potentially lead to MPI initialization issues in some cases."
@@ -851,7 +852,7 @@ def read_pyscf_ccsd(log, mf_or_cc, tmpdir):
 
 
 def compute_cholesky_integrals(
-    log, mol, mf, basis_coeff, integrals, norb_frozen, chol_cut
+    mol, mf, basis_coeff, integrals, norb_frozen, chol_cut
 ):
     log.log("# Calculating Cholesky integrals")
     assert basis_coeff.dtype == "float", "Only implemented for real-valued MOs"
@@ -885,7 +886,6 @@ def compute_cholesky_integrals(
         if getattr(mf, "with_df", None) is not None:
             DFbas = mf.with_df.auxmol.basis  # type: ignore
         h1e, chol, nelec, enuc = generate_integrals(
-            log,
             mol,
             mf.get_hcore(),
             basis_coeff,
@@ -984,12 +984,13 @@ def prep_afqmc_ghf_complex(
     mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5, verbose: int = 0
 ):
     import scipy.linalg as la
+    log.set_verbose(verbose)
 
     norb = np.shape(gmf.mo_coeff)[-1] // 2  # type: ignore
     mo_coeff = gmf.mo_coeff
 
     # Chol ao to mo
-    chol_vecs = chunked_cholesky(log, mol, max_error=chol_cut)
+    chol_vecs = chunked_cholesky(mol, max_error=chol_cut)
     nchol = chol_vecs.shape[0]
     chol = np.zeros((nchol, 2 * norb, 2 * norb), dtype=complex)
     for i in range(nchol):
@@ -1037,6 +1038,7 @@ def prep_afqmc_spinor(
     mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5, verbose: int = 0
 ):
     import scipy.linalg as la
+    log.set_verbose(verbose)
 
     try:
         from socutils.scf import spinor_hf  # type: ignore
@@ -1048,7 +1050,7 @@ def prep_afqmc_spinor(
     norb = n_ao
 
     # Chol ao to mo
-    chol_vecs = chunked_cholesky(log, mol, max_error=chol_cut)
+    chol_vecs = chunked_cholesky(mol, max_error=chol_cut)
     nchol = chol_vecs.shape[0]
     chol = np.zeros((nchol, norb, norb), dtype=complex)
     for i in range(nchol):

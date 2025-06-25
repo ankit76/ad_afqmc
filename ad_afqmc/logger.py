@@ -5,7 +5,28 @@ class Logger(lib.logger.Logger):
     def __init__(self, stdout = sys.stdout, verbose: int = 3, rank: int = 0):
         super().__init__(stdout, verbose)
         self.rank = rank
+    
+    # Setters
+    def set_stdout(self, stdout):
+        self.stdout = stdout
 
+    def set_verbose(self, verbose):
+        self.verbose = verbose
+
+    def set_rank(self, rank):
+        self.rank = rank
+
+    # Getters
+    def get_stdout(self):
+        return self.stdout
+
+    def get_verbose(self):
+        return self.verbose
+
+    def get_rank(self):
+        return self.rank
+
+    # Print
     def flush_0(self, msg, *args):
         if self.rank == 0:
             lib.logger.flush(self, msg, *args)

@@ -607,8 +607,8 @@ def main() -> None:
     mpi_comm = config.setup_comm_no_print()
     rank = mpi_comm.COMM_WORLD.Get_rank()
 
-    log.rank = rank
-    log.verbose = args.verbose
+    log.set_rank(rank)
+    log.set_verbose(args.verbose)
 
     mpi_comm = config.setup_comm()
     config.setup_jax()

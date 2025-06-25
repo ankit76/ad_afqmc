@@ -42,7 +42,7 @@ def run_afqmc(
         options = Options.from_dict(options)
 
     # Logger
-    log.verbose = options.verbose
+    log.set_verbose(options.verbose)
 
     if tmpdir is None:
         try:
