@@ -115,12 +115,16 @@ class sampler:
             x, y, ham_data, prop, trial, wave_data
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
-        energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        # energy_samples = jnp.where(jnp.abs(energy_samples - ham_data['ene0']) > jnp.sqrt(2./propagator.dt), ham_data['ene0'],     energy_samples)
-        block_energy = jnp.sum(energy_samples * prop_data["overlaps"]) / jnp.sum(
-            prop_data["overlaps"]
+
+        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["overlaps"] = (
+            trial.calc_overlap(prop_data["walkers"], wave_data) 
         )
-        block_weight = jnp.sum(prop_data["overlaps"])
+        energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+        block_energy = jnp.sum(energy_samples * prop_data["overlaps"] * prop_data["weights"]) / jnp.sum(
+            prop_data["overlaps"] * prop_data["weights"]
+        )
+        block_weight = jnp.sum(prop_data["overlaps"] * prop_data["weights"])
         return prop_data, (prop_data, block_energy, block_weight)
 
     @partial(jit, static_argnums=(0, 4, 5))

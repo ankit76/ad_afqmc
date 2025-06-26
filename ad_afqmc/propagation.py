@@ -231,6 +231,8 @@ class propagator_restricted(propagator):
         prop_data["e_estimate"] = e_estimate
         prop_data["pop_control_ene_shift"] = e_estimate
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["normed_overlaps"] = prop_data["overlaps"]
+        prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
         return prop_data
 
     @partial(jit, static_argnums=(0,))
@@ -257,6 +259,34 @@ class propagator_restricted(propagator):
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
         prop_data["walkers"], _ = linalg_utils.qr_vmap_restricted(prop_data["walkers"])
         return prop_data
+
+    @partial(jit, static_argnums=(0, 1))
+    def propagate_free(
+        self,
+        trial: wave_function,
+        ham_data,
+        prop_data: dict,
+        fields: jax.Array,
+        wave_data: Sequence,
+    ) -> dict:
+        shift_term = jnp.einsum("wg,g->w", fields, ham_data["mf_shifts_fp"])
+        constants = jnp.exp(-jnp.sqrt(self.dt) * shift_term) * jnp.exp(self.dt * ham_data["h0_prop_fp"])
+
+        prop_data["walkers"] = self._apply_trotprop(
+            ham_data, prop_data["walkers"], fields
+        )
+
+        #prop_data["walkers"] = constants.reshape(-1,1) * prop_data["walkers"]
+        prop_data["walkers"], norms = linalg_utils.qr_vmap_restricted(
+            prop_data["walkers"]
+        )
+
+        prop_data["weights"] *= (norms * norms * constants).real
+        prop_data["overlaps"] = (
+            trial.calc_overlap(prop_data["walkers"], wave_data) 
+        )
+        return prop_data
+
 
     @partial(jit, static_argnums=(0,))
     def _apply_trotprop(
@@ -308,10 +338,8 @@ class propagator_restricted(propagator):
         ham_data["h0_prop"] = (
             -ham_data["h0"] - jnp.sum(ham_data["mf_shifts"] ** 2) / 2.0
         )
-        ham_data["h0_prop_fp"] = [
-            (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0],
-            (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0],
-        ]
+        ham_data["h0_prop_fp"] = (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0]
+        
         v0 = 0.5 * jnp.einsum(
             "gik,gjk->ij",
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),

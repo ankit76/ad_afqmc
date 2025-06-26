@@ -112,6 +112,7 @@ class AFQMC:
         self.symmetry = False
         self.save_walkers = False
         self.dR = 1e-5  # displacement used in finite difference to calculate integral gradients for ad_mode = nuc_grad
+        self.free_projection = False
         if isinstance(mf_or_cc, scf.uhf.UHF) or isinstance(mf_or_cc, scf.rohf.ROHF):
             self.trial = "uhf"
         elif isinstance(mf_or_cc, scf.rhf.RHF):
@@ -172,6 +173,14 @@ class AFQMC:
             with open("tmpdir.txt", "w") as f:
                 f.write(self.tmpdir)
             return self.tmpdir
+        elif options["free_projection"]:
+            #options=None, script=None, mpi_prefix=None, nproc=None
+            return run_afqmc.run_afqmc_fp(
+                options = options, 
+                mpi_prefix=self.mpi_prefix, 
+                nproc=self.nproc,
+                tmpdir=self.tmpdir
+            )
         else:
             return run_afqmc.run_afqmc(
                 mpi_prefix=self.mpi_prefix, nproc=self.nproc, tmpdir=self.tmpdir
