@@ -276,12 +276,12 @@ class propagator_restricted(propagator):
             ham_data, prop_data["walkers"], fields
         )
 
-        #prop_data["walkers"] = constants.reshape(-1,1) * prop_data["walkers"]
+        prop_data["walkers"] = constants.reshape(-1,1,1) * prop_data["walkers"]
         prop_data["walkers"], norms = linalg_utils.qr_vmap_restricted(
             prop_data["walkers"]
         )
 
-        prop_data["weights"] *= (norms * norms * constants).real
+        prop_data["weights"] *= (norms * norms).real
         prop_data["overlaps"] = (
             trial.calc_overlap(prop_data["walkers"], wave_data) 
         )
@@ -494,12 +494,11 @@ class propagator_unrestricted(propagator_restricted):
         )
         prop_data["walkers"] = self._multiply_constant(prop_data["walkers"], constants)
         prop_data, norms = self._orthogonalize_walkers(prop_data)
-        prop_data["norms"] *= norms[0] * norms[1]
+
+        prop_data["weights"] *= (norms[0] * norms[1]).real
         prop_data["overlaps"] = (
-            trial.calc_overlap(prop_data["walkers"], wave_data) * prop_data["norms"]
+            trial.calc_overlap(prop_data["walkers"], wave_data) 
         )
-        normed_walkers, _ = linalg_utils.qr_vmap_unrestricted(prop_data["walkers"])
-        prop_data["normed_overlaps"] = trial.calc_overlap(normed_walkers, wave_data)
         return prop_data
 
     @partial(jit, static_argnums=(0, 2))

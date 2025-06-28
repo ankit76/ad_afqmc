@@ -1183,6 +1183,7 @@ def fp_afqmc(
             comm.Barrier()
             if rank == 0:
                 print(f"{n:5d}: {total_energy}")
-        np.savetxt(
-            "samples_raw.dat", np.stack((global_block_weights, global_block_energies)).T
-        )
+    times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks)
+    np.savetxt(
+        "samples_raw.dat", np.stack((times, total_energy.real)).T
+    )
