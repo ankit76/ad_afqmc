@@ -1159,8 +1159,8 @@ def fp_afqmc(
     global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
     global_block_energies = np.zeros(size * sampler.n_ene_blocks) + 0.0j
 
-    total_energy = np.zeros(sampler.n_blocks) + 0.0j
-    total_weight = np.zeros(sampler.n_blocks) + 0.0j
+    total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks)) + 0.0j
+    total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks)) + 0.0j
     for n in range(
         sampler.n_ene_blocks
     ):  # hacking this variable for number of trajectories
@@ -1174,8 +1174,11 @@ def fp_afqmc(
         )
         global_block_weights[n] = weights[0]
         global_block_energies[n] = energy_samples[0]
-        total_weight += weights
-        total_energy += weights * (energy_samples - total_energy) / total_weight
+
+        total_energy[n] = energy_samples
+        total_weight[n] = weights
+        # total_weight += weights
+        # total_energy += weights * (energy_samples - total_energy) / total_weight
         if options["save_walkers"] == True:
             if n > 0:
                 with open(f"prop_data_{rank}.bin", "ab") as f:
@@ -1184,11 +1187,14 @@ def fp_afqmc(
                 with open(f"prop_data_{rank}.bin", "wb") as f:
                     pickle.dump(prop_data_tr, f)
 
-        if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
-            comm.Barrier()
-            if rank == 0:
-                print(f"{n:5d}: {total_energy}")
-    times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks)
-    np.savetxt(
-        "samples_raw.dat", np.stack((times, total_energy.real)).T
-    )
+        #if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
+        comm.Barrier()
+        if rank == 0:
+            print(f"{n:5d}: {total_energy[n]}")
+
+        times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks)
+        mean_energies = np.sum(total_energy[:n+1] * total_weight[:n+1], axis=0) / np.sum(total_weight[:n+1], axis=0)
+        stds = np.std(total_energy[:n+1], axis=0) / (n)**0.5
+        np.savetxt(
+            "samples_raw.dat", np.stack((times, mean_energies.real, stds.real)).T
+        )
