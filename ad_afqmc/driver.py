@@ -68,12 +68,13 @@ def afqmc_energy(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
+    Seed = seed + rank
+    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
-    prop_data["key"] = random.PRNGKey(seed + rank)
+    #prop_data["key"] = random.PRNGKey(seed + rank)
 
     # Equilibration phase
     comm.Barrier()
@@ -233,12 +234,13 @@ def afqmc_observable(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
+    Seed = seed + rank
+    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
-    prop_data["key"] = random.PRNGKey(seed + rank)
+    #prop_data["key"] = random.PRNGKey(seed + rank)
 
     trial_observable = np.sum(trial_rdm1 * observable_op)
 
@@ -1123,6 +1125,8 @@ def fp_afqmc(
     propagator: propagation.propagator,
     trial: wavefunctions.wave_function,
     wave_data: dict,
+    trial_ket: wavefunctions.wave_function,
+    wave_data_ket: dict,
     sampler: sampling.sampler,
     observable,
     options: dict,
@@ -1142,8 +1146,9 @@ def fp_afqmc(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
-    prop_data["key"] = random.PRNGKey(seed + rank)
+    Seed = seed + rank
+    prop_data = propagator.init_prop_data(trial_ket, wave_data_ket, ham_data, Seed, init_walkers, trial, wave_data)
+    #prop_data["key"] = random.PRNGKey(seed + rank)
 
     comm.Barrier()
     init_time = time.time() - init

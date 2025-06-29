@@ -1,7 +1,7 @@
 import os
 import pickle
 from functools import partial
-from typing import Union
+from typing import Union, Optional
 
 import numpy as np
 from pyscf import __config__, scf
@@ -81,9 +81,11 @@ class AFQMC:
     """
 
     def __init__(
-        self, mf_or_cc: Union[scf.uhf.UHF, scf.rhf.RHF, scf.rohf.ROHF, CCSD, UCCSD]
+        self, mf_or_cc: Union[scf.uhf.UHF, scf.rhf.RHF, scf.rohf.ROHF, CCSD, UCCSD],
+        mf_or_cc_ket: Optional[Union[scf.uhf.UHF, scf.rhf.RHF, scf.rohf.ROHF, CCSD, UCCSD]] = None
     ):
         self.mf_or_cc = mf_or_cc
+        self.mf_or_cc_ket = mf_or_cc_ket if mf_or_cc_ket is not None else mf_or_cc
         self.basis_coeff = None
         frozen = getattr(mf_or_cc, "frozen", 0)
         if isinstance(frozen, int):
@@ -123,6 +125,18 @@ class AFQMC:
             self.trial = "cisd"
         else:
             self.trial = None
+
+        if isinstance(mf_or_cc_ket, scf.uhf.UHF) or isinstance(mf_or_cc_ket, scf.rohf.ROHF):
+            self.trial_ket = "uhf"
+        elif isinstance(mf_or_cc_ket, scf.rhf.RHF):
+            self.trial_ket = "rhf"
+        elif isinstance(mf_or_cc_ket, UCCSD):
+            self.trial_ket = "uccsd"
+        elif isinstance(mf_or_cc_ket, CCSD):
+            self.trial_ket = "ccsd"
+        else:
+            self.trial_ket = self.trial
+
         self.ene0 = 0.0
         self.n_batch = 1
         self.vhs_mixed_precision = False
@@ -174,6 +188,8 @@ class AFQMC:
                 f.write(self.tmpdir)
             return self.tmpdir
         elif options["free_projection"]:
+            if (self.mf_or_cc_ket != self.mf_or_cc):
+                pyscf_interface.read_pyscf_ccsd(self.mf_or_cc_ket, options["tmpdir"])
             #options=None, script=None, mpi_prefix=None, nproc=None
             return run_afqmc.run_afqmc_fp(
                 options = options, 

@@ -118,7 +118,7 @@ class sampler:
 
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
         prop_data["overlaps"] = (
-            trial.calc_overlap(prop_data["walkers"], wave_data) 
+           trial.calc_overlap(prop_data["walkers"], wave_data) 
         )
         energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
         block_energy = jnp.sum(energy_samples * prop_data["overlaps"] * prop_data["weights"]) / jnp.sum(

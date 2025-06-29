@@ -848,7 +848,7 @@ def read_pyscf_ccsd(mf_or_cc, tmpdir):
         ci2 = cc.t2 + np.einsum("ia,jb->ijab", np.array(cc.t1), np.array(cc.t1))
         ci2 = ci2.transpose(0, 2, 1, 3)
         ci1 = np.array(cc.t1)
-        np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2)
+        np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2, t1 = cc.t1, t2 = cc.t2)
 
     return mf, cc, norb_frozen
 

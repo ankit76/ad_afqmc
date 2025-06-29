@@ -116,12 +116,12 @@ def run_afqmc(
 
 
 def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None, tmpdir=None):
-    ham_data, ham, prop, trial, wave_data, sampler, observable, options = (
+    ham_data, ham, prop, trial, wave_data, trial_ket, wave_data_ket, sampler, observable, options = (
         launch_script.setup_afqmc(options, options["tmpdir"])
     )
     config.setup_jax()
     comm = config.setup_comm()
 
     driver.fp_afqmc(
-        ham_data, ham, prop, trial, wave_data, sampler, observable, options, comm
+        ham_data, ham, prop, trial, wave_data, trial_ket, wave_data_ket, sampler, observable, options, comm
     )
