@@ -1168,8 +1168,8 @@ def fp_afqmc(
         ##initialize a new set of determinants every block
         ##if the ket is CCSD that is being sampled then good to sample it many times
         if (n != 0):
-            prop_data["walkers"], prop_data = trial.get_init_walkers(
-                wave_data, propagator.n_walkers, "restricted", prop_data
+            prop_data["walkers"], prop_data = trial_ket.get_init_walkers(
+                wave_data_ket, propagator.n_walkers, "restricted", prop_data
             )
 
             energy_samples = jnp.real(
