@@ -25,7 +25,7 @@ af.n_prop_steps= 1  # number of dt long steps in a propagation block
 af.n_blocks= 50  # number of propagation and measurement blocks
 af.n_ene_blocks= 10  # number of trajectories
 af.n_walkers= 1000
-af.walker_type= "rhf"
+af.walker_type= "uhf"
 af.ene0= mf.e_tot
 af.seed = 5
 af.kernel()
