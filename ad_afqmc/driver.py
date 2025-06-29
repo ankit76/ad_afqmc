@@ -1156,14 +1156,31 @@ def fp_afqmc(
     print("#  Iter        Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
-    global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
-    global_block_energies = np.zeros(size * sampler.n_ene_blocks) + 0.0j
+    # global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
+    # global_block_energies = np.zeros(size * sampler.n_ene_blocks) + 0.0j
 
-    total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks)) + 0.0j
-    total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks)) + 0.0j
+    total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
+    total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
     for n in range(
         sampler.n_ene_blocks
     ):  # hacking this variable for number of trajectories
+
+        ##initialize a new set of determinants every block
+        ##if the ket is CCSD that is being sampled then good to sample it many times
+        if (n != 0):
+            prop_data["walkers"], prop_data = trial.get_init_walkers(
+                wave_data, propagator.n_walkers, "restricted", prop_data
+            )
+
+            energy_samples = jnp.real(
+                trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+            )
+            e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
+            prop_data["e_estimate"] = e_estimate
+
+        total_energy[n,0] = prop_data["e_estimate"]
+        total_weight[n,0] = jnp.sum(prop_data["weights"])
+
         (
             prop_data_tr,
             energy_samples,
@@ -1172,11 +1189,11 @@ def fp_afqmc(
         ) = sampler.propagate_free(
             ham, ham_data, propagator, prop_data, trial, wave_data
         )
-        global_block_weights[n] = weights[0]
-        global_block_energies[n] = energy_samples[0]
+        # global_block_weights[n] = weights[0]
+        # global_block_energies[n] = energy_samples[0]
 
-        total_energy[n] = energy_samples
-        total_weight[n] = weights
+        total_energy[n,1:] = energy_samples
+        total_weight[n,1:] = weights
         # total_weight += weights
         # total_energy += weights * (energy_samples - total_energy) / total_weight
         if options["save_walkers"] == True:
@@ -1192,9 +1209,9 @@ def fp_afqmc(
         if rank == 0:
             print(f"{n:5d}: {total_energy[n]}")
 
-        times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks)
+        times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks+1)
         mean_energies = np.sum(total_energy[:n+1] * total_weight[:n+1], axis=0) / np.sum(total_weight[:n+1], axis=0)
-        stds = np.std(total_energy[:n+1], axis=0) / (n)**0.5
+        error = np.std(total_energy[:n+1], axis=0) / (n)**0.5
         np.savetxt(
-            "samples_raw.dat", np.stack((times, mean_energies.real, stds.real)).T
+            "samples_raw.dat", np.stack((times, mean_energies.real, error.real)).T
         )
