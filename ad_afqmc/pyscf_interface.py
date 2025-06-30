@@ -145,9 +145,9 @@ def getCollocationMatrices(
 
     coords = grids.coords
     weights = grids.weights
-    ao = mol.eval_gto("GTOval_sph", coords)  #aos on coords
-    X1 = np.einsum("ri,r->ri", (ao @ mo1), abs(weights)** alpha)  #mos on coords
-    X2 = np.einsum("ri,r->ri", (ao @ mo2), abs(weights)** alpha)  #mos on coords
+    ao = mol.eval_gto("GTOval_sph", coords)  ##aos on coords
+    X1 = np.einsum("ri,r->ri", (ao @ mo1), abs(weights)** alpha)  ##mos on coords
+    X2 = np.einsum("ri,r->ri", (ao @ mo2), abs(weights)** alpha)  ##mos on coords
 
     P = doISDF(X1, X2, thc_eps)
     return X1[P], X2[P]
