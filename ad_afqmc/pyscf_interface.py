@@ -145,9 +145,9 @@ def getCollocationMatrices(
 
     coords = grids.coords
     weights = grids.weights
-    ao = mol.eval_gto("GTOval_sph", coords)  # aos on coords
-    X1 = np.einsum("ri,r->ri", (ao @ mo1), abs(weights)** alpha)  # mos on coords
-    X2 = np.einsum("ri,r->ri", (ao @ mo2), abs(weights)** alpha)  # mos on coords
+    ao = mol.eval_gto("GTOval_sph", coords)  #aos on coords
+    X1 = np.einsum("ri,r->ri", (ao @ mo1), abs(weights)** alpha)  #mos on coords
+    X2 = np.einsum("ri,r->ri", (ao @ mo2), abs(weights)** alpha)  #mos on coords
 
     P = doISDF(X1, X2, thc_eps)
     return X1[P], X2[P]
@@ -221,7 +221,7 @@ def solveLS_twoSided(T, X1, X2):
     E = jnp.einsum("Pcd, cdQ->PQ", E, X12).T
     V = scipy.linalg.cho_solve((L, True), E)
 
-    #symmetrize it
+    ##symmetrize it
     V = 0.5 * (V + V.T)
 
     return V
@@ -328,7 +328,7 @@ def chunked_cholesky(mol, max_error=1e-6, verbose=False, cmax=10):
         shls = (i, i + 1, 0, mol.nbas, i, i + 1, 0, mol.nbas)
         buf = mol.intor("int2e_sph", shls_slice=shls)
         di, dk, dj, dl = buf.shape
-        diag[ndiag: ndiag + di * nao] = buf.reshape(di * nao, di * nao).diagonal()
+        diag[ndiag : ndiag + di * nao] = buf.reshape(di * nao, di * nao).diagonal()
         ndiag += di * nao
     nu = np.argmax(diag)
     delta_max = diag[nu]
