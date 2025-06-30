@@ -1149,7 +1149,7 @@ def fp_afqmc(
     Seed = seed + rank
     prop_data = propagator.init_prop_data(trial_ket, wave_data_ket, ham_data, Seed, init_walkers, trial, wave_data)
     #prop_data["key"] = random.PRNGKey(seed + rank)
-
+    
     comm.Barrier()
     init_time = time.time() - init
     print("#\n# Sampling sweeps:")
@@ -1171,7 +1171,7 @@ def fp_afqmc(
         ##if the ket is CCSD that is being sampled then good to sample it many times
         if (n != 0):
             prop_data["walkers"], prop_data = trial_ket.get_init_walkers(
-                wave_data_ket, propagator.n_walkers, "restricted", prop_data
+                wave_data_ket, propagator.n_walkers, "unrestricted" if isinstance(prop_data["walkers"], list) else "restricted", prop_data
             )
 
             energy_samples = jnp.real(
@@ -1216,5 +1216,8 @@ def fp_afqmc(
         error = np.std(total_energy[:n+1], axis=0) / (n)**0.5
         np.savetxt(
             "samples_raw.dat", np.stack((times, mean_energies.real, error.real)).T
+        )
+        np.savetxt(
+            "RawEnergies.dat", total_energy[:n+1].T.real
         )
         print(f"{n:5d}: {mean_energies.real}")
