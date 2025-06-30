@@ -1,9 +1,5 @@
-import pickle
-
-import numpy as np
 from pyscf import fci, gto, scf
-
-from ad_afqmc import pyscf_interface, run_afqmc, wavefunctions
+from ad_afqmc import pyscf_interface, run_afqmc
 
 r = 1.6  # 2.0
 nH = 7
