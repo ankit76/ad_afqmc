@@ -1,9 +1,6 @@
-import pickle
-
-import numpy as np
 from pyscf import fci, gto, scf
 
-from ad_afqmc import pyscf_interface, run_afqmc, wavefunctions
+from ad_afqmc import pyscf_interface, run_afqmc
 
 r = 1.6  # 2.0
 nH = 6
@@ -18,25 +15,11 @@ ci = fci.FCI(mf)
 e_fci, _ = ci.kernel()
 print("FCI energy: ", e_fci)
 
-trial = wavefunctions.multislater(mol.nao, mol.nelec, max_excitation=6)
 state_dict = pyscf_interface.get_fci_state(ci, ndets=10)
-Acre, Ades, Bcre, Bdes, coeff, ref_det = pyscf_interface.get_excitations(
-    state=state_dict, max_excitation=6, ndets=10
-)  # this function reads the Dice dets.bin file if state is not provided
-wave_data = {
-    "Acre": Acre,
-    "Ades": Ades,
-    "Bcre": Bcre,
-    "Bdes": Bdes,
-    "coeff": coeff,
-    "ref_det": ref_det,
-    "orbital_rotation": np.eye(mol.nao),
-}
-# write wavefunction to disk
-with open("trial.pkl", "wb") as f:
-    pickle.dump([trial, wave_data], f)
 
-pyscf_interface.prep_afqmc(mf)
+pyscf_interface.prep_afqmc_multislater(
+    mf, state_dict, max_excitation=6, ndets=10)
+
 options = {
     "dt": 0.005,
     "n_eql": 5,
