@@ -116,7 +116,7 @@ class sampler:
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
         energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        # energy_samples = jnp.where(jnp.abs(energy_samples - ham_data['ene0']) > jnp.sqrt(2./propagator.dt), ham_data['ene0'],     energy_samples)
+        energy_samples = jnp.where(jnp.abs(energy_samples - ham_data['ene0']) > jnp.sqrt(2./propagator.dt), ham_data['ene0'],     energy_samples)
         block_energy = jnp.sum(energy_samples * prop_data["overlaps"]) / jnp.sum(
             prop_data["overlaps"]
         )
