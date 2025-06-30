@@ -188,7 +188,7 @@ class AFQMC:
                 f.write(self.tmpdir)
             return self.tmpdir
         elif options["free_projection"]:
-            if (self.mf_or_cc_ket != self.mf_or_cc):
+            if (self.mf_or_cc_ket != self.mf_or_cc) and (isinstance(self.mf_or_cc_ket, UCCSD) or isinstance(self.mf_or_cc_ket, CCSD)):
                 pyscf_interface.read_pyscf_ccsd(self.mf_or_cc_ket, options["tmpdir"])
             #options=None, script=None, mpi_prefix=None, nproc=None
             return run_afqmc.run_afqmc_fp(
