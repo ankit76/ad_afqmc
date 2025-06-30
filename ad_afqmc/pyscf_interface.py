@@ -913,48 +913,9 @@ def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
     if isinstance(mf, (scf.uhf.UHF, scf.rohf.ROHF)):
         uhfCoeffs = np.empty((nbasis, 2 * nbasis))
         if isinstance(mf, scf.uhf.UHF):
-            q, r = np.linalg.qr(
-                basis_coeff[:, norb_frozen:]
-                .T.dot(overlap)
-                .dot(mf.mo_coeff[0][:, norb_frozen:])
-            )
-            sgn = np.sign(r.diagonal())
-            q = np.einsum("ij,j->ij", q, sgn)
-            # q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[0][:, norb_frozen:])
-            # print("max err a", np.max(abs(q-q2)))
-            # q, _ = np.linalg.qr(
-            #    basis_coeff[:, norb_frozen:]
-            #    .T.dot(overlap)
-            #    .dot(mf.mo_coeff[0][:, norb_frozen:])
-            # )
-            uhfCoeffs[:, :nbasis] = q
-            q, r = np.linalg.qr(
-                basis_coeff[:, norb_frozen:]
-                .T.dot(overlap)
-                .dot(mf.mo_coeff[1][:, norb_frozen:])
-            )
-            sgn = np.sign(r.diagonal())
-            q = np.einsum("ij,j->ij", q, sgn)
-            # q2 = basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mf.mo_coeff[1][:, norb_frozen:])
-            # print("max err b", np.max(abs(q-q2)))
-            # import pdb
-            # pdb.set_trace()
-            # q, _ = np.linalg.qr(
-            #     basis_coeff[:, norb_frozen:]
-            #     .T.dot(overlap)
-            #     .dot(mf.mo_coeff[1][:, norb_frozen:])
-            # )
-            uhfCoeffs[:, nbasis:] = q
+            uhfCoeffs = construct_uhf_coeffs_from_uhf(mf.mo_coeff, overlap, norb_frozen, nbasis)
         else:
-            q, r = np.linalg.qr(
-                basis_coeff[:, norb_frozen:]
-                .T.dot(overlap)
-                .dot(mf.mo_coeff[:, norb_frozen:])
-            )
-            sgn = np.sign(r.diagonal())
-            q = np.einsum("ij,j->ij", q, sgn)
-            uhfCoeffs[:, :nbasis] = q
-            uhfCoeffs[:, nbasis:] = q
+            uhfCoeffs = construct_uhf_coeffs_from_rhf(mf.mo_coeff, overlap, norb_frozen, nbasis)
 
         trial_coeffs[0] = uhfCoeffs[:, :nbasis]
         trial_coeffs[1] = uhfCoeffs[:, nbasis:]
@@ -962,19 +923,61 @@ def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
         np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
 
     elif isinstance(mf, scf.rhf.RHF):
-        q, r = np.linalg.qr(
-            basis_coeff[:, norb_frozen:]
-            .T.dot(overlap)
-            .dot(mf.mo_coeff[:, norb_frozen:])
-        )
-        sgn = np.sign(r.diagonal())
-        q = np.einsum("ij,j->ij", q, sgn)
-        trial_coeffs[0] = q
-        trial_coeffs[1] = q
+        uhfCoeffs = construct_uhf_coeffs_from_rhf(mf.mo_coeff, overlap, norb_frozen, nbasis)
+        trial_coeffs[0] = uhfCoeffs[:,:nbasis]
+        trial_coeffs[1] = uhfCoeffs[:,nbasis:]
+        # q, r = np.linalg.qr(
+        #     basis_coeff[:, norb_frozen:]
+        #     .T.dot(overlap)
+        #     .dot(mf.mo_coeff[:, norb_frozen:])
+        # )
+        # sgn = np.sign(r.diagonal())
+        # q = np.einsum("ij,j->ij", q, sgn)
+        # trial_coeffs[0] = q
+        # trial_coeffs[1] = q
         np.savez(tmpdir + "/mo_coeff.npz", mo_coeff=trial_coeffs)
 
     return trial_coeffs
 
+
+def construct_uhf_coeffs_from_uhf(mo_coeff, overlap, norb_frozen, nbasis):
+    # Constructs UHF orbital coefficients relative to the 
+    # alpha basis (mo_coeff[0]) 
+    q, r = np.linalg.qr(
+        basis_coeff[:, norb_frozen:]
+        .T.dot(overlap)
+        .dot(mo_coeff[0][:, norb_frozen:])
+    )
+    sgn = np.sign(r.diagonal())
+    q = np.einsum("ij,j->ij", q, sgn)
+
+    uhfCoeffs[:, :nbasis] = q
+    q, r = np.linalg.qr(
+        basis_coeff[:, norb_frozen:]
+        .T.dot(overlap)
+        .dot(mo_coeff[1][:, norb_frozen:])
+    )
+    sgn = np.sign(r.diagonal())
+    q = np.einsum("ij,j->ij", q, sgn)
+
+    uhfCoeffs[:, nbasis:] = q
+
+    return uhfCoeffs
+
+def construct_uhf_coeffs_from_rhf(mo_coeff, overlap, norb_frozen, nbasis):
+    # Constructs UHF orbital coefficients (alpha = beta) relative to the 
+    # restricted basis
+    q, r = np.linalg.qr(
+        basis_coeff[:, norb_frozen:]
+        .T.dot(overlap)
+        .dot(mo_coeff[:, norb_frozen:])
+    )
+    sgn = np.sign(r.diagonal())
+    q = np.einsum("ij,j->ij", q, sgn)
+    uhfCoeffs[:, :nbasis] = q
+    uhfCoeffs[:, nbasis:] = q
+
+    return uhfCoeffs
 
 def prep_afqmc_ghf_complex(mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5):
     import scipy.linalg as la
