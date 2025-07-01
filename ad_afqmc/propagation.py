@@ -295,6 +295,8 @@ class propagator_restricted(propagator):
         )
 
         prop_data["weights"] *= (norms * norms).real
+        prop_data = self.stochastic_reconfiguration_local(prop_data)
+
         prop_data["overlaps"] = (
             trial.calc_overlap(prop_data["walkers"], wave_data) 
         )
@@ -518,6 +520,8 @@ class propagator_unrestricted(propagator_restricted):
         prop_data, norms = self._orthogonalize_walkers(prop_data)
 
         prop_data["weights"] *= (norms[0] * norms[1]).real
+        prop_data = self.stochastic_reconfiguration_local(prop_data)
+
         prop_data["overlaps"] = (
             trial.calc_overlap(prop_data["walkers"], wave_data) 
         )
