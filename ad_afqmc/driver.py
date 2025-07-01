@@ -1161,6 +1161,8 @@ def fp_afqmc(
 
     total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
     total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
+    total_sign   = np.ones((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
+
     avg_energy = np.zeros((sampler.n_blocks)) + 0.0j
     avg_weight = np.zeros((sampler.n_blocks)) + 0.0j
     for n in range(
@@ -1193,9 +1195,11 @@ def fp_afqmc(
         )
         # global_block_weights[n] = weights[0]
         # global_block_energies[n] = energy_samples[0]
-
+        avg_sign = jax.vmap(lambda ov : jnp.sum(ov)/jnp.sum(jnp.abs(ov)))(prop_data_tr["overlaps"])
         total_energy[n,1:] = energy_samples
         total_weight[n,1:] = weights
+        total_sign[n,1:] = avg_sign
+
         avg_weight += weights
         avg_energy += weights * (energy_samples - avg_energy) / avg_weight
         if options["save_walkers"] == True:
@@ -1209,15 +1213,16 @@ def fp_afqmc(
         #if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
         comm.Barrier()
         if rank == 0:
-            print(f"{n:5d}: {avg_energy.real}")
-
+            for i in range(avg_energy.shape[0]):
+                print("{0:5.3f}  {1:18.9f}  {2:8.2f}".format((i+1)*propagator.dt * sampler.n_prop_steps, avg_energy[i].real, avg_sign[i].real))
+            print("")
         times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks+1)
         mean_energies = np.sum(total_energy[:n+1] * total_weight[:n+1], axis=0) / np.sum(total_weight[:n+1], axis=0)
         error = np.std(total_energy[:n+1], axis=0) / (n)**0.5
         np.savetxt(
-            "samples_raw.dat", np.stack((times, mean_energies.real, error.real)).T
+            "samples_raw.dat", np.stack((times, mean_energies.real, error.real, np.mean(total_sign[:n+1], axis=0).real)).T
         )
         np.savetxt(
             "RawEnergies.dat", total_energy[:n+1].T.real
         )
-        print(f"{n:5d}: {mean_energies.real}")
+        #print(f"{n:5d}: {mean_energies.real}")
