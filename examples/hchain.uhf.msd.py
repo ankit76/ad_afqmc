@@ -14,10 +14,10 @@ ci = fci.FCI(mf)
 e_fci, _ = ci.kernel()
 print("FCI energy: ", e_fci)
 
-state_dict = pyscf_interface.get_fci_state(ci, ndets=100)
+state_dict = pyscf_interface.get_fci_state(ci, ndets=10)
 
 pyscf_interface.prep_afqmc_multislater(
-    mf, state_dict, max_excitation=6, ndets=100, chol_cut=1.0e-10)
+    mf, state_dict, max_excitation=6, ndets=10)
 
 options = {
     "dt": 0.005,
