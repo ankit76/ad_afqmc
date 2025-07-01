@@ -1,8 +1,10 @@
 import os
+import sys
 import numpy as np
 import unittest
 
 from ad_afqmc import config
+
 config.setup_jax()
 from ad_afqmc import run_afqmc
 

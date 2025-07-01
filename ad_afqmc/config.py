@@ -1,9 +1,12 @@
 import os
+import sys
 import platform
 import socket
 from dataclasses import dataclass
 
 import numpy as np
+
+from ad_afqmc.logger import log
 
 afqmc_config = {"use_gpu": False, "use_mpi": None}
 rank = 0
@@ -74,7 +77,7 @@ def setup_jax():
     # breaking change in random number generation in jax v0.5
     config.update("jax_threefry_partitionable", False)
 
-    if afqmc_config["use_gpu"] == True:
+    if afqmc_config["use_gpu"]: # == True
         config.update("jax_platform_name", "gpu")
         os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
         os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
@@ -83,20 +86,20 @@ def setup_jax():
         system_type = platform.system()
         machine_type = platform.machine()
         processor = platform.processor()
-        print(f"# Hostname: {hostname}")
-        print(f"# System Type: {system_type}")
-        print(f"# Machine Type: {machine_type}")
-        print(f"# Processor: {processor}")
+        log.log(f"# Hostname: {hostname}")
+        log.log(f"# System Type: {system_type}")
+        log.log(f"# Machine Type: {machine_type}")
+        log.log(f"# Processor: {processor}")
         uname_info = platform.uname()
-        print("# Using GPU.")
-        print(f"# System: {uname_info.system}")
-        print(f"# Node Name: {uname_info.node}")
-        print(f"# Release: {uname_info.release}")
-        print(f"# Version: {uname_info.version}")
-        print(f"# Machine: {uname_info.machine}")
-        print(f"# Processor: {uname_info.processor}")
+        log.log("# Using GPU.")
+        log.log(f"# System: {uname_info.system}")
+        log.log(f"# Node Name: {uname_info.node}")
+        log.log(f"# Release: {uname_info.release}")
+        log.log(f"# Version: {uname_info.version}")
+        log.log(f"# Machine: {uname_info.machine}")
+        log.log(f"# Processor: {uname_info.processor}")
     else:
-        afqmc_config["use_gpu"] = False
+        #afqmc_config["use_gpu"] = False
         config.update("jax_platform_name", "cpu")
         os.environ["XLA_FLAGS"] = (
             "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
@@ -104,6 +107,19 @@ def setup_jax():
 
 
 def setup_comm():
+    MPI = setup_comm_no_print()
+    if rank == 0 and afqmc_config["use_gpu"] == False:
+        hostname = socket.gethostname()
+        system_type = platform.system()
+        machine_type = platform.machine()
+        processor = platform.processor()
+        log.log_0(f"# Hostname: {hostname}")
+        log.log_0(f"# System Type: {system_type}")
+        log.log_0(f"# Machine Type: {machine_type}")
+        log.log_0(f"# Processor: {processor}")
+    return MPI
+
+def setup_comm_no_print():
     if afqmc_config["use_gpu"] == True:
         afqmc_config["use_mpi"] = False
     if afqmc_config["use_mpi"] == True:
@@ -112,17 +128,8 @@ def setup_comm():
         MPI = not_MPI()
     global rank
     rank = MPI.COMM_WORLD.Get_rank()
-    if rank == 0 and afqmc_config["use_gpu"] == False:
-        hostname = socket.gethostname()
-        system_type = platform.system()
-        machine_type = platform.machine()
-        processor = platform.processor()
-        print(f"# Hostname: {hostname}")
-        print(f"# System Type: {system_type}")
-        print(f"# Machine Type: {machine_type}")
-        print(f"# Processor: {processor}")
-    return MPI
 
+    return MPI
 
 def mpi_print(message, flush=True):
     if rank == 0:

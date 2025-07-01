@@ -1,4 +1,5 @@
 import os
+import sys
 import pickle
 from functools import partial
 from typing import Union
@@ -9,11 +10,12 @@ from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
 
 from ad_afqmc import pyscf_interface, run_afqmc, grad_utils
+from ad_afqmc.options import Options
 
 print = partial(print, flush=True)
 
 
-class AFQMC:
+class AFQMC():
     """
     AFQMC class.
 
@@ -95,39 +97,11 @@ class AFQMC:
         self.integrals = None  # custom integrals
         self.mpi_prefix = None
         self.nproc = 1
-        self.dt = 0.005
-        self.n_walkers = 50
-        self.n_prop_steps = 50
-        self.n_ene_blocks = 1
-        self.n_sr_blocks = 5
-        self.n_blocks = 200
-        self.n_ene_blocks_eql = 1
-        self.n_sr_blocks_eql = 5
-        self.seed = np.random.randint(1, int(1e6))
-        self.n_eql = 20
-        self.ad_mode = None
-        self.orbital_rotation = True
-        self.do_sr = True
-        self.walker_type = "restricted"
-        self.symmetry = False
-        self.save_walkers = False
-        self.dR = 1e-5  # displacement used in finite difference to calculate integral gradients for ad_mode = nuc_grad
-        if isinstance(mf_or_cc, scf.uhf.UHF) or isinstance(mf_or_cc, scf.rohf.ROHF):
-            self.trial = "uhf"
-        elif isinstance(mf_or_cc, scf.rhf.RHF):
-            self.trial = "rhf"
-        elif isinstance(mf_or_cc, UCCSD):
-            self.trial = "ucisd"
-        elif isinstance(mf_or_cc, CCSD):
-            self.trial = "cisd"
-        else:
-            self.trial = None
-        self.ene0 = 0.0
-        self.n_batch = 1
-        self.vhs_mixed_precision = False
-        self.trial_mixed_precision = False
-        self.memory_mode = "low"
         self.tmpdir = __config__.TMPDIR + f"/afqmc{np.random.randint(1, int(1e6))}/"
+
+        # Set default options
+        for key, val in Options(mf_or_cc).to_dict().items():
+            setattr(self, key, val)
 
     def kernel(self, dry_run=False):
         """
@@ -146,33 +120,22 @@ class AFQMC:
                 chol_cut=self.chol_cut,
                 integrals=self.integrals,
                 tmpdir=self.tmpdir,
+                verbose=self.verbose,
             )
         else:
             grad_utils.prep_afqmc_nuc_grad(self.mf_or_cc, self.dR, tmpdir=self.tmpdir)
         options = {}
         for attr in dir(self):
-            if (
-                attr
-                not in [
-                    "mf_or_cc",
-                    "basis_coeff",
-                    "norb_frozen",
-                    "chol_cut",
-                    "integrals",
-                    "mpi_prefix",
-                    "nproc",
-                ]
-                and not attr.startswith("__")
-                and not callable(getattr(self, attr))
-            ):
+            if attr in Options.get_keys():
                 options[attr] = getattr(self, attr)
         with open(self.tmpdir + "/options.bin", "wb") as f:
             pickle.dump(options, f)
+
         if dry_run:
             with open("tmpdir.txt", "w") as f:
                 f.write(self.tmpdir)
             return self.tmpdir
         else:
             return run_afqmc.run_afqmc(
-                mpi_prefix=self.mpi_prefix, nproc=self.nproc, tmpdir=self.tmpdir
+                options=Options.from_dict(options), mpi_prefix=self.mpi_prefix, nproc=self.nproc, tmpdir=self.tmpdir
             )

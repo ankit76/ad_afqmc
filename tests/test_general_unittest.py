@@ -3,6 +3,7 @@ import numpy as np
 import os
 from pyscf import scf, gto, cc
 from ad_afqmc import pyscf_interface, run_afqmc
+from ad_afqmc.options import Options
 
 tmpdir = "tmp"
 if not os.path.exists(tmpdir):
@@ -17,8 +18,6 @@ default_options = {
     "n_prop_steps": 50,
     "n_walkers": 5,
     "seed": 8,
-    "trial": "",
-    "walker_type": "",
 }
 
 
@@ -28,8 +27,9 @@ def check(testcase, obj, options, expected_e, atol, mpi):
     mpi_prefix = "mpirun " if mpi else None
     nproc = 2 if mpi else None
 
+    options = Options.from_dict(options)
     ene, _ = run_afqmc.run_afqmc(
-        options=options, mpi_prefix=mpi_prefix, nproc=nproc, tmpdir=tmpdir
+        options, mpi_prefix=mpi_prefix, nproc=nproc, tmpdir=tmpdir
     )
     testcase.assertAlmostEqual(ene, expected_e, delta=atol)
     return ene

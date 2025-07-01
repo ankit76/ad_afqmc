@@ -1,10 +1,12 @@
 import os
+import sys
 
 import numpy as np
 
 from ad_afqmc import config
 
 config.setup_jax()
+
 import pytest
 
 from ad_afqmc import run_afqmc
@@ -14,7 +16,6 @@ seed = 98
 # __test__ = False
 
 tmpdir = os.path.dirname(os.path.abspath(__file__))
-
 
 def test_energy_mpi():
     options = {
@@ -30,6 +31,7 @@ def test_energy_mpi():
     ene, _ = run_afqmc.run_afqmc(
         options=options, mpi_prefix="mpirun ", nproc=2, tmpdir=tmpdir
     )
+    print("done")
     assert np.isclose(ene, -3.239302058353345, atol=1e-5)
 
 

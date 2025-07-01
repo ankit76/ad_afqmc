@@ -9,6 +9,7 @@ import subprocess
 from typing import Dict
 
 import numpy
+from ad_afqmc.logger import log
 
 def get_node_mem():
     try:
@@ -28,7 +29,7 @@ def get_numpy_blas_info() -> Dict[str, str]:
             "include directory": blas_config["lib directory"],
         }
         for k, v in info["BLAS"].items():
-            print(f"# - BLAS {k}: {v}")
+            log.log(f"# - BLAS {k}: {v}")
     except TypeError:
         try:
             np_lib = numpy.__config__.blas_opt_info["libraries"]  # pylint:  disable=no-member
@@ -38,8 +39,8 @@ def get_numpy_blas_info() -> Dict[str, str]:
             lib_dir = numpy.__config__.blas_ilp64_opt_info[  # pylint:  disable=no-member
                 "library_dirs"
             ]
-        print(f"# - BLAS lib: {' '.join(np_lib):s}")
-        print(f"# - BLAS dir: {' '.join(lib_dir):s}")
+        log.log(f"# - BLAS lib: {' '.join(np_lib):s}")
+        log.log(f"# - BLAS dir: {' '.join(lib_dir):s}")
         info["BLAS"] = {
             "lib": " ".join(np_lib),
             "path": " ".join(lib_dir),
@@ -84,7 +85,7 @@ def get_git_info():
         under_git = False
     except Exception as error:
         suffix = False
-        print(f"couldn't determine git hash : {error}")
+        log.warn(f"couldn't determine git hash : {error}")
         sha1 = "none".encode()
         local_mods = []
     if under_git:
@@ -102,23 +103,23 @@ def print_env_info(sha1, branch, local_mods):
     import ad_afqmc
 
     version = getattr(ad_afqmc, "__version__", "Unknown")
-    print(f"# ad_afqmc version: {version}")
+    log.log(f"# ad_afqmc version: {version}")
     if sha1 is not None:
-        print(f"# Git hash: {sha1:s}.")
-        print(f"# Git branch: {branch:s}.")
+        log.log(f"# Git hash: {sha1:s}.")
+        log.log(f"# Git branch: {branch:s}.")
     if len(local_mods) > 0:
-        print("# Found uncommitted changes and/or untracked files.")
+        log.warn("# Found uncommitted changes and/or untracked files.")
         for prefix, file in zip(local_mods[::2], local_mods[1::2]):
             if prefix == "M":
-                print(f"# Modified : {file:s}")
+                log.log(f"# Modified : {file:s}")
             elif prefix == "??":
-                print(f"# Untracked : {file:s}")
+                log.log(f"# Untracked : {file:s}")
     mem = get_node_mem()
-    print(f"# Approximate memory available per node: {mem:.4f} GB.")
+    log.log(f"# Approximate memory available per node: {mem:.4f} GB.")
     hostname = socket.gethostname()
-    print(f"# Root processor name: {hostname}")
+    log.log(f"# Root processor name: {hostname}")
     py_ver = sys.version.splitlines()
-    print(f"# Python interpreter: {' '.join(py_ver):s}")
+    log.log(f"# Python interpreter: {' '.join(py_ver):s}")
     info = {"python": py_ver, "branch": branch, "sha1": sha1}
     from importlib import import_module
 
@@ -128,13 +129,13 @@ def print_env_info(sha1, branch, local_mods):
             # Strip __init__.py
             path = l.__file__[:-12]
             vers = l.__version__
-            print(f"# Using {lib:s} v{vers:s} from: {path:s}.")
+            log.log(f"# Using {lib:s} v{vers:s} from: {path:s}.")
             info[f"{lib:s}"] = {"version": vers, "path": path}
             if lib == "numpy":
                 info[f"{lib:s}"] = get_numpy_blas_info()
             elif lib == "mpi4py":
                 mpicc = l.get_config().get("mpicc", "none")
-                print(f"# - mpicc: {mpicc:s}")
+                log.log(f"# - mpicc: {mpicc:s}")
                 info[f"{lib:s}"]["mpicc"] = mpicc
             elif lib == "cupy":
                 try:
@@ -147,14 +148,14 @@ def print_env_info(sha1, branch, local_mods):
                     version_string = (
                         cuda_version[:2] + "." + cuda_version[2:4] + "." + cuda_version[4]
                     )
-                    print(f"# - CUDA compute capability: {cuda_compute:s}")
-                    print(f"# - CUDA version: {version_string}")
-                    print(f"# - GPU Type: {str(cu_info['name'])[1:]:s}")
-                    print(f"# - GPU Mem: {cu_info['totalGlobalMem'] / 1024 ** 3.0:.3f} GB")
-                    print(f"# - Number of GPUs: {l.cuda.runtime.getDeviceCount():d}")
+                    log.log(f"# - CUDA compute capability: {cuda_compute:s}")
+                    log.log(f"# - CUDA version: {version_string}")
+                    log.log(f"# - GPU Type: {str(cu_info['name'])[1:]:s}")
+                    log.log(f"# - GPU Mem: {cu_info['totalGlobalMem'] / 1024 ** 3.0:.3f} GB")
+                    log.log(f"# - Number of GPUs: {l.cuda.runtime.getDeviceCount():d}")
                 except:
-                    print("# cupy import error")
+                    log.warn("# cupy import error")
         except (ModuleNotFoundError, ImportError):
-            print(f"# Package {lib:s} not found.")
+            log.warn(f"# Package {lib:s} not found.")
     return info
 

@@ -1,8 +1,11 @@
 import os
+import sys
+
 import numpy as np
 import unittest
 
 from ad_afqmc import config
+
 config.setup_jax()
 from jax import numpy as jnp
 from ad_afqmc import pyscf_interface, wavefunctions

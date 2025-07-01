@@ -1,8 +1,10 @@
+import sys
 import numpy as np
 from jax import numpy as jnp
 import unittest
 
 from ad_afqmc import config
+
 config.setup_jax()
 from ad_afqmc import linalg_utils
 

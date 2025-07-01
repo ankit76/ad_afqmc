@@ -1,4 +1,5 @@
 import pickle
+import sys
 import time
 from functools import partial
 from typing import Any, List, Optional, Tuple, Union
@@ -17,7 +18,9 @@ from ad_afqmc import (
     wavefunctions,
     grad_utils,
 )
-from ad_afqmc.config import mpi_print as print
+from ad_afqmc.logger import log
+# from ad_afqmc.config import mpi_print as print
+from ad_afqmc.options import Options
 
 
 def afqmc_energy(
@@ -27,7 +30,7 @@ def afqmc_energy(
     trial: wavefunctions.wave_function,
     wave_data: dict,
     sampler: sampling.sampler,
-    options: dict,
+    options: Options,
     MPI: Any,
     init_walkers: Optional[Union[List, jax.Array]] = None,
     tmpdir: str = ".",
@@ -54,7 +57,7 @@ def afqmc_energy(
     comm = MPI.COMM_WORLD
     size = comm.Get_size()
     rank = comm.Get_rank()
-    seed = options["seed"]
+    seed = options.seed
 
     if rank == 0:
         sha1, branch, local_mods = misc.get_git_info()
@@ -78,21 +81,22 @@ def afqmc_energy(
     # Equilibration phase
     comm.Barrier()
     init_time = time.time() - init
-    print("# Equilibration sweeps:")
-    print(
+
+    log.log_0("# Equilibration sweeps:")
+    log.log_0(
         f"# {'Iter':>10}      {'Total block weight':<20} {'Block energy':<20} {'Walltime':<10}"
     )
     # print("#   Iter        Block energy      Walltime")
     n = 0
-    print(
-        f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9e} {init_time:<10.2e} "
+    log.log_0(
+        f"# {n:>10}      {jnp.sum(prop_data['weights']) * size:<20.9e} {prop_data['e_estimate']:<20.9f} {init_time:<10.2e} "
     )
     # print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
     comm.Barrier()
 
-    n_ene_blocks_eql = options["n_ene_blocks_eql"]
-    n_sr_blocks_eql = options["n_sr_blocks_eql"]
-    n_eql = options["n_eql"]
+    n_ene_blocks_eql = options.n_ene_blocks_eql
+    n_sr_blocks_eql = options.n_sr_blocks_eql
+    n_eql = options.n_eql
     sampler_eq = type(sampler)(
         n_prop_steps=50,
         n_ene_blocks=n_ene_blocks_eql,
@@ -115,8 +119,8 @@ def afqmc_energy(
 
     # Sampling phase
     comm.Barrier()
-    print("#\n# Sampling sweeps:")
-    print("#  Iter        Mean energy          Stochastic error       Walltime")
+    log.log_0("#\n# Sampling sweeps:")
+    log.log_0("#  Iter      Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
     global_block_weights = None
@@ -153,7 +157,7 @@ def afqmc_energy(
         block_energy_n = comm.bcast(block_energy_n, root=0)
         prop_data = propagator.orthonormalize_walkers(prop_data)
 
-        if options["save_walkers"] == True:
+        if options.save_walkers == True:
             _save_walkers(prop_data, n, tmpdir, rank)
 
         prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
@@ -171,14 +175,18 @@ def afqmc_energy(
                 tmpdir,
             )
             try:
-                print(f"node encounters on proc 0: {prop_data['node_crossings']}")
+                log.log_0(f"node encounters on proc 0: {prop_data['node_crossings']}")
             except:
                 pass
 
     # Analysis phase
     comm.Barrier()
     e_afqmc, e_err_afqmc = _analyze_energy_results(
-        global_block_weights, global_block_energies, rank, comm, tmpdir
+        global_block_weights,
+        global_block_energies,
+        rank,
+        comm,
+        tmpdir,
     )
 
     return e_afqmc, e_err_afqmc
@@ -192,7 +200,7 @@ def afqmc_observable(
     wave_data: dict,
     sampler: sampling.sampler,
     observable: Optional[Tuple],
-    options: dict,
+    options: Options,
     MPI,
     init_walkers: Optional[Union[List, jax.Array]] = None,
     tmpdir: str = ".",
@@ -203,14 +211,14 @@ def afqmc_observable(
     Returns:
         Tuple[float, float, Any]: AFQMC energy, error, and observable-related data
     """
-    if options["ad_mode"] is None:
+    if options.ad_mode is None:
         raise ValueError("ad_mode must be specified for observable calculation")
 
     init = time.time()
     comm = MPI.COMM_WORLD
     size = comm.Get_size()
     rank = comm.Get_rank()
-    seed = options["seed"]
+    seed = options.seed
 
     # Set up observable operators
     if observable is not None:
@@ -222,7 +230,7 @@ def afqmc_observable(
 
     # Initialize RDM operators based on AD mode
     rdm_op, rdm_2_op, trial_rdm2 = _setup_rdm_operators(
-        options["ad_mode"], ham_data, ham, trial, wave_data
+        options.ad_mode, ham_data, ham, trial, wave_data
     )
 
     # Initialize data
@@ -245,15 +253,15 @@ def afqmc_observable(
     # Equilibration phase
     comm.Barrier()
     init_time = time.time() - init
-    print("# Equilibration sweeps:")
-    print("#   Iter        Block energy      Walltime")
+    log.log_0("# Equilibration sweeps:")
+    log.log_0("#   Iter        Block energy      Walltime")
     n = 0
-    print(f"# {n:5d}      {prop_data['e_estimate']:.9e}     {init_time:.2e} ")
+    log.log_0(f"# {n:5d}      {prop_data['e_estimate']:.9f}     {init_time:.2e} ")
     comm.Barrier()
 
-    n_ene_blocks_eql = options["n_ene_blocks_eql"]
-    n_sr_blocks_eql = options["n_sr_blocks_eql"]
-    neql = options["n_eql"]
+    n_ene_blocks_eql = options.n_ene_blocks_eql
+    n_sr_blocks_eql = options.n_sr_blocks_eql
+    neql = options.n_eql
     sampler_eq = sampling.sampler(
         n_prop_steps=50,
         n_ene_blocks=n_ene_blocks_eql,
@@ -276,9 +284,9 @@ def afqmc_observable(
 
     # Sampling phase
     comm.Barrier()
-    print("#\n# Sampling sweeps:")
-    print(
-        "#  Iter        Mean energy          Stochastic error       Mean observable       Walltime"
+    log.log_0("#\n# Sampling sweeps:")
+    log.log_0(
+        "#  Iter      Mean energy          Stochastic error       Mean observable       Walltime"
     )
     comm.Barrier()
 
@@ -292,11 +300,11 @@ def afqmc_observable(
         global_block_weights = np.zeros(size * sampler.n_blocks)
         global_block_energies = np.zeros(size * sampler.n_blocks)
         global_block_observables = np.zeros(size * sampler.n_blocks)
-        if options["ad_mode"] == "reverse":
+        if options.ad_mode == "reverse":
             global_block_rdm1s = np.zeros(
                 (size * sampler.n_blocks, *(ham_data["h1"].shape))
             )
-        elif options["ad_mode"] == "2rdm":
+        elif options.ad_mode == "2rdm":
             global_block_rdm2s = np.zeros((size * sampler.n_blocks, *(rdm_2_op.shape)))
 
     # Set up AD propagation wrapper
@@ -308,7 +316,7 @@ def afqmc_observable(
     prop_data_tangent = _init_prop_data_tangent(prop_data)
     block_rdm1_n = np.zeros_like(ham_data["h1"])
     block_rdm2_n = None
-    if options["ad_mode"] == "2rdm" or options["ad_mode"] == "nuc_grad":
+    if options.ad_mode == "2rdm" or options.ad_mode == "nuc_grad":
         block_rdm2_n = np.zeros_like(rdm_2_op)
 
     # Run sampling with AD
@@ -323,7 +331,7 @@ def afqmc_observable(
             prop_data,
             local_large_deviations,
         ) = _run_ad_step(
-            options["ad_mode"],
+            options.ad_mode,
             propagate_phaseless_wrapper,
             observable_op,
             observable_constant,
@@ -362,9 +370,9 @@ def afqmc_observable(
             size=size,
             rank=rank,
             comm=comm,
-            ad_mode=options["ad_mode"],
+            ad_mode=options.ad_mode,
         )
-        if options["ad_mode"] == "nuc_grad":
+        if options.ad_mode == "nuc_grad":
             block_weight_n = np.array([jnp.sum(prop_data["weights"])], dtype="float32")
             _save_energy_derivatives(
                 block_rdm1_n, block_rdm2_n, block_weight_n, tmpdir, rank
@@ -372,7 +380,7 @@ def afqmc_observable(
         # Update walkers
         block_energy_n = comm.bcast(block_energy_n, root=0)
         prop_data = propagator.orthonormalize_walkers(prop_data)
-        if options["save_walkers"] == True:
+        if options.save_walkers == True:
             _save_walkers(prop_data, n, tmpdir, rank)
         prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
@@ -389,7 +397,7 @@ def afqmc_observable(
                 init,
                 comm,
                 tmpdir,
-                options["ad_mode"],
+                options.ad_mode,
             )
 
     # Report large deviations
@@ -400,7 +408,9 @@ def afqmc_observable(
         op=MPI.SUM,
         root=0,
     )
-    print(f"#\n# Number of large deviations: {global_large_deviations}", flush=True)
+    log.log_0(
+        f"#\n# Number of large deviations: {global_large_deviations}"
+    )  # , flush=True)
 
     # Analysis phase
     comm.Barrier()
@@ -410,7 +420,7 @@ def afqmc_observable(
         global_block_observables,
         global_block_rdm1s,
         global_block_rdm2s,
-        options["ad_mode"],
+        options.ad_mode,
         ham,
         rank,
         comm,
@@ -473,9 +483,9 @@ def _run_equilibration(
 
         comm.Barrier()
         if n % (max(sampler_eq.n_blocks // 5, 1)) == 0:
-            print(
-                f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9e} {time.time() - init:<10.2e} ",
-                flush=True,
+            log.log_0(
+                f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9f} {time.time() - init:<10.2e} ",
+                # flush=True,
             )
             # print(
             #    f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ",
@@ -523,40 +533,40 @@ def _setup_propagate_phaseless_wrapper(
     options, ham, ham_data, propagator, trial, wave_data, sampler
 ):
     """Set up the appropriate propagate_phaseless wrapper function based on options"""
-    if options["ad_mode"] == "2rdm":
+    if options.ad_mode == "2rdm":
         return lambda x, y, z: sampler.propagate_phaseless_ad_1(
             ham, ham_data, x, y, propagator, z, trial, wave_data
         )
     if (
-        options["ad_mode"] == "nuc_grad"
-        and (options["orbital_rotation"] == False)
-        and (options["do_sr"] == False)
+        options.ad_mode == "nuc_grad"
+        and (options.orbital_rotation == False)
+        and (options.do_sr == False)
     ):
         return lambda x, y, k, z: sampler.propagate_phaseless_nucgrad_norot_nosr(
             ham, ham_data, x, y, k, propagator, z, trial, wave_data
         )
     elif (
-        (options["ad_mode"] == "nuc_grad")
-        and (options["orbital_rotation"] == False)
-        and (options["do_sr"] == True)
+        (options.ad_mode == "nuc_grad")
+        and (options.orbital_rotation == False)
+        and (options.do_sr == True)
     ):
         return lambda x, y, k, z: sampler.propagate_phaseless_nucgrad_norot(
             ham, ham_data, x, y, k, propagator, z, trial, wave_data
         )
-    elif (options["ad_mode"] == "nuc_grad") and (options["orbital_rotation"] == True):
+    elif (options.ad_mode == "nuc_grad") and (options.orbital_rotation == True):
         return lambda x, y, k, z: sampler.propagate_phaseless_nucgrad(
             ham, ham_data, x, y, k, propagator, z, trial, wave_data
         )
 
-    elif options["orbital_rotation"] == False and options["do_sr"] == False:
+    elif options.orbital_rotation == False and options.do_sr == False:
         return lambda x, y, z: sampler.propagate_phaseless_ad_nosr_norot(
             ham, ham_data, x, y, propagator, z, trial, wave_data
         )
-    elif options["orbital_rotation"] == False:
+    elif not options.orbital_rotation:
         return lambda x, y, z: sampler.propagate_phaseless_ad_norot(
             ham, ham_data, x, y, propagator, z, trial, wave_data
         )
-    elif options["do_sr"] == False:
+    elif not options.do_sr:
         return lambda x, y, z: sampler.propagate_phaseless_ad_nosr(
             ham, ham_data, x, y, propagator, z, trial, wave_data
         )
@@ -751,7 +761,13 @@ def _save_walkers(prop_data, n, tmpdir, rank):
 
 
 def _print_progress_energy(
-    n, global_block_weights, global_block_energies, rank, init, comm, tmpdir
+    n,
+    global_block_weights,
+    global_block_energies,
+    rank,
+    init,
+    comm,
+    tmpdir,
 ):
     """Print progress information for energy calculations"""
     comm.Barrier()
@@ -762,14 +778,14 @@ def _print_progress_energy(
             neql=0,
         )
         if energy_error is not None:
-            print(
-                f" {n:5d}      {e_afqmc:.9e}        {energy_error:.9e}        {time.time() - init:.2e} ",
-                flush=True,
+            log.log(
+                f" {n:5d}      {e_afqmc:.9f}        {energy_error:.9e}        {time.time() - init:.2e} ",
+                # flush=True,
             )
         else:
-            print(
-                f" {n:5d}      {e_afqmc:.9e}                -              {time.time() - init:.2e} ",
-                flush=True,
+            log.log(
+                f" {n:5d}      {e_afqmc:.9f}                -              {time.time() - init:.2e} ",
+                # flush=True,
             )
         np.savetxt(
             tmpdir + "/samples_raw.dat",
@@ -809,14 +825,14 @@ def _print_progress_observable(
             neql=0,
         )
         if energy_error is not None:
-            print(
-                f" {n:5d}      {e_afqmc:.9e}        {energy_error:.9e}        {obs_afqmc:.9e}       {time.time() - init:.2e} ",
-                flush=True,
+            log.log(
+                f" {n:5d}      {e_afqmc:.9f}        {energy_error:.9e}        {obs_afqmc:.9e}       {time.time() - init:.2e} ",
+                # flush=True,
             )
         else:
-            print(
-                f" {n:5d}      {e_afqmc:.9e}                -              {obs_afqmc:.9e}       {time.time() - init:.2e} ",
-                flush=True,
+            log.log(
+                f" {n:5d}      {e_afqmc:.9f}                -              {obs_afqmc:.9e}       {time.time() - init:.2e} ",
+                # flush=True,
             )
         np.savetxt(
             tmpdir + "/samples_raw.dat",
@@ -832,7 +848,11 @@ def _print_progress_observable(
 
 
 def _analyze_energy_results(
-    global_block_weights, global_block_energies, rank, comm, tmpdir
+    global_block_weights,
+    global_block_energies,
+    rank,
+    comm,
+    tmpdir,
 ):
     """Analyze energy results and calculate statistics"""
     e_afqmc, e_err_afqmc = None, None
@@ -846,7 +866,7 @@ def _analyze_energy_results(
         samples_clean, _ = stat_utils.reject_outliers(
             np.stack((global_block_weights, global_block_energies)).T, 1
         )
-        print(
+        log.log(
             f"# Number of outliers in post: {global_block_weights.size - samples_clean.shape[0]} "
         )
         np.savetxt(tmpdir + "/samples.dat", samples_clean)
@@ -866,10 +886,12 @@ def _analyze_energy_results(
                 np.round(e_err_afqmc * 10**sig_dec) * 10 ** (-sig_dec), sig_dec
             )
             sig_e = np.around(e_afqmc, sig_dec)
-            print(f"AFQMC energy: {sig_e:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n")
+            log.log(f"AFQMC energy: {sig_e:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n")
         elif e_afqmc is not None:
-            print(f"Could not determine stochastic error automatically\n", flush=True)
-            print(f"AFQMC energy: {e_afqmc}\n", flush=True)
+            log.log(
+                f"Could not determine stochastic error automatically\n"
+            )  # , flush=True)
+            log.log(f"AFQMC energy: {e_afqmc}\n")  # , flush=True)
             e_err_afqmc = 0.0
 
     comm.Barrier()
@@ -928,7 +950,7 @@ def _analyze_observable_results(
                 1,
             )
 
-        print(
+        log.log(
             f"# Number of outliers in post: {global_block_weights.size - samples_clean.shape[0]} "
         )
         np.savetxt(tmpdir + "/samples.dat", samples_clean)
@@ -958,9 +980,9 @@ def _analyze_observable_results(
                 np.round(e_err_afqmc * 10**sig_dec) * 10 ** (-sig_dec), sig_dec
             )
             sig_e = np.around(e_afqmc, sig_dec)
-            print(f"AFQMC energy: {sig_e:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n")
+            log.log(f"AFQMC energy: {sig_e:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n")
         elif e_afqmc is not None:
-            print(f"AFQMC energy: {e_afqmc}\n", flush=True)
+            log.log(f"AFQMC energy: {e_afqmc}\n") #, flush=True)
             e_err_afqmc = 0.0
 
         # Calculate observable statistics
@@ -975,11 +997,11 @@ def _analyze_observable_results(
                 np.round(obs_err_afqmc * 10**sig_dec) * 10 ** (-sig_dec), sig_dec
             )
             sig_obs = np.around(obs_afqmc, sig_dec)
-            print(
+            log.log(
                 f"AFQMC observable: {sig_obs:.{sig_dec}f} +/- {sig_err:.{sig_dec}f}\n"
             )
         elif obs_afqmc is not None:
-            print(f"AFQMC observable: {obs_afqmc}\n", flush=True)
+            log.log(f"AFQMC observable: {obs_afqmc}\n") #, flush=True)
         else:
             obs_afqmc = 0.0
             obs_err_afqmc = 0.0
@@ -1005,7 +1027,7 @@ def _analyze_observable_results(
                 list(map(np.linalg.norm, clean_rdm1s - avg_rdm1))
             ) / np.linalg.norm(avg_rdm1)
 
-            print(f"# RDM noise:", flush=True)
+            log.log(f"# RDM noise:")  # , flush=True)
             rdm_noise, rdm_noise_err = stat_utils.blocking_analysis(
                 clean_weights_rdm, errors_rdm1, neql=0, printQ=True
             )
@@ -1032,7 +1054,7 @@ def _analyze_observable_results(
                 list(map(np.linalg.norm, clean_rdm2s - avg_rdm2))
             ) / np.linalg.norm(avg_rdm2)
 
-            print(f"# 2RDM noise:", flush=True)
+            log.log(f"# 2RDM noise:") #, flush=True)
             rdm2_noise, rdm2_noise_err = stat_utils.blocking_analysis(
                 clean_weights_rdm, errors_rdm2, neql=0, printQ=True
             )
@@ -1087,7 +1109,7 @@ def afqmc(
     Legacy function for backward compatibility. Calls either afqmc_energy or afqmc_observable
     based on options["ad_mode"].
     """
-    if options["ad_mode"] is None:
+    if options.ad_mode is None:
         return afqmc_energy(
             ham_data=ham_data,
             ham=ham,
@@ -1133,7 +1155,7 @@ def fp_afqmc(
     comm = MPI.COMM_WORLD
     size = comm.Get_size()
     rank = comm.Get_rank()
-    seed = options["seed"]
+    seed = options.seed
 
     trial_rdm1 = trial.get_rdm1(wave_data)
     if "rdm1" not in wave_data:
@@ -1147,8 +1169,8 @@ def fp_afqmc(
 
     comm.Barrier()
     init_time = time.time() - init
-    print("#\n# Sampling sweeps:")
-    print("#  Iter        Mean energy          Stochastic error       Walltime")
+    log.log_0("#\n# Sampling sweeps:")
+    log.log_0("#  Iter      Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
     global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
@@ -1171,7 +1193,7 @@ def fp_afqmc(
         global_block_energies[n] = energy_samples[0]
         total_weight += weights
         total_energy += weights * (energy_samples - total_energy) / total_weight
-        if options["save_walkers"] == True:
+        if options.save_walkers == True:
             if n > 0:
                 with open(f"prop_data_{rank}.bin", "ab") as f:
                     pickle.dump(prop_data_tr, f)
@@ -1182,7 +1204,7 @@ def fp_afqmc(
         if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
             comm.Barrier()
             if rank == 0:
-                print(f"{n:5d}: {total_energy}")
+                log.log(f"{n:5d}: {total_energy}")
         np.savetxt(
             "samples_raw.dat", np.stack((global_block_weights, global_block_energies)).T
         )

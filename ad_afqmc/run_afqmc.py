@@ -1,4 +1,5 @@
 import os
+import sys
 import pickle
 import shlex
 import subprocess
@@ -8,12 +9,14 @@ from typing import Optional, Union
 import numpy as np
 
 from ad_afqmc import config
+from ad_afqmc.options import Options
+from ad_afqmc.logger import log
 
 print = partial(print, flush=True)
 
 
 def run_afqmc(
-    options: Optional[dict] = None,
+    options = None,
     mpi_prefix: Optional[str] = None,
     nproc: Optional[int] = None,
     tmpdir: Optional[str] = None,
@@ -31,18 +34,28 @@ def run_afqmc(
         tmpdir : str, optional
             Temporary directory where the input files are stored.
     """
+    if options is None:
+        options = Options()
+
+    # Backward compatibility
+    if isinstance(options, dict):
+        options = Options.from_dict(options)
+
+    # Logger
+    log.set_verbose(options.verbose)
+
     if tmpdir is None:
         try:
             with open("tmpdir.txt", "r") as f:
                 tmpdir = f.read().strip()
-            print(f"# tmpdir.txt file found: tmpdir is set to '{tmpdir}'\n#")
+            log.log(f"# tmpdir.txt file found: tmpdir is set to '{tmpdir}'\n#")
         except:
             tmpdir = "."
     assert os.path.isdir(tmpdir), f"tmpdir directory '{tmpdir}' does not exist."
 
     if options is not None:
         with open(tmpdir + "/options.bin", "wb") as f:
-            pickle.dump(options, f)
+            pickle.dump(options.to_dict(), f)
     path = os.path.abspath(__file__)
     dir_path = os.path.dirname(path)
     script = f"{dir_path}/launch_script.py"
@@ -56,9 +69,9 @@ def run_afqmc(
             if not MPI.Is_finalized():
                 MPI.Finalize()
             use_mpi = True
-            print(f"# mpi4py found, using MPI.")
+            log.log(f"# mpi4py found, using MPI.")
             if nproc is None:
-                print(f"# Number of MPI ranks not specified, using 1 by default.")
+                log.warn(f"# Number of MPI ranks not specified, using 1 by default.")
                 nproc = 1
         except ImportError:
             use_mpi = False
@@ -67,7 +80,7 @@ def run_afqmc(
                     f"# MPI prefix or number of processes specified, but mpi4py not found. Please install mpi4py or remove the MPI options."
                 )
             else:
-                print(f"# Unable to import mpi4py, not using MPI.")
+                log.warn(f"# Unable to import mpi4py, not using MPI.")
 
     gpu_flag = "--use_gpu" if use_gpu else ""
     mpi_flag = "--use_mpi" if use_mpi else ""
@@ -84,7 +97,9 @@ def run_afqmc(
     env = os.environ.copy()
     env["OMP_NUM_THREADS"] = "1"
     env["MKL_NUM_THREADS"] = "1"
-    cmd = shlex.split(f"{mpi_prefix} python {script} {tmpdir} {gpu_flag} {mpi_flag}")
+    # Verbose value needed to be known before reading the options for the logger
+    verbose_flag = f"--verbose={options.verbose}"
+    cmd = shlex.split(f"{mpi_prefix} python {script} {tmpdir} {gpu_flag} {mpi_flag} {verbose_flag}")
     # Launch process with real-time output
     process = subprocess.Popen(
         cmd,
@@ -110,16 +125,16 @@ def run_afqmc(
     try:
         ene_err = np.loadtxt(tmpdir + "/ene_err.txt")
     except:
-        print("AFQMC did not execute correctly.")
+        log.error("AFQMC did not execute correctly.")
         ene_err = 0.0, 0.0
     return ene_err[0], ene_err[1]
 
 
 def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None):
     if options is None:
-        options = {}
+        options = Options()
     with open("options.bin", "wb") as f:
-        pickle.dump(options, f)
+        pickle.dump(options.to_dict(), f)
     if script is None:
         path = os.path.abspath(__file__)
         dir_path = os.path.dirname(path)

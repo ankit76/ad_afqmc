@@ -5,7 +5,6 @@ from pyscf import gto, scf, df
 
 config.setup_jax()
 
-
 options = {
     "dt": 0.005,
     "n_eql": 3,
@@ -21,7 +20,8 @@ options = {
 
 # The actual check
 def run_check(obj, options, expected_energy, expected_grad, atol, mpi):
-    tmpdir = "./"
+    tmpdir = "tmp"
+
     grad_utils.prep_afqmc_nuc_grad(obj, dR=1e-5, tmpdir=tmpdir)
 
     # mpi_prefix = "mpirun" if mpi else None

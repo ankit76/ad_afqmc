@@ -1,9 +1,11 @@
+import sys
 import numpy as np
 from jax import numpy as jnp
 from jax import random
 import unittest
 
 from ad_afqmc import config
+
 config.setup_jax()
 from ad_afqmc import hamiltonian, propagation, wavefunctions
 

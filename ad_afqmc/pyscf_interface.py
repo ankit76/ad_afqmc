@@ -1,4 +1,5 @@
 import struct
+import sys
 import time
 from functools import partial
 from typing import Any, Optional, Sequence, Tuple, Union
@@ -10,6 +11,8 @@ import scipy
 from pyscf import __config__, ao2mo, df, dft, lib, mcscf, scf
 from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
+
+from ad_afqmc.logger import log
 
 print = partial(print, flush=True)
 
@@ -56,6 +59,7 @@ def prep_afqmc(
     chol_cut: float = 1e-5,
     integrals: Optional[dict] = None,
     tmpdir: str = "./",
+    verbose: int = 0,
 ):
     """Prepare AFQMC calculation with mean field trial wavefunction. Writes integrals and mo coefficients to disk.
 
@@ -67,8 +71,8 @@ def prep_afqmc(
         integrals (dict, optional): Dictionary of integrals in an orthonormal basis, {"h0": enuc, "h1": h1e, "h2": eri}.
         tmpdir (str, optional): Directory to write integrals and mo coefficients. Defaults to "./".
     """
-
-    print("#\n# Preparing AFQMC calculation")
+    log.set_verbose(verbose)
+    log.log("#\n# Preparing AFQMC calculation")
 
     if isinstance(mf_or_cc, (CCSD, UCCSD)):
         mf, cc, norb_frozen = read_pyscf_ccsd(mf_or_cc, tmpdir)
@@ -88,13 +92,13 @@ def prep_afqmc(
         mol, mf, basis_coeff, integrals, norb_frozen, chol_cut
     )
 
-    print("# Finished calculating Cholesky integrals\n#")
+    log.log("# Finished calculating Cholesky integrals\n#")
 
     nbasis = h1e.shape[-1]
-    print("# Size of the correlation space:")
-    print(f"# Number of electrons: {nelec}")
-    print(f"# Number of basis functions: {nbasis}")
-    print(f"# Number of Cholesky vectors: {chol.shape[0]}\n#")
+    log.log("# Size of the correlation space:")
+    log.log(f"# Number of electrons: {nelec}")
+    log.log(f"# Number of basis functions: {nbasis}")
+    log.log(f"# Number of Cholesky vectors: {chol.shape[0]}\n#")
     chol = chol.reshape((-1, nbasis, nbasis))
     v0 = 0.5 * np.einsum("nik,njk->ij", chol, chol, optimize="optimal")
     h1e_mod = h1e - v0
@@ -228,11 +232,10 @@ def solveLS_twoSided(T, X1, X2):
 
 
 # cholesky generation functions are from pauxy
-def generate_integrals(mol, hcore, X, chol_cut=1e-5, verbose=False, DFbas=None):
+def generate_integrals(mol, hcore, X, chol_cut=1e-5, DFbas=None):
     # Unpack SCF data.
     # Step 1. Rotate core Hamiltonian to orthogonal basis.
-    if verbose:
-        print(" # Transforming hcore and eri to ortho AO basis.")
+    log.log(" # Transforming hcore and eri to ortho AO basis.")
     if len(X.shape) == 2:
         h1e = np.dot(X.T.conj(), np.dot(hcore, X))
     elif len(X.shape) == 3:
@@ -244,12 +247,10 @@ def generate_integrals(mol, hcore, X, chol_cut=1e-5, verbose=False, DFbas=None):
     else:  # do cholesky
         # nbasis = h1e.shape[-1]
         # Step 2. Genrate Cholesky decomposed ERIs in non-orthogonal AO basis.
-        if verbose:
-            print(" # Performing modified Cholesky decomposition on ERI tensor.")
-        chol_vecs = chunked_cholesky(mol, max_error=chol_cut, verbose=verbose)
+        log.log(" # Performing modified Cholesky decomposition on ERI tensor.")
+        chol_vecs = chunked_cholesky(mol, max_error=chol_cut)
 
-    if verbose:
-        print(" # Orthogonalising Cholesky vectors.")
+    log.log(" # Orthogonalising Cholesky vectors.")
     start = time.time()
 
     # Step 2.a Orthogonalise Cholesky vectors.
@@ -259,8 +260,7 @@ def generate_integrals(mol, hcore, X, chol_cut=1e-5, verbose=False, DFbas=None):
         ao2mo_chol(chol_vecs, X)
     elif len(X.shape) == 3:
         ao2mo_chol(chol_vecs, X[0])
-    if verbose:
-        print(" # Time to orthogonalise: %f" % (time.time() - start))
+    log.log(" # Time to orthogonalise: %f" % (time.time() - start))
     enuc = mol.energy_nuc()
     # Step 3. (Optionally) freeze core / virtuals.
     nelec = mol.nelec
@@ -284,7 +284,7 @@ def ao2mo_chol_copy(eri, C):
     return eri_copy
 
 
-def chunked_cholesky(mol, max_error=1e-6, verbose=False, cmax=10):
+def chunked_cholesky(mol, max_error=1e-6, cmax=10):
     """Modified cholesky decomposition from pyscf eris.
 
     See, e.g. [Motta17]_
@@ -332,10 +332,9 @@ def chunked_cholesky(mol, max_error=1e-6, verbose=False, cmax=10):
         ndiag += di * nao
     nu = np.argmax(diag)
     delta_max = diag[nu]
-    if verbose:
-        print("# Generating Cholesky decomposition of ERIs." % nchol_max)
-        print("# max number of cholesky vectors = %d" % nchol_max)
-        print("# iteration %5d: delta_max = %f" % (0, delta_max))
+    log.debug("# Generating Cholesky decomposition of ERIs.")
+    log.debug("# max number of cholesky vectors = %d" % nchol_max)
+    log.debug("# iteration %5d: delta_max = %f" % (0, delta_max))
     j = nu // nao
     l = nu % nao
     sj = np.searchsorted(dims, j)
@@ -388,10 +387,9 @@ def chunked_cholesky(mol, max_error=1e-6, verbose=False, cmax=10):
         R = np.dot(chol_vecs[: nchol + 1, nu], chol_vecs[: nchol + 1, :])
         chol_vecs[nchol + 1] = (Munu0 - R) / (delta_max) ** 0.5
         nchol += 1
-        if verbose:
-            step_time = time.time() - start
-            info = (nchol, delta_max, step_time)
-            print("# iteration %5d: delta_max = %13.8e: time = %13.8e" % info)
+        step_time = time.time() - start
+        info = (nchol, delta_max, step_time)
+        log.debug("# iteration %5d: delta_max = %13.8e: time = %13.8e" % info)
 
     return chol_vecs[:nchol]
 
@@ -816,7 +814,7 @@ def parity(d0: np.ndarray, cre: Sequence, des: Sequence) -> float:
 
 def read_pyscf_ccsd(mf_or_cc, tmpdir):
     # raise warning about mpi
-    print(
+    log.warn(
         "# Note that PySCF CC module uses MPI. This could potentially lead to MPI initialization issues in some cases."
     )
     mf = mf_or_cc._scf
@@ -853,8 +851,10 @@ def read_pyscf_ccsd(mf_or_cc, tmpdir):
     return mf, cc, norb_frozen
 
 
-def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, chol_cut):
-    print("# Calculating Cholesky integrals")
+def compute_cholesky_integrals(
+    mol, mf, basis_coeff, integrals, norb_frozen, chol_cut
+):
+    log.log("# Calculating Cholesky integrals")
     assert basis_coeff.dtype == "float", "Only implemented for real-valued MOs"
     h1e, chol, nelec, enuc, nbasis, nchol = [None] * 6
     if integrals is not None:
@@ -886,7 +886,11 @@ def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, cho
         if getattr(mf, "with_df", None) is not None:
             DFbas = mf.with_df.auxmol.basis  # type: ignore
         h1e, chol, nelec, enuc = generate_integrals(
-            mol, mf.get_hcore(), basis_coeff, chol_cut, DFbas=DFbas
+            mol,
+            mf.get_hcore(),
+            basis_coeff,
+            chol_cut,
+            DFbas=DFbas,
         )
         nbasis = h1e.shape[-1]
         nelec = mol.nelec
@@ -976,8 +980,11 @@ def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
     return trial_coeffs
 
 
-def prep_afqmc_ghf_complex(mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5):
+def prep_afqmc_ghf_complex(
+    mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5, verbose: int = 0
+):
     import scipy.linalg as la
+    log.set_verbose(verbose)
 
     norb = np.shape(gmf.mo_coeff)[-1] // 2  # type: ignore
     mo_coeff = gmf.mo_coeff
@@ -996,9 +1003,9 @@ def prep_afqmc_ghf_complex(mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5):
 
     enuc = mol.energy_nuc()
     nbasis = h.shape[-1]
-    print(f"nelec: {mol.nelec}")
-    print(f"nbasis: {nbasis}")
-    print(f"chol.shape: {chol.shape}")
+    log.log(f"nelec: {mol.nelec}")
+    log.log(f"nbasis: {nbasis}")
+    log.log(f"chol.shape: {chol.shape}")
 
     # Modified one-electron integrals
     chol = chol.reshape((-1, nbasis, nbasis))
@@ -1027,8 +1034,11 @@ def prep_afqmc_ghf_complex(mol, gmf: scf.ghf.GHF, tmpdir, chol_cut=1e-5):
     return h, h_mod, chol
 
 
-def prep_afqmc_spinor(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
+def prep_afqmc_spinor(
+    mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5, verbose: int = 0
+):
     import scipy.linalg as la
+    log.set_verbose(verbose)
 
     try:
         from socutils.scf import spinor_hf  # type: ignore
@@ -1036,6 +1046,7 @@ def prep_afqmc_spinor(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
         raise ImportError(
             "Please install socutils package to use spinor_hf module for AFQMC."
         )
+
     norb = n_ao
 
     # Chol ao to mo
@@ -1052,9 +1063,9 @@ def prep_afqmc_spinor(mol, mo_coeff, h_ao, n_ao, tmpdir, chol_cut=1e-5):
 
     enuc = mol.energy_nuc()
     nbasis = h.shape[-1]
-    print(f"nelec: {mol.nelec}")
-    print(f"nbasis: {nbasis}")
-    print(f"chol.shape: {chol.shape}")
+    log.log(f"nelec: {mol.nelec}")
+    log.log(f"nbasis: {nbasis}")
+    log.log(f"chol.shape: {chol.shape}")
 
     # Modified one-electron integrals
     chol = chol.reshape((-1, nbasis, nbasis))
