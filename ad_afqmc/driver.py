@@ -1182,6 +1182,7 @@ def fp_afqmc(
             e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
             prop_data["e_estimate"] = e_estimate
 
+        total_sign[n,0] = jnp.sum(prop_data["overlaps"])/jnp.sum(jnp.abs(prop_data["overlaps"]))
         total_energy[n,0] = prop_data["e_estimate"]
         total_weight[n,0] = jnp.sum(prop_data["weights"])
 

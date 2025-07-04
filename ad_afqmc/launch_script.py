@@ -297,11 +297,11 @@ def set_trial(
 
     # Set up trial wavefunction based on specified type
     if options_trial == "rhf":
-        trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
+        trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"], projector=options["symmetry_projector"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
     elif options_trial == "uhf":
-        trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options["n_batch"])
+        trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options["n_batch"], projector=options["symmetry_projector"])
         wave_data["mo_coeff"] = [
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
@@ -317,6 +317,7 @@ def set_trial(
         wave_data["ci_coeffs_dets"] = ci_coeffs_dets
         trial = wavefunctions.noci(
             norb, nelec_sp, ci_coeffs_dets[0].size, n_batch=options["n_batch"]
+            , projector=options["symmetry_projector"]
         )
 
     elif options_trial == "cisd":
@@ -338,6 +339,7 @@ def set_trial(
                 norb,
                 nelec_sp,
                 n_batch=options["n_batch"],
+                projector=options["symmetry_projector"],
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
                 memory_mode=options["memory_mode"],
@@ -414,6 +416,7 @@ def set_trial(
                 norb,
                 nelec_sp,
                 n_batch=options["n_batch"],
+                projector=options["symmetry_projector"],
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
                 memory_mode=options["memory_mode"],

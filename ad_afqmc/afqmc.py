@@ -111,6 +111,9 @@ class AFQMC:
         self.orbital_rotation = True
         self.do_sr = True
         self.walker_type = "restricted"
+
+        ##this can be tr, s2 or sz for time-reversal, S^2, or S_z symmetry projection, respectively
+        self.symmetry_projector = None  
         self.symmetry = False
         self.save_walkers = False
         self.dR = 1e-5  # displacement used in finite difference to calculate integral gradients for ad_mode = nuc_grad
