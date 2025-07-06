@@ -117,13 +117,11 @@ class sampler:
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
 
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
-        prop_data["overlaps"] = (
-           trial.calc_overlap(prop_data["walkers"], wave_data) 
-        )
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        block_energy = jnp.sum(energy_samples * prop_data["overlaps"] * prop_data["weights"]) / jnp.sum(
-            prop_data["overlaps"] * prop_data["weights"]
-        )
+        block_energy = jnp.sum(
+            energy_samples * prop_data["overlaps"] * prop_data["weights"]
+        ) / jnp.sum(prop_data["overlaps"] * prop_data["weights"])
         block_weight = jnp.sum(prop_data["overlaps"] * prop_data["weights"])
         return prop_data, (prop_data, block_energy, block_weight)
 
@@ -416,17 +414,17 @@ class sampler:
         def _block_scan_wrapper(x, y):
             return self._block_scan(x, y, ham_data, propagator, trial, wave_data)
 
-        prop_data["overlaps"] = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["n_killed_walkers"] = 0
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
         prop_data, (block_energy, block_weight) = lax.scan(
             checkpoint(_block_scan_wrapper),
             prop_data,
             None,
-            length=propagator.n_ene_blocks,
+            length=self.n_ene_blocks,
         )
         prop_data["n_killed_walkers"] /= (
-            propagator.n_sr_blocks * propagator.n_ene_blocks * propagator.n_walkers
+            self.n_sr_blocks * self.n_ene_blocks * propagator.n_walkers
         )
 
         return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data
@@ -490,17 +488,17 @@ class sampler:
         def _block_scan_wrapper(x, y):
             return self._block_scan(x, y, ham_data, propagator, trial, wave_data)
 
-        prop_data["overlaps"] = trial.calc_overlap_vmap(prop_data["walkers"], wave_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["n_killed_walkers"] = 0
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
         prop_data, (block_energy, block_weight) = lax.scan(
             checkpoint(_block_scan_wrapper),
             prop_data,
             None,
-            length=propagator.n_ene_blocks,
+            length=self.n_ene_blocks,
         )
         prop_data["n_killed_walkers"] /= (
-            propagator.n_sr_blocks * propagator.n_ene_blocks * propagator.n_walkers
+            self.n_sr_blocks * self.n_ene_blocks * propagator.n_walkers
         )
 
         return jnp.sum(block_energy * block_weight) / jnp.sum(block_weight), prop_data

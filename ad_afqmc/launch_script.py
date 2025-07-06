@@ -648,17 +648,18 @@ def run_afqmc_calculation(
     # Run appropriate AFQMC algorithm
     e_afqmc, err_afqmc = 0.0, 0.0
     if options["free_projection"]:
-        driver.fp_afqmc(
-            ham_data,
-            ham,
-            prop,
-            trial,
-            wave_data,
-            sampler,
-            observable,
-            options,
-            mpi_comm,
-        )
+        # driver.fp_afqmc(
+        #     ham_data,
+        #     ham,
+        #     prop,
+        #     trial,
+        #     wave_data,
+        #     sampler,
+        #     observable,
+        #     options,
+        #     mpi_comm,
+        # )
+        raise NotImplementedError("Free projection AFQMC is not supported from launch_script.")
     else:
         e_afqmc, err_afqmc = driver.afqmc(
             ham_data,
