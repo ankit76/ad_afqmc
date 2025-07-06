@@ -5173,3 +5173,75 @@ class cisd_eom(wave_function):
 
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class rhf_lno(rhf, wave_function):
+    """Class for the restricted Hartree-Fock wave function with LNO.
+
+    The corresponding wave_data contains "mo_coeff", a list of two jax.Arrays of shape (norb, nelec[sigma]).
+    The measurement methods make use of half-rotated integrals which are stored in ham_data.
+    ham_data should contain "rot_h1" and "rot_chol" intermediates which are the half-rotated
+    one-body and two-body integrals respectively.
+
+    """
+
+    @singledispatchmethod
+    def calc_orbenergy(self, walkers, ham_data: dict, wave_data: dict) -> jax.Array:
+        """Calculate the energy < psi_T | H | walker > / < psi_T | walker > for a batch of walkers.
+
+        Args:
+            walkers : list or jax.Array
+                The batched walkers.
+            ham_data : dict
+                The hamiltonian data.
+            wave_data : dict
+                The trial wave function data.
+
+        Returns:
+            jax.Array: The energy.
+        """
+        raise NotImplementedError("Walker type not supported")
+
+    @calc_orbenergy.register
+    def _(self, walkers: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
+        n_walkers = walkers.shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, walker_batch):
+            energy_batch = vmap(self._calc_orbenergy, in_axes=(0, None, None))(
+                walker_batch, ham_data, wave_data
+            )
+            return carry, energy_batch
+
+        _, energies = lax.scan(
+            scanned_fun,
+            None,
+            walkers.reshape(self.n_batch, batch_size, self.norb, -1),
+        )
+        return energies.reshape(n_walkers)
+        # raise NotImplementedError("Walker type not supported")
+
+    @partial(jit, static_argnums=0)
+    def _calc_orbenergy(
+        self, walker: jax.Array, ham_data: dict, wave_data: dict
+    ) -> jax.Array:
+        h0, rot_h1, rot_chol = ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"]
+        ene0 = 0
+        m = jnp.dot(wave_data["prjlo"].T, wave_data["prjlo"])
+        nocc = rot_h1.shape[0]
+        green_walker = self._calc_green(walker, wave_data)
+        f = jnp.einsum(
+            "gij,jk->gik",
+            rot_chol[:, :nocc, nocc:],
+            green_walker.T[nocc:, :nocc],
+            optimize="optimal",
+        )
+        c = vmap(jnp.trace)(f)
+
+        eneo2Jt = jnp.einsum("Gxk,xk,G->", f, m, c) * 2
+        eneo2ext = jnp.einsum("Gxy,Gyk,xk->", f, f, m)
+        return eneo2Jt - eneo2ext
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))

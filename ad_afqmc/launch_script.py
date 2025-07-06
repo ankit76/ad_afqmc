@@ -158,6 +158,11 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
     options["trial_mixed_precision"] = options.get("trial_mixed_precision", False)
     options["memory_mode"] = options.get("memory_mode", "low")
 
+    # LNO options
+    options["prjlo"] = options.get("prjlo", None)
+    options["orbE"] = options.get("orbE", 0)
+    options["maxError"] = options.get("maxError", 1e-3)
+
     assert options is not None, "Options dictionary cannot be None."
     return options
 
@@ -474,6 +479,11 @@ def set_trial(
             print("# trial.pkl not found, make sure to construct the trial separately.")
             trial = None
 
+    if options["prjlo"] is not None:  # For LNO
+        wave_data["prjlo"] = options["prjlo"]
+        trial = wavefunctions.rhf_lno(norb, nelec_sp, n_batch=options["n_batch"])
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
+
     return trial, wave_data
 
 
@@ -544,12 +554,21 @@ def set_sampler(options: Dict) -> Any:
     Returns:
         Sampler object configured according to options
     """
-    return sampling.sampler(
-        options["n_prop_steps"],
-        options["n_ene_blocks"],
-        options["n_sr_blocks"],
-        options["n_blocks"],
-    )
+    if options["prjlo"] is not None:
+        # Use LNO sampler if prjlo is specified
+        return sampling.sampler_lno(
+            options["n_prop_steps"],
+            options["n_ene_blocks"],
+            options["n_sr_blocks"],
+            options["n_blocks"],
+        )
+    else:
+        return sampling.sampler(
+            options["n_prop_steps"],
+            options["n_ene_blocks"],
+            options["n_sr_blocks"],
+            options["n_blocks"],
+        )
 
 
 def load_mo_coefficients(tmp_dir: Optional[str] = None) -> jnp.ndarray:
