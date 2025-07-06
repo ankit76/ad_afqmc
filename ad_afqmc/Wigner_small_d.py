@@ -1,4 +1,4 @@
-from jax.scipy.special import factorial
+from jax.scipy.special import gamma
 from jax import vmap, lax
 import jax.numpy as jnp
 
@@ -10,16 +10,16 @@ def wigner_small_d(j, mp, m, beta):
     if abs(m) > j or abs(mp) > j:
         return 0.0
     
-    prefactor = jnp.sqrt(factorial((j + m).astype(int)) * factorial((j - m).astype(int)) * 
-                        factorial((j + mp).astype(int)) * factorial((j - mp).astype(int)))
+    prefactor = jnp.sqrt(gamma((j + m + 1).astype(int)) * gamma((j - m + 1).astype(int)) * 
+                        gamma((j + mp + 1).astype(int)) * gamma((j - mp + 1).astype(int)))
     
     k_min = (jnp.maximum(0, m - mp)).astype(int)
     k_max = (jnp.minimum(j + m, j - mp)).astype(int)
 
     def wignerSummation(carry, k):
         numerator = (-1)**(k - m + mp)
-        denominator = (factorial(k) * factorial((j + m - k).astype(int)) * 
-                        factorial((j - mp - k).astype(int)) * factorial((mp - m + k).astype(int)))
+        denominator = (gamma(k + 1) * gamma((j + m - k + 1).astype(int)) * 
+                        gamma((j - mp - k + 1).astype(int)) * gamma((mp - m + k + 1).astype(int)))
         
         cos_term = (jnp.cos(beta/2))**(2*j + m - mp - 2*k)
         sin_term = (jnp.sin(beta/2))**(mp - m + 2*k)
