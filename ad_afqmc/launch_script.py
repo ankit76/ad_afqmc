@@ -8,9 +8,9 @@ import h5py
 import numpy as np
 from jax import numpy as jnp
 
-from ad_afqmc import config, driver, hamiltonian, propagation, sampling, wavefunctions
+from ad_afqmc import config, driver, hamiltonian, propagation, sampling, wavefunctions, Wigner_small_d
 from ad_afqmc.config import mpi_print as print
-
+import jax
 tmpdir = "."
 
 
@@ -294,6 +294,14 @@ def set_trial(
                     mo_coeff[1][:, : nelec_sp[1]] @ mo_coeff[1][:, : nelec_sp[1]].T,
                 ]
             )
+
+    if (options["symmetry_projector"]=="s2"):
+        S = options["target_spin"]/2.
+        Sz = (nelec_sp[0] - nelec_sp[1])/2.
+        ngrid = 8 ## this needs to be in the input###*****
+        beta_vals = np.linspace(0, np.pi, ngrid, endpoint=False)
+        wigner = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(S, Sz, Sz, beta_vals)
+        wave_data["wigner"] = (S, Sz, wigner * jnp.sin(beta_vals), beta_vals)
 
     # Set up trial wavefunction based on specified type
     if options_trial == "rhf":

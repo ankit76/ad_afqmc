@@ -60,6 +60,9 @@ class wave_function(ABC):
 
     @calc_overlap.register
     def _(self, walkers: list, wave_data: dict) -> jax.Array:
+        if (self.projector == "s2"):
+            return self._calc_overlap_s2(walkers, wave_data)
+        
         n_walkers = walkers[0].shape[0]
         batch_size = n_walkers // self.n_batch
 
@@ -272,9 +275,144 @@ class wave_function(ABC):
             ),
         )
         return (energies1*overlaps1 + energies2*overlaps2)/(overlaps1 + overlaps2)
-    
+
+    def _calc_overlap_s2(self, walkers: list, wave_data: dict) -> jax.Array:
+        #assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
+        S, Sz, wigner, beta_vals = wave_data["wigner"]        
+
+        RotMatrix = vmap(lambda beta : jnp.array([[jnp.cos(beta/2), jnp.sin(beta/2)],
+                        [-jnp.sin(beta/2), jnp.cos(beta/2)]]) )(beta_vals)
+
+        def applyRotMat(detA, detB, mat):
+            A, B = detA*mat[0,0], detB*mat[0,1]
+            C, D = detA*mat[1,0], detB*mat[1,1]
+
+            detAout = jnp.block( [[A, B], [C,D]] )
+            return detAout
+
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        Atrial, Btrial = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
+        bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
+
+        ##calculate overlap treating trial as GHF
+        def overlap(ket):
+           return jnp.linalg.det(bra.T.conj() @ ket) 
+
+        def _local_overlap(walker1, walker2):
+            S2walkers = vmap(applyRotMat, (None, None, 0))(walker1, walker2, RotMatrix)
+            ovlp = vmap(overlap)(S2walkers)
+            totalOvlp = jnp.sum(ovlp * wigner)
+            return totalOvlp
+        
+        #scan to obtain energy
+        def scanned_fun_o(carry, walker_batch):
+            walker_batch_0, walker_batch_1 = walker_batch
+            overlap_batch = vmap(_local_overlap, in_axes=(0, 0))(
+                walker_batch_0, walker_batch_1
+            )
+            return carry, overlap_batch
+
+        _, overlaps = lax.scan(
+            scanned_fun_o,
+            None,
+            (
+                walkers[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                walkers[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+            ),
+        )
+
+        return overlaps
+
+    def _calc_energy_s2(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
+        #assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
+        S, Sz, wigner, beta_vals = wave_data["wigner"]        
+
+        RotMatrix = vmap(lambda beta : jnp.array([[jnp.cos(beta/2), jnp.sin(beta/2)],
+                        [-jnp.sin(beta/2), jnp.cos(beta/2)]]) )(beta_vals)
+
+        def applyRotMat(detA, detB, mat):
+            A, B = detA*mat[0,0], detB*mat[0,1]
+            C, D = detA*mat[1,0], detB*mat[1,1]
+
+            detAout = jnp.block( [[A, B], [C,D]] )
+            return detAout
+
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        Atrial, Btrial = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
+        bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
+
+        ##calculate overlap treating trial as GHF
+        def overlap(ket):
+           return jnp.linalg.det(bra.T.conj() @ ket) 
+
+        ##calcualte GF treating trial as GHF
+        def GF(ket):
+            return (ket.dot(jnp.linalg.inv(bra.T.conj() @ ket))).T
+
+        ##trial is UHF and have bra1 for alpha and bra2 for beta
+        def local_energy(ket, ham_data):
+            h0, rot_h1, rot_chol = ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"]
+            gf = GF(ket) 
+            gfA, gfB   = gf[:self.nelec[0],:self.norb], gf[self.nelec[0]:,self.norb:]
+            gfAB, gfBA = gf[:self.nelec[0],self.norb:], gf[self.nelec[0]:,:self.norb]
+
+            ene1 = jnp.sum(gfA * rot_h1[0]) + jnp.sum(
+                    gfB * rot_h1[1]
+            )
+
+            f_up = jnp.einsum(
+                "gij,jk->gik", rot_chol[0], gfA.T, optimize="optimal"
+            )
+            f_dn = jnp.einsum(
+                "gij,jk->gik", rot_chol[1], gfB.T, optimize="optimal"
+            )
+            c_up = vmap(jnp.trace)(f_up)
+            c_dn = vmap(jnp.trace)(f_dn)
+            J = jnp.sum(c_up * c_up) + jnp.sum(c_dn * c_dn) + 2.0 * jnp.sum(c_up * c_dn)
+
+            K = jnp.sum(vmap(lambda x: x * x.T)(f_up)) + jnp.sum(vmap(lambda x: x * x.T)(f_dn)) 
+
+            f_ab = jnp.einsum("gip,pj->gij", rot_chol[0], gfBA.T, optimize="optimal")
+            f_ba = jnp.einsum("gip,pj->gij", rot_chol[1], gfAB.T, optimize="optimal")
+            K += 2.*jnp.sum(vmap(lambda x, y: x * y.T)(f_ab, f_ba))
+
+            return ene1 + (J - K)/2. + h0
+
+        def _local_energy(walker1, walker2, ham_data):
+            S2walkers = vmap(applyRotMat, (None, None, 0))(walker1, walker2, RotMatrix)
+            ovlp = vmap(overlap)(S2walkers)
+            Eloc = vmap(local_energy, (0, None))(S2walkers, ham_data)
+            totalOvlp = jnp.sum(ovlp * wigner)
+            return jnp.sum(Eloc * ovlp * wigner)/totalOvlp
+        
+        #scan to obtain energy
+        def scanned_fun_e(carry, walker_batch):
+            walker_batch_0, walker_batch_1 = walker_batch
+            energy_batch = vmap(_local_energy, in_axes=(0, 0, None))(
+                walker_batch_0, walker_batch_1, ham_data
+            )
+            return carry, energy_batch
+
+        _, energies = lax.scan(
+            scanned_fun_e,
+            None,
+            (
+                walkers[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                walkers[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+            ),
+        )
+
+        return energies
+
     @calc_energy.register
     def _(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
+        if self.projector == "s2":
+            return self._calc_energy_s2(walkers, ham_data, wave_data)
+
         if self.projector == "tr" and self.nelec[0] == self.nelec[1]:
             return self._calc_energy_tr(walkers, ham_data, wave_data)
         
