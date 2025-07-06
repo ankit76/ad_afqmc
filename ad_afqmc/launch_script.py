@@ -250,6 +250,7 @@ def apply_symmetry_mask(ham_data: Dict, options: Dict) -> Dict:
 
 def set_trial(
     options: Dict,
+    options_trial: str, 
     mo_coeff: jnp.ndarray,
     norb: int,
     nelec_sp: Tuple[int, int],
@@ -281,7 +282,7 @@ def set_trial(
         print(f"# Read RDM1 from disk")
     except:
         # Construct RDM1 from mo_coeff if file not found
-        if options["trial"] in ["ghf_complex", "gcisd_complex"]:
+        if options_trial in ["ghf_complex", "gcisd_complex"]:
             wave_data["rdm1"] = jnp.array(
                 [
                     mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
@@ -300,18 +301,18 @@ def set_trial(
             )
 
     # Set up trial wavefunction based on specified type
-    if options["trial"] == "rhf":
-        trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
+    if options_trial == "rhf":
+        trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"], projector=options["symmetry_projector"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
-    elif options["trial"] == "uhf":
-        trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options["n_batch"])
+    elif options_trial == "uhf":
+        trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options["n_batch"], projector=options["symmetry_projector"])
         wave_data["mo_coeff"] = [
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
         ]
 
-    elif options["trial"] == "noci":
+    elif options_trial == "noci":
         with open(directory + "/dets.pkl", "rb") as f:
             ci_coeffs_dets = pickle.load(f)
         ci_coeffs_dets = [
@@ -321,9 +322,10 @@ def set_trial(
         wave_data["ci_coeffs_dets"] = ci_coeffs_dets
         trial = wavefunctions.noci(
             norb, nelec_sp, ci_coeffs_dets[0].size, n_batch=options["n_batch"]
+            , projector=options["symmetry_projector"]
         )
 
-    elif options["trial"] == "cisd":
+    elif options_trial == "cisd":
         try:
             amplitudes = np.load(directory + "/amplitudes.npz")
             ci1 = jnp.array(amplitudes["ci1"])
@@ -342,6 +344,7 @@ def set_trial(
                 norb,
                 nelec_sp,
                 n_batch=options["n_batch"],
+                projector=options["symmetry_projector"],
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
                 memory_mode=options["memory_mode"],
@@ -349,7 +352,47 @@ def set_trial(
         except:
             raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
 
-    elif options["trial"] == "ucisd":
+    elif options_trial == "ccsd":
+        try:
+            amplitudes = np.load(directory + "/amplitudes.npz")
+            T1 = jnp.array(amplitudes["t1"])
+            nex = T1.size
+            T2 = jnp.array(amplitudes["t2"].transpose(0,2,1,3)).reshape(nex, nex)
+            evals, evecs = jnp.linalg.eigh(T2)
+            nocc, nvirt = T1.shape[0], T1.shape[1]
+ 
+            hs_ops = jnp.einsum(
+                "i,ijk->ijk",
+                jnp.sqrt(evals + 0.0j),
+                jnp.transpose(evecs.reshape((nocc, nvirt, nex)), (2, 1, 0)),
+            )
+
+            trial_wave_data = {"T1": T1, "T2": T2, "hs_ops": hs_ops}
+ 
+            wave_data.update(trial_wave_data)
+            wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
+
+            if options["trial_mixed_precision"]:
+                mixed_real_dtype = jnp.float32
+                mixed_complex_dtype = jnp.complex64
+            else:
+                mixed_real_dtype = jnp.float64
+                mixed_complex_dtype = jnp.complex128
+
+            trial = wavefunctions.ccsd(
+                norb,
+                nelec_sp,
+                nocc,
+                nvirt,
+                n_batch=options["n_batch"],
+                mixed_real_dtype=mixed_real_dtype,
+                mixed_complex_dtype=mixed_complex_dtype,
+                memory_mode=options["memory_mode"],
+            )
+        except:
+            raise ValueError("Trial specified as ccsd, but amplitudes.npz not found.")
+
+    elif options_trial == "ucisd":
         try:
             amplitudes = np.load(directory + "/amplitudes.npz")
             ci1a = jnp.array(amplitudes["ci1a"])
@@ -378,6 +421,7 @@ def set_trial(
                 norb,
                 nelec_sp,
                 n_batch=options["n_batch"],
+                projector=options["symmetry_projector"],
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
                 memory_mode=options["memory_mode"],
@@ -385,11 +429,11 @@ def set_trial(
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
 
-    elif options["trial"] == "ghf_complex":
+    elif options_trial == "ghf_complex":
         trial = wavefunctions.ghf_complex(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
 
-    elif options["trial"] == "gcisd_complex":
+    elif options_trial == "gcisd_complex":
         try:
             amplitudes = np.load(tmpdir + "/amplitudes.npz")
 
@@ -568,7 +612,8 @@ def setup_afqmc(
     ham, ham_data = set_ham(norb, h0, h1, chol, options["ene0"])
     ham_data = apply_symmetry_mask(ham_data, options)
     mo_coeff = load_mo_coefficients(directory)
-    trial, wave_data = set_trial(options, mo_coeff, norb, nelec_sp, directory)
+    trial, wave_data = set_trial(options, options["trial"], mo_coeff, norb, nelec_sp, directory)
+    trial_ket, wave_data_ket = set_trial(options, options["trial_ket"], mo_coeff, norb, nelec_sp, directory)
     prop = set_prop(options)
     sampler = set_sampler(options)
 
@@ -580,7 +625,7 @@ def setup_afqmc(
             print(f"# {op}: {options[op]}")
     print("#")
 
-    return ham_data, ham, prop, trial, wave_data, sampler, observable, options
+    return ham_data, ham, prop, trial, wave_data, trial_ket, wave_data_ket, sampler, observable, options
 
 
 def run_afqmc_calculation(
@@ -607,7 +652,7 @@ def run_afqmc_calculation(
     directory = tmp_dir if tmp_dir is not None else tmpdir
 
     # Prepare all components
-    ham_data, ham, prop, trial, wave_data, sampler, observable, options = setup_afqmc(
+    ham_data, ham, prop, trial, wave_data, _, _, sampler, observable, options = setup_afqmc(
         options=custom_options, tmp_dir=directory
     )
 
