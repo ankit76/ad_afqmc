@@ -458,8 +458,7 @@ class triangular_grid(lattice):
     sites: Sequence = ()
     n_sites: int = 0
     coord_num: int = 6
-    open_x: bool = False
-    open_x_y: bool = False
+    boundary: str = 'pbc'
 
     def __post_init__(self):
         self.shape = (self.l_y, self.l_x)
@@ -479,7 +478,8 @@ class triangular_grid(lattice):
         theta = np.pi / 3.
         lattice_vecs = np.array([[np.cos(theta), 1.],
                                  [np.sin(theta), 0.]])
-        if self.open_x:
+
+        if (self.boundary == 'xc') or (self.boundary == 'oxc'):
             L2, L1 = lattice_vecs.T
             L3 = L2 - L1
             Ly = [L2, L3]
@@ -490,6 +490,20 @@ class triangular_grid(lattice):
 
             coords += pos[1] * L1
 
+        elif self.boundary == 'yc':
+            theta = np.pi / 6.
+            lattice_vecs = np.array([[0., np.cos(theta)],
+                                     [1., np.sin(theta)]])
+            L1, L2 = lattice_vecs.T
+            L3 = L2 - L1
+            Lx = [L3, L2]
+            coords = np.zeros(2)
+
+            for i in range(1, pos[1]+1):
+                coords += Lx[(i-1) % 2]
+
+            coords += pos[0] * L1
+
         else: # PBC and OBC.
             coords = pos @ lattice_vecs.T
 
@@ -497,37 +511,57 @@ class triangular_grid(lattice):
 
     # @partial(jit, static_argnums=(0,))
     def get_nearest_neighbors(self, pos):
-        if self.open_x:
-            n1 = (pos[0], (pos[1] + 1))
-            n3 = (pos[0], (pos[1] - 1))
+        if self.boundary == 'xc':
+            n1 = (pos[0], pos[1] + 1)
+            n3 = (pos[0], pos[1] - 1)
             if pos[0] % 2 == 1:
-                n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1))
-                n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1))
+                n5 = ((pos[0] + 1) % self.l_x, pos[1] + 1)
+                n6 = ((pos[0] - 1) % self.l_x, pos[1] + 1)
             else:
-                n5 = ((pos[0] + 1) % self.l_x, (pos[1] - 1))
-                n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1))
+                n5 = ((pos[0] + 1) % self.l_x, pos[1] - 1)
+                n6 = ((pos[0] - 1) % self.l_x, pos[1] - 1)
             n2 = ((pos[0] + 1) % self.l_x, pos[1])
             n4 = ((pos[0] - 1) % self.l_x, pos[1])
-        elif self.open_x_y:
-            n1 = (pos[0], (pos[1] + 1))
-            n3 = (pos[0], (pos[1] - 1))
+
+        elif self.boundary == 'oxc': # open-XC.
+            n1 = (pos[0], pos[1] + 1)
+            n3 = (pos[0], pos[1] - 1)
             if pos[0] % 2 == 1:
-                n5 = ((pos[0] + 1), (pos[1] + 1))
-                n6 = ((pos[0] - 1), (pos[1] + 1))
+                n5 = (pos[0] + 1, pos[1] + 1)
+                n6 = (pos[0] - 1, pos[1] + 1)
             else:
-                n5 = ((pos[0] + 1), (pos[1] - 1))
-                n6 = ((pos[0] - 1), (pos[1] - 1))
-            # n5 = ((pos[0] + 1), (pos[1] + 1))
-            # n6 = ((pos[0] - 1), (pos[1] - 1))
-            n2 = ((pos[0] + 1), pos[1])
-            n4 = ((pos[0] - 1), pos[1])
-        else:
+                n5 = (pos[0] + 1, pos[1] - 1)
+                n6 = (pos[0] - 1, pos[1] - 1)
+            n2 = (pos[0] + 1, pos[1])
+            n4 = (pos[0] - 1, pos[1])
+
+        elif self.boundary == 'yc':
+            n1 = (pos[0], pos[1] + 1)
+            n3 = (pos[0], pos[1] - 1)
+            if pos[1] % 2 == 1:
+                n5 = ((pos[0] - 1) % self.l_x, pos[1] + 1)
+                n6 = ((pos[0] - 1) % self.l_x, pos[1] - 1)
+            else:
+                n5 = ((pos[0] + 1) % self.l_x, pos[1] + 1)
+                n6 = ((pos[0] + 1) % self.l_x, pos[1] - 1)
+            n2 = ((pos[0] + 1) % self.l_x, pos[1])
+            n4 = ((pos[0] - 1) % self.l_x, pos[1])
+
+        elif self.boundary == 'pbc':
             n1 = (pos[0], (pos[1] + 1) % self.l_y)
             n3 = (pos[0], (pos[1] - 1) % self.l_y)
             n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
             n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1) % self.l_y)
             n2 = ((pos[0] + 1) % self.l_x, pos[1])
             n4 = ((pos[0] - 1) % self.l_x, pos[1])
+
+        elif self.boundary == 'obc':
+            n1 = (pos[0], pos[1] + 1)
+            n3 = (pos[0], pos[1] - 1)
+            n5 = (pos[0] + 1, pos[1] - 1)
+            n6 = (pos[0] - 1, pos[1] + 1)
+            n2 = (pos[0] + 1, pos[1])
+            n4 = (pos[0] - 1, pos[1])
 
         return jnp.array([n1, n2, n3, n4, n5, n6])
 
