@@ -144,6 +144,7 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
         "ucisd",
         "ghf_complex",
         "gcisd_complex",
+        "UCISD"
     ]
 
     if options["trial"] is None:
@@ -300,7 +301,7 @@ def set_trial(
                 ]
             )
 
-    if (options["symmetry_projector"]=="s2"):
+    if (options.get("symmetry_projector", None)=="s2"):
         S = options["target_spin"]/2.
         Sz = (nelec_sp[0] - nelec_sp[1])/2.
         ngrid = 8 ## this needs to be in the input###*****
@@ -400,7 +401,7 @@ def set_trial(
         except:
             raise ValueError("Trial specified as ccsd, but amplitudes.npz not found.")
 
-    elif options_trial == "ucisd":
+    elif options_trial == "ucisd" or options_trial == "UCISD":
         try:
             amplitudes = np.load(directory + "/amplitudes.npz")
             ci1a = jnp.array(amplitudes["ci1a"])
@@ -433,6 +434,11 @@ def set_trial(
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
                 memory_mode=options["memory_mode"],
+            ) if options_trial == "ucisd" else wavefunctions.UCISD(
+                norb,
+                nelec_sp,
+                n_batch=options["n_batch"],
+                projector=options["symmetry_projector"],
             )
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
@@ -621,7 +627,7 @@ def setup_afqmc(
     ham_data = apply_symmetry_mask(ham_data, options)
     mo_coeff = load_mo_coefficients(directory)
     trial, wave_data = set_trial(options, options["trial"], mo_coeff, norb, nelec_sp, directory)
-    trial_ket, wave_data_ket = set_trial(options, options["trial_ket"], mo_coeff, norb, nelec_sp, directory)
+    trial_ket, wave_data_ket = set_trial(options, options.get("trial_ket", options["trial"]), mo_coeff, norb, nelec_sp, directory)
     prop = set_prop(options)
     sampler = set_sampler(options)
 

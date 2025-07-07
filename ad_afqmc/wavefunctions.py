@@ -2113,7 +2113,7 @@ class wave_function_auto(wave_function):
         )
         walker_up_1 = walker_up + x_chol.dot(walker_up)
         walker_dn_1 = walker_dn + x_chol.dot(walker_dn)
-        return self._calc_overlap(walker_up_1, walker_dn_1, wave_data)
+        return self._calc_overlap_unrestricted(walker_up_1, walker_dn_1, wave_data)
 
     @partial(jit, static_argnums=0)
     def _calc_force_bias_unrestricted(
@@ -2198,6 +2198,24 @@ class wave_function_auto(wave_function):
         return (d_overlap + jnp.sum(d_2_overlap) / 2.0) / overlap + h0
 
     @partial(jit, static_argnums=0)
+    def _overlap_with_single_rot_generalized(
+        self,
+        x: float,
+        h1: jax.Array,
+        walker: jax.Array,
+        wave_data: Any,
+    ) -> jax.Array:
+        """Helper function for calculating local energy using AD,
+        evaluates < psi_T | exp(x * h1) | walker > to linear order"""
+        walkerout = walker + x*jnp.block(
+            [
+                [h1[0].dot(walker[:self.norb,:self.nelec[0]]), h1[0].dot(walker[:self.norb,self.nelec[0]:])],
+                [h1[1].dot(walker[:self.norb,:self.nelec[0]]), h1[1].dot(walker[:self.norb,self.nelec[0]:])]
+            ]
+        )
+        return self._calc_overlap_generalized(walkerout, wave_data)
+
+    @partial(jit, static_argnums=0)
     def _overlap_with_single_rot(
         self,
         x: float,
@@ -2210,7 +2228,7 @@ class wave_function_auto(wave_function):
         evaluates < psi_T | exp(x * h1) | walker > to linear order"""
         walker_up_1 = walker_up + x * h1[0].dot(walker_up)
         walker_dn_1 = walker_dn + x * h1[1].dot(walker_dn)
-        return self._calc_overlap(walker_up_1, walker_dn_1, wave_data)
+        return self._calc_overlap_unrestricted(walker_up_1, walker_dn_1, wave_data)
 
     @partial(jit, static_argnums=0)
     def _overlap_with_double_rot(
@@ -2233,7 +2251,34 @@ class wave_function_auto(wave_function):
             + x * chol_i.dot(walker_dn)
             + x**2 / 2.0 * chol_i.dot(chol_i.dot(walker_dn))
         )
-        return self._calc_overlap(walker_up_1, walker_dn_1, wave_data)
+        return self._calc_overlap_unrestricted(walker_up_1, walker_dn_1, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def _overlap_with_double_rot_generalized(
+        self,
+        x: float,
+        chol_i: jax.Array,
+        walker: jax.Array,
+        wave_data: Any,
+    ) -> jax.Array:
+        """Helper function for calculating local energy using AD,
+        evaluates < psi_T | exp(x * chol_i) | walker > to quadratic order"""
+        walker1 = x*jnp.block(
+            [
+                [chol_i.dot(walker[:self.norb,:self.nelec[0]]), chol_i.dot(walker[:self.norb,self.nelec[0]:])],
+                [chol_i.dot(walker[:self.norb,:self.nelec[0]]), chol_i.dot(walker[:self.norb,self.nelec[0]:])]
+            ]
+        )
+
+        walker2 = x*jnp.block(
+            [
+                [chol_i.dot(walker1[:self.norb,:self.nelec[0]]), chol_i.dot(walker1[:self.norb,self.nelec[0]:])],
+                [chol_i.dot(walker1[:self.norb,:self.nelec[0]]), chol_i.dot(walker1[:self.norb,self.nelec[0]:])]
+            ]
+        )
+
+        walker_out = walker + walker1 + walker2/2.
+        return self._calc_overlap_generalized(walker_out, wave_data)
 
     @partial(jit, static_argnums=0)
     def _calc_energy_unrestricted(
@@ -2295,6 +2340,67 @@ class wave_function_auto(wave_function):
         # )
 
         return (dx1 + jnp.sum(d_2_overlap) / 2.0) / val1 + h0
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy_generalized(
+        self,
+        walker: jax.Array,
+        ham_data: dict,
+        wave_data: Any,
+    ) -> jax.Array:
+        """Calculates local energy using AD and finite difference for the two body term"""
+
+        h0, h1, chol, v0 = (
+            ham_data["h0"],
+            ham_data["h1"],
+            ham_data["chol"].reshape(-1, self.norb, self.norb),
+            ham_data["normal_ordering_term"],
+        )
+
+        x = 0.0
+        # one body
+        f1 = lambda a: self._overlap_with_single_rot_generalized(
+            a, h1 + v0, walker, wave_data
+        )
+        val1, dx1 = jvp(f1, [x], [1.0])
+
+        # two body
+        # vmap_fun = vmap(
+        #     self._overlap_with_double_rot, in_axes=(None, 0, None, None, None)
+        # )
+
+        eps = self.eps
+
+        # carry: [eps, walker, wave_data]
+        def scanned_fun(carry, chol_i):
+            eps, walker, wave_data = carry
+            return carry, self._overlap_with_double_rot_generalized(
+                eps, chol_i, walker, wave_data
+            )
+
+        _, overlap_p = lax.scan(
+            scanned_fun, (eps, walker, wave_data), chol
+        )
+        _, overlap_0 = lax.scan(
+            scanned_fun, (0.0, walker, wave_data), chol
+        )
+        _, overlap_m = lax.scan(
+            scanned_fun, (-1.0 * eps, walker, wave_data), chol
+        )
+        d_2_overlap = (overlap_p - 2.0 * overlap_0 + overlap_m) / eps / eps
+
+        # dx2 = (
+        #     (
+        #         vmap_fun(eps, chol, walker_up, walker_dn, wave_data)
+        #         - 2.0 * vmap_fun(zero, chol, walker_up, walker_dn, wave_data)
+        #         + vmap_fun(-1.0 * eps, chol, walker_up, walker_dn, wave_data)
+        #     )
+        #     / eps
+        #     / eps
+        # )
+
+        return (dx1 + jnp.sum(d_2_overlap) / 2.0) / val1 + h0
+
 
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
@@ -2632,6 +2738,7 @@ class gcisd_complex(wave_function_auto):
     nelec: Tuple[int, int]
     eps: float = 1.0e-4  # finite difference step size in local energy calculations
     n_batch: int = 1
+    projector: str = "none"
 
     @partial(jit, static_argnums=0)
     def _calc_green_generalized(self, walker: jax.Array) -> jax.Array:
@@ -2965,6 +3072,39 @@ class UCISD(wave_function_auto):
 
         # AB
         o2 += jnp.einsum("iajb, ia, jb", ci2AB, GFA[:, noccA:], GFB[:, noccB:])
+
+        return (1.0 + o1 + o2) * o0
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_generalized(
+        self, walker: jax.Array, wave_data: dict
+    ) -> complex:
+
+        noccA, ci1A, ci2AA = self.nelec[0], wave_data["ci1A"], wave_data["ci2AA"]
+        noccB, ci1B, ci2BB = self.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
+        ci2AB = wave_data["ci2AB"]
+
+        Atrial, Btrial = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
+        bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
+        gf = (walker.dot(jnp.linalg.inv(bra.T.conj() @ walker))).T
+
+        gfA, gfB   = gf[:self.nelec[0],:self.norb], gf[self.nelec[0]:,self.norb:]
+        gfAB, gfBA = gf[:self.nelec[0],self.norb:], gf[self.nelec[0]:,:self.norb]
+
+        o0 = jnp.linalg.det( bra.T.conj() @ walker)
+        o1 = jnp.einsum("ia,ia", ci1A, gfA[:, noccA:]) \
+            + jnp.einsum("ia,ia", ci1B, gfB[:, noccB:])
+
+        # AA
+        o2 = 0.5 * jnp.einsum("iajb, ia, jb", ci2AA, gfA[:, noccA:], gfA[:, noccA:])
+        # o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
+
+        # BB
+        o2 += 0.5 * jnp.einsum("iajb, ia, jb", ci2BB, gfB[:, noccB:], gfB[:, noccB:])
+        # o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
+
+        # AB
+        o2 += jnp.einsum("iajb, ia, jb", ci2AB, gfA[:, noccA:], gfB[:, noccB:])
 
         return (1.0 + o1 + o2) * o0
 
