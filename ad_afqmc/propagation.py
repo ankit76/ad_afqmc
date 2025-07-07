@@ -12,7 +12,7 @@ from jax._src.typing import DTypeLike
 
 from ad_afqmc import linalg_utils, sr, wavefunctions
 from ad_afqmc.wavefunctions import wave_function
-
+from ad_afqmc.walkers import RHFWalkers, UHFWalkers, GHFWalkers
 
 @dataclass
 class propagator(ABC):
@@ -130,8 +130,8 @@ class propagator(ABC):
             fields * field_shifts - field_shifts * field_shifts / 2.0, axis=1
         )
 
-        prop_data["walkers"] = self._apply_trotprop(
-            ham_data, prop_data["walkers"], shifted_fields
+        prop_data["walkers"].data = self._apply_trotprop(
+            ham_data, prop_data["walkers"].data, shifted_fields
         )
 
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
@@ -243,7 +243,12 @@ class propagator_restricted(propagator):
         e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
         prop_data["e_estimate"] = e_estimate
         prop_data["pop_control_ene_shift"] = e_estimate
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+
+        if (trial_bra is None):
+            prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        else:
+            prop_data["overlaps"] = trial_bra.calc_overlap(prop_data["walkers"], wave_data_bra)
+
         prop_data["normed_overlaps"] = prop_data["overlaps"]
         prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
         return prop_data
@@ -252,9 +257,9 @@ class propagator_restricted(propagator):
     def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = (
+        prop_data["walkers"].data, prop_data["weights"] = (
             sr.stochastic_reconfiguration_restricted(
-                prop_data["walkers"], prop_data["weights"], zeta
+                prop_data["walkers"].data, prop_data["weights"], zeta
             )
         )
         return prop_data
@@ -262,15 +267,15 @@ class propagator_restricted(propagator):
     def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = (
+        prop_data["walkers"].data, prop_data["weights"] = (
             sr.stochastic_reconfiguration_mpi_restricted(
-                prop_data["walkers"], prop_data["weights"], zeta, comm
+                prop_data["walkers"].data, prop_data["weights"], zeta, comm
             )
         )
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"], _ = linalg_utils.qr_vmap_restricted(prop_data["walkers"])
+        prop_data["walkers"].data, _ = linalg_utils.qr_vmap_restricted(prop_data["walkers"].data)
         return prop_data
 
     @partial(jit, static_argnums=(0, 1))
@@ -285,13 +290,13 @@ class propagator_restricted(propagator):
         shift_term = jnp.einsum("wg,g->w", fields, ham_data["mf_shifts_fp"])
         constants = jnp.exp(-jnp.sqrt(self.dt) * shift_term) * jnp.exp(self.dt * ham_data["h0_prop_fp"])
 
-        prop_data["walkers"] = self._apply_trotprop(
-            ham_data, prop_data["walkers"], fields
+        prop_data["walkers"].data = self._apply_trotprop(
+            ham_data, prop_data["walkers"].data, fields
         )
 
-        prop_data["walkers"] = constants.reshape(-1,1,1) * prop_data["walkers"]
-        prop_data["walkers"], norms = linalg_utils.qr_vmap_restricted(
-            prop_data["walkers"]
+        prop_data["walkers"].data = constants.reshape(-1,1,1) * prop_data["walkers"].data
+        prop_data["walkers"].data, norms = linalg_utils.qr_vmap_restricted(
+            prop_data["walkers"].data
         )
 
         prop_data["weights"] *= (norms * norms).real
@@ -462,9 +467,9 @@ class propagator_unrestricted(propagator_restricted):
     def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = (
+        prop_data["walkers"].data, prop_data["weights"] = (
             sr.stochastic_reconfiguration_unrestricted(
-                prop_data["walkers"], prop_data["weights"], zeta
+                prop_data["walkers"].data, prop_data["weights"], zeta
             )
         )
         return prop_data
@@ -473,22 +478,22 @@ class propagator_unrestricted(propagator_restricted):
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
         (
-            prop_data["walkers"],
+            prop_data["walkers"].data,
             prop_data["weights"],
         ) = sr.stochastic_reconfiguration_mpi_unrestricted(
-            prop_data["walkers"], prop_data["weights"], zeta, comm
+            prop_data["walkers"].data, prop_data["weights"], zeta, comm
         )
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"], _ = linalg_utils.qr_vmap_unrestricted(
-            prop_data["walkers"]
+        prop_data["walkers"].data, _ = linalg_utils.qr_vmap_unrestricted(
+            prop_data["walkers"].data
         )
         return prop_data
 
     def _orthogonalize_walkers(self, prop_data: dict) -> Tuple:
-        prop_data["walkers"], norms = linalg_utils.qr_vmap_unrestricted(
-            prop_data["walkers"]
+        prop_data["walkers"].data, norms = linalg_utils.qr_vmap_unrestricted(
+            prop_data["walkers"].data
         )
         return prop_data, norms
 
@@ -513,10 +518,10 @@ class propagator_unrestricted(propagator_restricted):
             jnp.exp(-jnp.sqrt(self.dt) * shift_term),
             jnp.exp(self.dt * ham_data["h0_prop_fp"]),
         )
-        prop_data["walkers"] = self._apply_trotprop(
-            ham_data, prop_data["walkers"], fields
+        prop_data["walkers"].data = self._apply_trotprop(
+            ham_data, prop_data["walkers"].data, fields
         )
-        prop_data["walkers"] = self._multiply_constant(prop_data["walkers"], constants)
+        prop_data["walkers"].data = self._multiply_constant(prop_data["walkers"].data, constants)
         prop_data, norms = self._orthogonalize_walkers(prop_data)
 
         prop_data["weights"] *= (norms[0] * norms[1]).real

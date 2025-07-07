@@ -43,9 +43,9 @@ def stochastic_reconfiguration_unrestricted(walkers, weights, zeta):
     weights = jnp.ones(nwalkers) * average_weight
     z = total_weight * (jnp.arange(nwalkers) + zeta) / nwalkers
     indices = vmap(jnp.searchsorted, in_axes=(None, 0))(cumulative_weights, z)
-    walkers[0] = walkers[0][indices]
-    walkers[1] = walkers[1][indices]
-    return walkers, weights
+    # walkers[0] = walkers[0][indices]
+    # walkers[1] = walkers[1][indices]
+    return [walkers[0][indices],walkers[1][indices]], weights
 
 
 # this uses numpy but is only called once after each block

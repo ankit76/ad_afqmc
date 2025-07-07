@@ -18,7 +18,7 @@ from ad_afqmc import (
     grad_utils,
 )
 from ad_afqmc.config import mpi_print as print
-
+from ad_afqmc.walkers import RHFWalkers, UHFWalkers, GHFWalkers
 
 def afqmc_energy(
     ham_data: dict,
@@ -1486,7 +1486,7 @@ def fp_afqmc(
         ##if the ket is CCSD that is being sampled then good to sample it many times
         if (n != 0):
             prop_data["walkers"], prop_data = trial_ket.get_init_walkers(
-                wave_data_ket, propagator.n_walkers, "unrestricted" if isinstance(prop_data["walkers"], list) else "restricted", prop_data
+                wave_data_ket, propagator.n_walkers, "unrestricted" if isinstance(prop_data["walkers"], UHFWalkers) else "restricted", prop_data
             )
 
             energy_samples = jnp.real(
