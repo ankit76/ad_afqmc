@@ -1,6 +1,7 @@
 import numpy as np
 from pyscf import __config__, ao2mo, df, dft, lib, mcscf, scf, lo
 from ad_afqmc.pyscf_interface import *
+import os
 import re
 
 
@@ -26,6 +27,9 @@ def run_afqmc_lno_mf(
     n_ene_blocks=25,
     n_sr_blocks=2,
 ):
+    import os
+    os.makedirs(tmpdir, exist_ok=True)
+    output_file_name = os.path.join(tmpdir, output_file_name)
     # print("#\n# Preparing AFQMC calculation")
     options = {
         "n_eql": n_eql,
@@ -45,7 +49,7 @@ def run_afqmc_lno_mf(
     }
     import pickle
 
-    with open("options.bin", "wb") as f:
+    with open(f"{tmpdir}/options.bin", "wb") as f:
         pickle.dump(options, f)
 
     mol = mf.mol
@@ -141,7 +145,7 @@ def run_afqmc_lno_mf(
         trial_coeffs[0] = uhfCoeffs[:, :nbasis]
         trial_coeffs[1] = uhfCoeffs[:, nbasis:]
         # np.savetxt("uhf.txt", uhfCoeffs)
-        np.savez("mo_coeff.npz", mo_coeff=trial_coeffs)
+        np.savez(f"{tmpdir}/mo_coeff.npz", mo_coeff=trial_coeffs)
 
     elif isinstance(mf, scf.rhf.RHF):
         hf_type = "rhf"
@@ -149,7 +153,7 @@ def run_afqmc_lno_mf(
         q = np.eye(mol.nao - len(norb_frozen))
         trial_coeffs[0] = q
         trial_coeffs[1] = q
-        np.savez("mo_coeff.npz", mo_coeff=trial_coeffs)
+        np.savez(f"{tmpdir}/mo_coeff.npz", mo_coeff=trial_coeffs)
 
     write_dqmc(
         h1e,
@@ -159,7 +163,7 @@ def run_afqmc_lno_mf(
         nbasis,
         enuc,
         ms=mol.spin,
-        filename="FCIDUMP_chol",
+        filename=f"{tmpdir}/FCIDUMP_chol",
         mo_coeffs=trial_coeffs,
     )
     import os
@@ -169,7 +173,7 @@ def run_afqmc_lno_mf(
     script = f"{dir_path}/launch_script.py"
 
     os.system(
-        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREAD=1; mpirun -np {nproc} python {script} --use_mpi ./ >> {output_file_name}"
+        f"export OMP_NUM_THREADS=1; export MKL_NUM_THREAD=1; mpirun -np {nproc} python {script} --use_mpi {tmpdir} >> {output_file_name}"
     )
 
     target_line_prefix = "Orbital energy: "
