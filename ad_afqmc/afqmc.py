@@ -114,6 +114,7 @@ class AFQMC:
 
         ##this can be tr, s2 or sz for time-reversal, S^2, or S_z symmetry projection, respectively
         self.symmetry_projector = None  
+        self.target_spin = 0 ##2S and is only used when symmetry_projector is s2 
         self.symmetry = False
         self.save_walkers = False
         self.dR = 1e-5  # displacement used in finite difference to calculate integral gradients for ad_mode = nuc_grad

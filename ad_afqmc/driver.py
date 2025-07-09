@@ -18,7 +18,7 @@ from ad_afqmc import (
     grad_utils,
 )
 from ad_afqmc.config import mpi_print as print
-
+from ad_afqmc.walkers import RHFWalkers, UHFWalkers, GHFWalkers
 
 def afqmc_energy(
     ham_data: dict,
@@ -779,17 +779,29 @@ def _setup_propagate_phaseless_wrapper(
         )
 
 
+# def _init_prop_data_tangent(prop_data):
+#     """Initialize tangent data for AD"""
+#     prop_data_tangent = {}
+#     for x in prop_data:
+#         if isinstance(prop_data[x], list):
+#             prop_data_tangent[x] = [np.zeros_like(y) for y in prop_data[x]]
+#         elif prop_data[x].dtype == "uint32":
+#             prop_data_tangent[x] = np.zeros(prop_data[x].shape, dtype=dtypes.float0)
+#         else:
+#             prop_data_tangent[x] = np.zeros_like(prop_data[x])
+#     return prop_data_tangent
+
+
 def _init_prop_data_tangent(prop_data):
     """Initialize tangent data for AD"""
-    prop_data_tangent = {}
-    for x in prop_data:
-        if isinstance(prop_data[x], list):
-            prop_data_tangent[x] = [np.zeros_like(y) for y in prop_data[x]]
-        elif prop_data[x].dtype == "uint32":
-            prop_data_tangent[x] = np.zeros(prop_data[x].shape, dtype=dtypes.float0)
+
+    def make_tangent(x):
+        if hasattr(x, "dtype") and x.dtype == np.uint32:
+            return np.zeros(x.shape, dtype=dtypes.float0)
         else:
-            prop_data_tangent[x] = np.zeros_like(prop_data[x])
-    return prop_data_tangent
+            return np.zeros_like(x)
+
+    return jax.tree_util.tree_map(make_tangent, prop_data)
 
 
 def _run_ad_step(
@@ -1494,7 +1506,7 @@ def fp_afqmc(
         ##if the ket is CCSD that is being sampled then good to sample it many times
         if (n != 0):
             prop_data["walkers"], prop_data = trial_ket.get_init_walkers(
-                wave_data_ket, propagator.n_walkers, "unrestricted" if isinstance(prop_data["walkers"], list) else "restricted", prop_data
+                wave_data_ket, propagator.n_walkers, "unrestricted" if isinstance(prop_data["walkers"], UHFWalkers) else "restricted", prop_data
             )
 
             energy_samples = jnp.real(

@@ -13,7 +13,7 @@ seed = 98
 
 # __test__ = False
 
-tmpdir = os.path.dirname(os.path.abspath(__file__))
+tmpdir = os.path.dirname(os.path.abspath(__file__)) + "/driver_test_files"
 
 
 def test_energy_mpi():

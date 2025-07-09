@@ -12,7 +12,7 @@ from jax._src.typing import DTypeLike
 
 from ad_afqmc import linalg_utils, sr, wavefunctions
 from ad_afqmc.wavefunctions import wave_function
-
+from ad_afqmc.walkers import RHFWalkers, UHFWalkers, GHFWalkers
 
 @dataclass
 class propagator(ABC):
@@ -130,8 +130,8 @@ class propagator(ABC):
             fields * field_shifts - field_shifts * field_shifts / 2.0, axis=1
         )
 
-        prop_data["walkers"] = self._apply_trotprop(
-            ham_data, prop_data["walkers"], shifted_fields
+        prop_data["walkers"].data = self._apply_trotprop(
+            ham_data, prop_data["walkers"].data, shifted_fields
         )
 
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
@@ -243,7 +243,12 @@ class propagator_restricted(propagator):
         e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
         prop_data["e_estimate"] = e_estimate
         prop_data["pop_control_ene_shift"] = e_estimate
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+
+        if (trial_bra is None):
+            prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        else:
+            prop_data["overlaps"] = trial_bra.calc_overlap(prop_data["walkers"], wave_data_bra)
+
         prop_data["normed_overlaps"] = prop_data["overlaps"]
         prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
         return prop_data
@@ -252,9 +257,9 @@ class propagator_restricted(propagator):
     def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = (
+        prop_data["walkers"].data, prop_data["weights"] = (
             sr.stochastic_reconfiguration_restricted(
-                prop_data["walkers"], prop_data["weights"], zeta
+                prop_data["walkers"].data, prop_data["weights"], zeta
             )
         )
         return prop_data
@@ -262,15 +267,15 @@ class propagator_restricted(propagator):
     def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = (
+        prop_data["walkers"].data, prop_data["weights"] = (
             sr.stochastic_reconfiguration_mpi_restricted(
-                prop_data["walkers"], prop_data["weights"], zeta, comm
+                prop_data["walkers"].data, prop_data["weights"], zeta, comm
             )
         )
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"], _ = linalg_utils.qr_vmap_restricted(prop_data["walkers"])
+        prop_data["walkers"].data, _ = linalg_utils.qr_vmap_restricted(prop_data["walkers"].data)
         return prop_data
 
     @partial(jit, static_argnums=(0, 1))
@@ -285,13 +290,13 @@ class propagator_restricted(propagator):
         shift_term = jnp.einsum("wg,g->w", fields, ham_data["mf_shifts_fp"])
         constants = jnp.exp(-jnp.sqrt(self.dt) * shift_term) * jnp.exp(self.dt * ham_data["h0_prop_fp"])
 
-        prop_data["walkers"] = self._apply_trotprop(
-            ham_data, prop_data["walkers"], fields
+        prop_data["walkers"].data = self._apply_trotprop(
+            ham_data, prop_data["walkers"].data, fields
         )
 
-        prop_data["walkers"] = constants.reshape(-1,1,1) * prop_data["walkers"]
-        prop_data["walkers"], norms = linalg_utils.qr_vmap_restricted(
-            prop_data["walkers"]
+        prop_data["walkers"].data = constants.reshape(-1,1,1) * prop_data["walkers"].data
+        prop_data["walkers"].data, norms = linalg_utils.qr_vmap_restricted(
+            prop_data["walkers"].data
         )
 
         prop_data["weights"] *= (norms * norms).real
@@ -462,9 +467,9 @@ class propagator_unrestricted(propagator_restricted):
     def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = (
+        prop_data["walkers"].data, prop_data["weights"] = (
             sr.stochastic_reconfiguration_unrestricted(
-                prop_data["walkers"], prop_data["weights"], zeta
+                prop_data["walkers"].data, prop_data["weights"], zeta
             )
         )
         return prop_data
@@ -473,22 +478,22 @@ class propagator_unrestricted(propagator_restricted):
         prop_data["key"], subkey = random.split(prop_data["key"])
         zeta = random.uniform(subkey)
         (
-            prop_data["walkers"],
+            prop_data["walkers"].data,
             prop_data["weights"],
         ) = sr.stochastic_reconfiguration_mpi_unrestricted(
-            prop_data["walkers"], prop_data["weights"], zeta, comm
+            prop_data["walkers"].data, prop_data["weights"], zeta, comm
         )
         return prop_data
 
     def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"], _ = linalg_utils.qr_vmap_unrestricted(
-            prop_data["walkers"]
+        prop_data["walkers"].data, _ = linalg_utils.qr_vmap_unrestricted(
+            prop_data["walkers"].data
         )
         return prop_data
 
     def _orthogonalize_walkers(self, prop_data: dict) -> Tuple:
-        prop_data["walkers"], norms = linalg_utils.qr_vmap_unrestricted(
-            prop_data["walkers"]
+        prop_data["walkers"].data, norms = linalg_utils.qr_vmap_unrestricted(
+            prop_data["walkers"].data
         )
         return prop_data, norms
 
@@ -513,10 +518,10 @@ class propagator_unrestricted(propagator_restricted):
             jnp.exp(-jnp.sqrt(self.dt) * shift_term),
             jnp.exp(self.dt * ham_data["h0_prop_fp"]),
         )
-        prop_data["walkers"] = self._apply_trotprop(
-            ham_data, prop_data["walkers"], fields
+        prop_data["walkers"].data = self._apply_trotprop(
+            ham_data, prop_data["walkers"].data, fields
         )
-        prop_data["walkers"] = self._multiply_constant(prop_data["walkers"], constants)
+        prop_data["walkers"].data = self._multiply_constant(prop_data["walkers"].data, constants)
         prop_data, norms = self._orthogonalize_walkers(prop_data)
 
         prop_data["weights"] *= (norms[0] * norms[1]).real
@@ -701,12 +706,12 @@ class propagator_cpmc(propagator_unrestricted):
         init_walkers: Optional[Sequence] = None,
     ) -> dict:
         prop_data = super().init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
-        prop_data["walkers"][0] = prop_data["walkers"][0].real
-        prop_data["walkers"][1] = prop_data["walkers"][1].real
+        prop_data["walkers"].data[0] = prop_data["walkers"].data[0].real
+        prop_data["walkers"].data[1] = prop_data["walkers"].data[1].real
         prop_data["overlaps"] = prop_data["overlaps"].real
         try:
             prop_data["greens"] = trial.calc_full_green_vmap(
-                prop_data["walkers"], wave_data
+                prop_data["walkers"].data, wave_data
             )
         except:
             pass
@@ -740,11 +745,11 @@ class propagator_cpmc(propagator_unrestricted):
         prop_data: dict,
         wave_data: dict,
     ) -> dict:
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
@@ -753,7 +758,7 @@ class propagator_cpmc(propagator_unrestricted):
         )
         prop_data["overlaps"] = overlaps_new
         prop_data["greens"] = trial.calc_full_green_vmap(
-            prop_data["walkers"], wave_data
+            prop_data["walkers"].data, wave_data
         )
         return prop_data
 
@@ -820,12 +825,12 @@ class propagator_cpmc(propagator_unrestricted):
                 prop_data["hs_constant"][1],
             )
             new_walkers_up = (
-                carry["walkers"][0].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"].data[0].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_dn = (
-                carry["walkers"][1].at[:, x, :].mul(constants[:, 1].reshape(-1, 1))
+                carry["walkers"].data[1].at[:, x, :].mul(constants[:, 1].reshape(-1, 1))
             )
-            carry["walkers"] = [new_walkers_up, new_walkers_dn]
+            carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
             carry["greens"] = trial.update_greens_function_vmap(
@@ -879,11 +884,11 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             prop_data: dictionary containing the updated propagation data
         """
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
@@ -901,13 +906,13 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         def scanned_fun(carry, x):
             # field 1
             new_walkers_0_up = (
-                carry["walkers"][0].at[:, x, :].mul(prop_data["hs_constant"][0, 0])
+                carry["walkers"].data[0].at[:, x, :].mul(prop_data["hs_constant"][0, 0])
             )
             new_walkers_0_dn = (
-                carry["walkers"][1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
+                carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap(
-                [new_walkers_0_up, new_walkers_0_dn], wave_data
+                UHFWalkers([new_walkers_0_up, new_walkers_0_dn]), wave_data
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
@@ -915,13 +920,13 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"][0].at[:, x, :].mul(prop_data["hs_constant"][1, 0])
+                carry["walkers"].data[0].at[:, x, :].mul(prop_data["hs_constant"][1, 0])
             )
             new_walkers_1_dn = (
-                carry["walkers"][1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
+                carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap(
-                [new_walkers_1_up, new_walkers_1_dn], wave_data
+                UHFWalkers([new_walkers_1_up, new_walkers_1_dn]), wave_data
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
@@ -939,7 +944,7 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             new_walkers = [new_walkers_up, new_walkers_dn]
             mask_0 = mask_0.reshape(-1)
             overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
-            carry["walkers"] = new_walkers
+            carry["walkers"].data = new_walkers
             carry["weights"] *= norm
             carry["overlaps"] = overlaps_new
             return carry, x
@@ -947,11 +952,11 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         prop_data, _ = lax.scan(scanned_fun, prop_data, jnp.arange(trial.norb))
 
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
@@ -992,11 +997,11 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             prop_data: dictionary containing the updated propagation data
         """
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         # prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
@@ -1014,10 +1019,10 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         def scanned_fun(carry, x):
             # field 1
             new_walkers_0_up = (
-                carry["walkers"][0].at[:, x, :].mul(prop_data["hs_constant"][0, 0])
+                carry["walkers"].data[0].at[:, x, :].mul(prop_data["hs_constant"][0, 0])
             )
             new_walkers_0_dn = (
-                carry["walkers"][1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
+                carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap(
                 [new_walkers_0_up, new_walkers_0_dn], wave_data
@@ -1027,10 +1032,10 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"][0].at[:, x, :].mul(prop_data["hs_constant"][1, 0])
+                carry["walkers"].data[0].at[:, x, :].mul(prop_data["hs_constant"][1, 0])
             )
             new_walkers_1_dn = (
-                carry["walkers"][1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
+                carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap(
                 [new_walkers_1_up, new_walkers_1_dn], wave_data
@@ -1050,7 +1055,7 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             new_walkers = [new_walkers_up, new_walkers_dn]
             mask_0 = mask_0.reshape(-1)
             overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
-            carry["walkers"] = new_walkers
+            carry["walkers"].data = new_walkers
             # carry["weights"] *= (overlaps_new / carry["overlaps"]).real
             carry["overlaps"] = overlaps_new
             return carry, x
@@ -1060,15 +1065,15 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         )  # TODO: chol will be removed from ham_data for hubbard
 
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         ) * jnp.exp(
-            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"][0].shape[-1]
+            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"].data[0].shape[-1]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         ) * jnp.exp(
-            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"][1].shape[-1]
+            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"].data[1].shape[-1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         # prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
@@ -1102,7 +1107,7 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
     ) -> dict:
         prop_data = super().init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
         prop_data["greens"] = trial.calc_full_green_vmap(
-            prop_data["walkers"], wave_data
+            prop_data["walkers"].data, wave_data
         )
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))
         const = jnp.exp(-self.dt * ham_data["u"] / 2)
@@ -1183,12 +1188,12 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_onsite"][1],
             )
             new_walkers_up = (
-                carry["walkers"][0].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"].data[0].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_dn = (
-                carry["walkers"][1].at[:, x, :].mul(constants[:, 1].reshape(-1, 1))
+                carry["walkers"].data[1].at[:, x, :].mul(constants[:, 1].reshape(-1, 1))
             )
-            carry["walkers"] = [new_walkers_up, new_walkers_dn]
+            carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
             carry["greens"] = trial.update_greens_function_vmap(
@@ -1245,12 +1250,12 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_nn"][1],
             )
             new_walkers_up = (
-                carry["walkers"][0].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"].data[0].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_up = new_walkers_up.at[:, site_j, :].mul(
                 constants[:, 1].reshape(-1, 1)
             )
-            carry["walkers"] = [new_walkers_up, carry["walkers"][1]]
+            carry["walkers"].data = [new_walkers_up, carry["walkers"].data[1]]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
             carry["greens"] = trial.update_greens_function_vmap(
@@ -1294,12 +1299,12 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_nn"][1],
             )
             new_walkers_up = (
-                carry["walkers"][0].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"].data[0].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_dn = (
-                carry["walkers"][1].at[:, site_j, :].mul(constants[:, 1].reshape(-1, 1))
+                carry["walkers"].data[1].at[:, site_j, :].mul(constants[:, 1].reshape(-1, 1))
             )
-            carry["walkers"] = [new_walkers_up, new_walkers_dn]
+            carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
             carry["greens"] = trial.update_greens_function_vmap(
@@ -1343,12 +1348,12 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_nn"][1],
             )
             new_walkers_dn = (
-                carry["walkers"][1].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"].data[1].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_up = (
-                carry["walkers"][0].at[:, site_j, :].mul(constants[:, 1].reshape(-1, 1))
+                carry["walkers"].data[0].at[:, site_j, :].mul(constants[:, 1].reshape(-1, 1))
             )
-            carry["walkers"] = [new_walkers_up, new_walkers_dn]
+            carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
             carry["greens"] = trial.update_greens_function_vmap(
@@ -1393,12 +1398,12 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_nn"][1],
             )
             new_walkers_dn = (
-                carry["walkers"][1].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"].data[1].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_dn = new_walkers_dn.at[:, site_j, :].mul(
                 constants[:, 1].reshape(-1, 1)
             )
-            carry["walkers"] = [carry["walkers"][0], new_walkers_dn]
+            carry["walkers"].data = [carry["walkers"].data[0], new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
             carry["greens"] = trial.update_greens_function_vmap(
@@ -1446,7 +1451,7 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
     ) -> dict:
         prop_data = super().init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
         prop_data["greens"] = trial.calc_full_green_vmap(
-            prop_data["walkers"], wave_data
+            prop_data["walkers"].data, wave_data
         )
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))
         const = jnp.exp(-self.dt * ham_data["u"] / 2)
@@ -1486,11 +1491,11 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             prop_data: dictionary containing the updated propagation data
         """
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
@@ -1509,34 +1514,34 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
         def scanned_fun(carry, x):
             # field 1
             new_walkers_0_up = (
-                carry["walkers"][0]
+                carry["walkers"].data[0]
                 .at[:, x, :]
                 .mul(prop_data["hs_constant_onsite"][0, 0])
             )
             new_walkers_0_dn = (
-                carry["walkers"][1]
+                carry["walkers"].data[1]
                 .at[:, x, :]
                 .mul(prop_data["hs_constant_onsite"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap(
-                [new_walkers_0_up, new_walkers_0_dn], wave_data
+                UHFWalkers([new_walkers_0_up, new_walkers_0_dn]), wave_data
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"][0]
+                carry["walkers"].data[0]
                 .at[:, x, :]
                 .mul(prop_data["hs_constant_onsite"][1, 0])
             )
             new_walkers_1_dn = (
-                carry["walkers"][1]
+                carry["walkers"].data[1]
                 .at[:, x, :]
                 .mul(prop_data["hs_constant_onsite"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap(
-                [new_walkers_1_up, new_walkers_1_dn], wave_data
+                UHFWalkers([new_walkers_1_up, new_walkers_1_dn]), wave_data
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
@@ -1553,7 +1558,7 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             new_walkers = [new_walkers_up, new_walkers_dn]
             mask_0 = mask_0.reshape(-1)
             overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
-            carry["walkers"] = new_walkers
+            carry["walkers"].data = new_walkers
             carry["weights"] *= norm
             carry["overlaps"] = overlaps_new
             return carry, x
@@ -1572,7 +1577,7 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             # up up
             # field 1
             new_walkers_0_up = (
-                carry["walkers"][0]
+                carry["walkers"].data[0]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][0, 0])
             )
@@ -1580,14 +1585,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
                 prop_data["hs_constant_nn"][0, 1]
             )
             overlaps_new_0 = trial.calc_overlap(
-                [new_walkers_0_up, carry["walkers"][1]], wave_data
+                UHFWalkers([new_walkers_0_up, carry["walkers"].data[1]]), wave_data
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"][0]
+                carry["walkers"].data[0]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][1, 0])
             )
@@ -1595,7 +1600,7 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
                 prop_data["hs_constant_nn"][1, 1]
             )
             overlaps_new_1 = trial.calc_overlap(
-                [new_walkers_1_up, carry["walkers"][1]], wave_data
+                UHFWalkers([new_walkers_1_up, carry["walkers"].data[1]]), wave_data
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
@@ -1608,44 +1613,44 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             rns = uniform_rns_1[:, 0, x]
             mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
             new_walkers_up = jnp.where(mask_0, new_walkers_0_up, new_walkers_1_up)
-            new_walkers = [new_walkers_up, carry["walkers"][1]]
+            new_walkers = [new_walkers_up, carry["walkers"].data[1]]
             mask_0 = mask_0.reshape(-1)
             overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
-            carry["walkers"] = new_walkers
+            carry["walkers"].data = new_walkers
             carry["weights"] *= norm
             carry["overlaps"] = overlaps_new
 
             # up dn
             # field 1
             new_walkers_0_up = (
-                carry["walkers"][0]
+                carry["walkers"].data[0]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][0, 0])
             )
             new_walkers_0_dn = (
-                carry["walkers"][1]
+                carry["walkers"].data[1]
                 .at[:, site_j, :]
                 .mul(prop_data["hs_constant_nn"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap(
-                [new_walkers_0_up, new_walkers_0_dn], wave_data
+                UHFWalkers([new_walkers_0_up, new_walkers_0_dn]), wave_data
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"][0]
+                carry["walkers"].data[0]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][1, 0])
             )
             new_walkers_1_dn = (
-                carry["walkers"][1]
+                carry["walkers"].data[1]
                 .at[:, site_j, :]
                 .mul(prop_data["hs_constant_nn"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap(
-                [new_walkers_1_up, new_walkers_1_dn], wave_data
+                UHFWalkers([new_walkers_1_up, new_walkers_1_dn]), wave_data
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
@@ -1662,41 +1667,41 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             new_walkers = [new_walkers_up, new_walkers_dn]
             mask_0 = mask_0.reshape(-1)
             overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
-            carry["walkers"] = new_walkers
+            carry["walkers"].data = new_walkers
             carry["weights"] *= norm
             carry["overlaps"] = overlaps_new
 
             # dn up
             # field 1
             new_walkers_0_dn = (
-                carry["walkers"][1]
+                carry["walkers"].data[1]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][0, 0])
             )
             new_walkers_0_up = (
-                carry["walkers"][0]
+                carry["walkers"].data[0]
                 .at[:, site_j, :]
                 .mul(prop_data["hs_constant_nn"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap(
-                [new_walkers_0_up, new_walkers_0_dn], wave_data
+                UHFWalkers([new_walkers_0_up, new_walkers_0_dn]), wave_data
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
             new_walkers_1_dn = (
-                carry["walkers"][1]
+                carry["walkers"].data[1]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][1, 0])
             )
             new_walkers_1_up = (
-                carry["walkers"][0]
+                carry["walkers"].data[0]
                 .at[:, site_j, :]
                 .mul(prop_data["hs_constant_nn"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap(
-                [new_walkers_1_up, new_walkers_1_dn], wave_data
+                UHFWalkers([new_walkers_1_up, new_walkers_1_dn]), wave_data
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
@@ -1713,14 +1718,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             new_walkers = [new_walkers_up, new_walkers_dn]
             mask_0 = mask_0.reshape(-1)
             overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
-            carry["walkers"] = new_walkers
+            carry["walkers"].data = new_walkers
             carry["weights"] *= norm
             carry["overlaps"] = overlaps_new
 
             # dn dn
             # field 1
             new_walkers_0_dn = (
-                carry["walkers"][1]
+                carry["walkers"].data[1]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][0, 0])
             )
@@ -1728,14 +1733,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
                 prop_data["hs_constant_nn"][0, 1]
             )
             overlaps_new_0 = trial.calc_overlap(
-                [carry["walkers"][0], new_walkers_0_dn], wave_data
+                UHFWalkers([carry["walkers"].data[0], new_walkers_0_dn]), wave_data
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
             new_walkers_1_dn = (
-                carry["walkers"][1]
+                carry["walkers"].data[1]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][1, 0])
             )
@@ -1743,7 +1748,7 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
                 prop_data["hs_constant_nn"][1, 1]
             )
             overlaps_new_1 = trial.calc_overlap(
-                [carry["walkers"][0], new_walkers_1_dn], wave_data
+                UHFWalkers([carry["walkers"].data[0], new_walkers_1_dn]), wave_data
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
@@ -1756,10 +1761,10 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             rns = uniform_rns_1[:, 3, x]
             mask_0 = (rns < ratio_0).reshape(-1, 1, 1)
             new_walkers_dn = jnp.where(mask_0, new_walkers_0_dn, new_walkers_1_dn)
-            new_walkers = [carry["walkers"][0], new_walkers_dn]
+            new_walkers = [carry["walkers"].data[0], new_walkers_dn]
             mask_0 = mask_0.reshape(-1)
             overlaps_new = jnp.where(mask_0, overlaps_new_0, overlaps_new_1)
-            carry["walkers"] = new_walkers
+            carry["walkers"].data = new_walkers
             carry["weights"] *= norm
             carry["overlaps"] = overlaps_new
 
@@ -1770,11 +1775,11 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
         )
 
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
@@ -1821,11 +1826,11 @@ class propagator_cpmc_continuous(propagator_unrestricted):
             prop_data: dictionary containing the updated propagation data
         """
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         )
 
         # two body
@@ -1837,25 +1842,25 @@ class propagator_cpmc_continuous(propagator_unrestricted):
         fb_term = 0.0 * jnp.sum(
             gaussian_rns * force_bias - force_bias * force_bias / 2.0, axis=1
         )
-        prop_data["walkers"][0] = jnp.einsum(
+        prop_data["walkers"].data[0] = jnp.einsum(
             "wi,wij->wij",
             jnp.exp(shifted_fields * ham_data["hs_constant"]),
-            prop_data["walkers"][0],
+            prop_data["walkers"].data[0],
             optimize="optimal",
         )
-        prop_data["walkers"][1] = jnp.einsum(
+        prop_data["walkers"].data[1] = jnp.einsum(
             "wi,wij->wij",
             jnp.exp(-shifted_fields * ham_data["hs_constant"]),
-            prop_data["walkers"][1],
+            prop_data["walkers"].data[1],
             optimize="optimal",
         )
 
         # one body
-        prop_data["walkers"][0] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"][0]
+        prop_data["walkers"].data[0] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         )
-        prop_data["walkers"][1] = jnp.einsum(
-            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
+        prop_data["walkers"].data[1] = jnp.einsum(
+            "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
 

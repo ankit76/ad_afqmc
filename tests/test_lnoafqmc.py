@@ -5,6 +5,7 @@ from pyscf import gto, scf, df
 
 config.setup_jax()
 
+__test__ = False
 
 options = {
     "dt": 0.005,

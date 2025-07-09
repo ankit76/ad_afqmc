@@ -155,7 +155,7 @@ def test_rhf_optimize_orbs():
 
 
 def test_uhf_overlap():
-    overlap = uhf._calc_overlap(walker_up, walker_dn, wave_data_u)
+    overlap = uhf._calc_overlap_unrestricted(walker_up, walker_dn, wave_data_u)
     assert np.allclose(jnp.real(overlap), -0.4029825074695857)
 
 
@@ -169,13 +169,13 @@ def test_uhf_green():
 
 
 def test_uhf_force_bias():
-    force_bias = uhf._calc_force_bias(walker_up, walker_dn, ham_data_u, wave_data_u)
+    force_bias = uhf._calc_force_bias_unrestricted(walker_up, walker_dn, ham_data_u, wave_data_u)
     assert force_bias.shape == (nchol,)
     assert np.allclose(jnp.real(jnp.sum(force_bias)), 10.441272099672341)
 
 
 def test_uhf_energy():
-    energy = uhf._calc_energy(
+    energy = uhf._calc_energy_unrestricted(
         walker_up,
         walker_dn,
         ham_data_u,
@@ -193,7 +193,7 @@ def test_uhf_optimize_orbs():
 
 
 def test_ghf_overlap():
-    overlap = ghf._calc_overlap(walker_up, walker_dn, wave_data_g)
+    overlap = ghf._calc_overlap_unrestricted(walker_up, walker_dn, wave_data_g)
     assert np.allclose(jnp.real(overlap), -0.7645032356687913)
 
 
@@ -203,12 +203,12 @@ def test_ghf_green():
 
 
 def test_ghf_force_bias():
-    force_bias = ghf._calc_force_bias(walker_up, walker_dn, ham_data_g, wave_data_g)
+    force_bias = ghf._calc_force_bias_unrestricted(walker_up, walker_dn, ham_data_g, wave_data_g)
     assert force_bias.shape == (nchol,)
 
 
 def test_ghf_energy():
-    energy = ghf._calc_energy(
+    energy = ghf._calc_energy_unrestricted(
         walker_up,
         walker_dn,
         ham_data_g,
@@ -218,8 +218,8 @@ def test_ghf_energy():
 
 
 def test_noci_overlap():
-    overlap = noci._calc_overlap(walker_up, walker_dn, wave_data_noci)
-    # print(overlap)
+    overlap = noci._calc_overlap_unrestricted(walker_up, walker_dn, wave_data_noci)
+    # print(overlap)    
     # assert np.allclose(jnp.real(overlap), -0.4029825074695857)
 
 
@@ -231,7 +231,7 @@ def test_noci_green():
 
 
 def test_noci_force_bias():
-    force_bias = noci._calc_force_bias(
+    force_bias = noci._calc_force_bias_unrestricted(
         walker_up, walker_dn, ham_data_noci, wave_data_noci
     )
     assert force_bias.shape == (nchol,)
@@ -239,7 +239,7 @@ def test_noci_force_bias():
 
 
 def test_noci_energy():
-    energy = noci._calc_energy(
+    energy = noci._calc_energy_unrestricted(
         walker_up,
         walker_dn,
         ham_data_noci,
@@ -269,10 +269,10 @@ def test_uhf_cpmc():
         jnp.array([[0, 3], [1, 3]]),
         hs_constant[0] - 1,
     )
-    overlap_0 = uhf_cpmc._calc_overlap(walker_up, walker_dn, wave_data_u)
+    overlap_0 = uhf_cpmc._calc_overlap_unrestricted(walker_up, walker_dn, wave_data_u)
     new_walker_0 = walker_up.at[3, :].mul(hs_constant[0, 0])
     new_walker_1 = walker_dn.at[3, :].mul(hs_constant[0, 1])
-    ratio = uhf_cpmc._calc_overlap(new_walker_0, new_walker_1, wave_data_u) / overlap_0
+    ratio = uhf_cpmc._calc_overlap_unrestricted(new_walker_0, new_walker_1, wave_data_u) / overlap_0
     assert np.allclose(ratio, wick_ratio)
 
     new_green = uhf_cpmc.calc_full_green(new_walker_0, new_walker_1, wave_data_u)
@@ -341,7 +341,6 @@ def test_cisd():
     ene_auto = trial_auto._calc_energy_restricted(walker, ham_data, wave_data)
     ene_manual_lm = trial._calc_energy_restricted(walker, ham_data, wave_data)
     ene_manual_hm = trial_hm._calc_energy_restricted(walker, ham_data, wave_data)
-    print(ene_auto, ene_manual_lm, ene_manual_hm)
     assert np.allclose(ene_auto, ene_manual_lm, atol=1.0e-4)
     assert np.allclose(ene_manual_lm, ene_manual_hm, atol=1.0e-6)
     assert np.allclose(
@@ -405,15 +404,14 @@ def test_ucisd():
     ham_data = {"h0": h0, "h1": jnp.array([h1, h1]), "chol": chol}
     ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
     ham_data = trial_auto._build_measurement_intermediates(ham_data, wave_data)
-    ene_lm = trial._calc_energy(walker_up, walker_dn, ham_data, wave_data)
-    ene_hm = trial_hm._calc_energy(walker_up, walker_dn, ham_data, wave_data)
-    ene_auto = trial_auto._calc_energy(walker_up, walker_dn, ham_data, wave_data)
-    print(ene_auto, ene_lm, ene_hm)
+    ene_lm = trial._calc_energy_unrestricted(walker_up, walker_dn, ham_data, wave_data)
+    ene_hm = trial_hm._calc_energy_unrestricted(walker_up, walker_dn, ham_data, wave_data)
+    ene_auto = trial_auto._calc_energy_unrestricted(walker_up, walker_dn, ham_data, wave_data)
     assert np.allclose(ene_auto, ene_lm, atol=1.0e-4)
     assert np.allclose(ene_lm, ene_hm, atol=1.0e-6)
     assert np.allclose(
-        trial._calc_force_bias(walker_up, walker_dn, ham_data, wave_data),
-        trial_auto._calc_force_bias(walker_up, walker_dn, ham_data, wave_data),
+        trial._calc_force_bias_unrestricted(walker_up, walker_dn, ham_data, wave_data),
+        trial_auto._calc_force_bias_unrestricted(walker_up, walker_dn, ham_data, wave_data),
         atol=1.0e-5,
     )
 
