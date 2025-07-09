@@ -2210,7 +2210,7 @@ class wave_function_auto(wave_function):
         walkerout = walker + x*jnp.block(
             [
                 [h1[0].dot(walker[:self.norb,:self.nelec[0]]), h1[0].dot(walker[:self.norb,self.nelec[0]:])],
-                [h1[1].dot(walker[:self.norb,:self.nelec[0]]), h1[1].dot(walker[:self.norb,self.nelec[0]:])]
+                [h1[1].dot(walker[self.norb:,:self.nelec[0]]), h1[1].dot(walker[self.norb:,self.nelec[0]:])]
             ]
         )
         return self._calc_overlap_generalized(walkerout, wave_data)
@@ -2266,14 +2266,14 @@ class wave_function_auto(wave_function):
         walker1 = x*jnp.block(
             [
                 [chol_i.dot(walker[:self.norb,:self.nelec[0]]), chol_i.dot(walker[:self.norb,self.nelec[0]:])],
-                [chol_i.dot(walker[:self.norb,:self.nelec[0]]), chol_i.dot(walker[:self.norb,self.nelec[0]:])]
+                [chol_i.dot(walker[self.norb:,:self.nelec[0]]), chol_i.dot(walker[self.norb:,self.nelec[0]:])]
             ]
         )
 
         walker2 = x*jnp.block(
             [
                 [chol_i.dot(walker1[:self.norb,:self.nelec[0]]), chol_i.dot(walker1[:self.norb,self.nelec[0]:])],
-                [chol_i.dot(walker1[:self.norb,:self.nelec[0]]), chol_i.dot(walker1[:self.norb,self.nelec[0]:])]
+                [chol_i.dot(walker1[self.norb:,:self.nelec[0]]), chol_i.dot(walker1[self.norb:,self.nelec[0]:])]
             ]
         )
 
@@ -3084,29 +3084,31 @@ class UCISD(wave_function_auto):
         noccB, ci1B, ci2BB = self.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
         ci2AB = wave_data["ci2AB"]
 
-        Atrial, Btrial = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
+        Atrial, Btrial = wave_data["mo_coeff"][0][:,:noccA], wave_data["mo_coeff"][1][:,:noccB]
         bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
-        gf = (walker.dot(jnp.linalg.inv(bra.T.conj() @ walker))).T
+        gf = (walker @ jnp.linalg.inv(bra.T.conj() @ walker) @ bra.T.conj()).T
 
-        gfA, gfB   = gf[:self.nelec[0],:self.norb], gf[self.nelec[0]:,self.norb:]
-        gfAB, gfBA = gf[:self.nelec[0],self.norb:], gf[self.nelec[0]:,:self.norb]
+        gfA, gfB   = gf[:self.nelec[0],:self.norb], gf[self.norb:self.norb+self.nelec[1],self.norb:]
+        gfAB, gfBA = gf[:self.nelec[0],self.norb:], gf[self.norb:self.norb+self.nelec[1],:self.norb]
 
         o0 = jnp.linalg.det( bra.T.conj() @ walker)
         o1 = jnp.einsum("ia,ia", ci1A, gfA[:, noccA:]) \
             + jnp.einsum("ia,ia", ci1B, gfB[:, noccB:])
 
         # AA
-        o2 = 0.5 * jnp.einsum("iajb, ia, jb", ci2AA, gfA[:, noccA:], gfA[:, noccA:])
+        o2 = jnp.einsum("iajb, ia, jb", ci2AA, gfA[:, noccA:], gfA[:, noccA:])
         # o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2AA, GFA[:, noccA:], GFA[:, noccA:])
 
         # BB
-        o2 += 0.5 * jnp.einsum("iajb, ia, jb", ci2BB, gfB[:, noccB:], gfB[:, noccB:])
+        o2 += jnp.einsum("iajb, ia, jb", ci2BB, gfB[:, noccB:], gfB[:, noccB:])
         # o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
 
         # AB
-        o2 += jnp.einsum("iajb, ia, jb", ci2AB, gfA[:, noccA:], gfB[:, noccB:])
+        o2 += 2.*jnp.einsum("iajb, ia, jb", ci2AB, gfA[:, noccA:], gfB[:, noccB:])
+        o2 -= 2.*jnp.einsum("iajb, ib, ja", ci2AB, gfAB[:, noccB:], gfBA[:, noccA:])
 
-        return (1.0 + o1 + o2) * o0
+        return (1.0 + o1 + o2/2.) * o0
+        # return (1.0 + o1 ) * o0
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
