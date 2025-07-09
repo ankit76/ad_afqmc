@@ -36,7 +36,7 @@ class UHFWalkers:
 tree_util.register_pytree_node(
     UHFWalkers,
     lambda x: (x.data, None),                  # flatten: list of arrays, no aux
-    lambda aux, children: UHFWalkers(children) # unflatten: rewrap list into UHFWalkers
+    lambda aux, children: UHFWalkers(list(children)) # unflatten: rewrap list into UHFWalkers
 )
 
 @dataclass

@@ -239,12 +239,13 @@ def afqmc_LNOenergy(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, init_walkers)
+    local_seed = seed + rank
+    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, local_seed, init_walkers)
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
-    prop_data["key"] = random.PRNGKey(seed + rank)
+    # prop_data["key"] = random.PRNGKey(seed + rank)
 
     # Equilibration phase
     comm.Barrier()
@@ -375,15 +376,22 @@ def afqmc_LNOenergy(
 
     # Analysis phase
     comm.Barrier()
-    e_afqmc, e_err_afqmc = _analyze_LNOenergy_results(
-        global_block_weights,
-        global_block_energies,
-        rank,
-        comm,
-        tmpdir,
-        global_block_orbEs=global_block_orbEs,
-        truncate_at_n=truncate_at_n,
-    )
+    if rank == 0:
+        assert global_block_weights is not None
+        assert global_block_energies is not None
+        e_afqmc, e_err_afqmc = _analyze_LNOenergy_results(
+            global_block_weights,
+            global_block_energies,
+            rank,
+            comm,
+            tmpdir,
+            global_block_orbEs=global_block_orbEs,
+            truncate_at_n=truncate_at_n,
+        )
+    comm.Barrier()
+    e_afqmc = comm.bcast(e_afqmc, root=0)
+    e_err_afqmc = comm.bcast(e_err_afqmc, root=0)
+    comm.Barrier()
 
     return e_afqmc, e_err_afqmc
 
@@ -771,17 +779,29 @@ def _setup_propagate_phaseless_wrapper(
         )
 
 
+# def _init_prop_data_tangent(prop_data):
+#     """Initialize tangent data for AD"""
+#     prop_data_tangent = {}
+#     for x in prop_data:
+#         if isinstance(prop_data[x], list):
+#             prop_data_tangent[x] = [np.zeros_like(y) for y in prop_data[x]]
+#         elif prop_data[x].dtype == "uint32":
+#             prop_data_tangent[x] = np.zeros(prop_data[x].shape, dtype=dtypes.float0)
+#         else:
+#             prop_data_tangent[x] = np.zeros_like(prop_data[x])
+#     return prop_data_tangent
+
+
 def _init_prop_data_tangent(prop_data):
     """Initialize tangent data for AD"""
-    prop_data_tangent = {}
-    for x in prop_data:
-        if isinstance(prop_data[x], list):
-            prop_data_tangent[x] = [np.zeros_like(y) for y in prop_data[x]]
-        elif prop_data[x].dtype == "uint32":
-            prop_data_tangent[x] = np.zeros(prop_data[x].shape, dtype=dtypes.float0)
+
+    def make_tangent(x):
+        if hasattr(x, "dtype") and x.dtype == np.uint32:
+            return np.zeros(x.shape, dtype=dtypes.float0)
         else:
-            prop_data_tangent[x] = np.zeros_like(prop_data[x])
-    return prop_data_tangent
+            return np.zeros_like(x)
+
+    return jax.tree_util.tree_map(make_tangent, prop_data)
 
 
 def _run_ad_step(
@@ -1304,8 +1324,8 @@ def _analyze_LNOenergy_results(
     rank: int,
     comm,
     tmpdir: str,
-    global_block_orbEs: np.ndarray = None,
-    truncate_at_n: int = None,
+    global_block_orbEs: Optional[np.ndarray] = None,
+    truncate_at_n: Optional[int] = None,
 ):
     """Analyze energy results and calculate statistics"""
     e_afqmc, e_err_afqmc = None, None

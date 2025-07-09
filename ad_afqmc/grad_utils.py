@@ -28,6 +28,7 @@ def _ao2mo(chol, C):  # Convert the 2e integrals from AO to MO basis
 
 
 def FD_integrals(mf, dR=0.00001, tmpdir="./"):
+    os.makedirs(tmpdir, exist_ok=True)
     basis = mf.mol.basis
     mol = mf.mol
 
@@ -155,7 +156,7 @@ def write_integrals_lowdins(mf, tmpdir="./"):
 
 def prep_afqmc_nuc_grad(mf, dR=1e-5, tmpdir: str = "./"):
     print("Removing old files")
-    os.system("rm -f en_der_afqmc_*.npz")
+    os.system(f"rm -f {tmpdir}/en_der_afqmc_*.npz")
     FD_integrals(mf, dR=dR, tmpdir=tmpdir)
     write_integrals_lowdins(mf, tmpdir=tmpdir)
 

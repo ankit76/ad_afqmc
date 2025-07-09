@@ -137,9 +137,9 @@ def stochastic_reconfiguration_mpi_unrestricted(walkers, weights, zeta, comm):
         cumulative_weights = np.cumsum(np.abs(global_buffer_weights))
         total_weight = cumulative_weights[-1]
         average_weight = total_weight / nwalkers / size
-        global_buffer_weights_new = (np.ones(nwalkers * size) * average_weight).astype(
-            weights.dtype
-        )
+        global_buffer_weights_new = (
+            np.ones(int(nwalkers * size)) * average_weight
+        ).astype(weights.dtype)
         for i in range(nwalkers * size):
             z = (i + zeta) / nwalkers / size
             new_i = np.searchsorted(cumulative_weights, z * total_weight)

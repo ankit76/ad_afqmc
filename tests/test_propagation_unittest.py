@@ -32,8 +32,8 @@ ham_data = ham_handler.build_propagation_intermediates(
 )
 ham_data = ham_handler.build_measurement_intermediates(ham_data, trial, wave_data)
 
-prop_data = prop_handler.init_prop_data(trial, wave_data, ham_data)
-prop_data["key"] = random.PRNGKey(seed)
+prop_data = prop_handler.init_prop_data(trial, wave_data, ham_data, seed)
+# prop_data["key"] = random.PRNGKey(seed)
 prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
 nelec_sp = (5, 4)
@@ -66,8 +66,8 @@ ham_data_u = ham_handler.build_measurement_intermediates(
     ham_data_u, trial_u, wave_data_u
 )
 
-prop_data_u = prop_handler_u.init_prop_data(trial_u, wave_data_u, ham_data_u)
-prop_data_u["key"] = random.PRNGKey(seed)
+prop_data_u = prop_handler_u.init_prop_data(trial_u, wave_data_u, ham_data_u, seed)
+# prop_data_u["key"] = random.PRNGKey(seed)
 prop_data_u["overlaps"] = trial_u.calc_overlap(prop_data_u["walkers"], wave_data_u)
 
 fields = random.normal(
@@ -134,7 +134,7 @@ class TestPropagation(unittest.TestCase):
         trial_cpmc_u = wavefunctions.uhf_cpmc(norb, nelec_sp)
         ham_data_u["u"] = 4.0
         prop_data_cpmc = prop_handler_cpmc.init_prop_data(
-            trial_cpmc_u, wave_data_u, ham_data_u
+            trial_cpmc_u, wave_data_u, ham_data_u, seed
         )
         prop_data_new = prop_handler_cpmc.propagate(
             trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
@@ -157,7 +157,7 @@ class TestPropagation(unittest.TestCase):
         ham_data_u["u"] = 4.0
         ham_data_u["u_1"] = 1.0
         prop_data_cpmc = prop_handler_cpmc_nn.init_prop_data(
-            trial_cpmc_u, wave_data_u, ham_data_u
+            trial_cpmc_u, wave_data_u, ham_data_u, seed
         )
         prop_data_cpmc["key"] = random.PRNGKey(seed)
         prop_data_new = prop_handler_cpmc_nn.propagate(

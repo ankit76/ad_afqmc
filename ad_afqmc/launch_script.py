@@ -124,6 +124,8 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
     options["orbital_rotation"] = options.get("orbital_rotation", True)
     options["do_sr"] = options.get("do_sr", True)
     options["walker_type"] = options.get("walker_type", "restricted")
+    options["symmetry_projector"] = options.get("symmetry_projector", None)
+    options["trial_ket"] = options.get("trial_ket", None)
 
     # Handle backwards compatibility for walker types
     if options["walker_type"] == "rhf":
@@ -681,17 +683,18 @@ def run_afqmc_calculation(
     # Run appropriate AFQMC algorithm
     e_afqmc, err_afqmc = 0.0, 0.0
     if options["free_projection"]:
-        driver.fp_afqmc(
-            ham_data,
-            ham,
-            prop,
-            trial,
-            wave_data,
-            sampler,
-            observable,
-            options,
-            mpi_comm,
-        )
+        # driver.fp_afqmc(
+        #     ham_data,
+        #     ham,
+        #     prop,
+        #     trial,
+        #     wave_data,
+        #     sampler,
+        #     observable,
+        #     options,
+        #     mpi_comm,
+        # )
+        raise NotImplementedError("Free projection AFQMC is not supported from launch_script.")
     else:
         e_afqmc, err_afqmc = driver.afqmc(
             ham_data,

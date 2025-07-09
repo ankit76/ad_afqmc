@@ -915,8 +915,11 @@ def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, cho
             mc.mo_coeff = basis_coeff  # type: ignore
             h1e, enuc = mc.get_h1eff()  # type: ignore
             chol = chol.reshape((-1, nbasis, nbasis))
-            chol = chol[:, mc.ncore: mc.ncore + mc.ncas,
-                        mc.ncore: mc.ncore + mc.ncas]  # type: ignore
+            chol = chol[
+                :,
+                mc.ncore : mc.ncore + mc.ncas,  # type: ignore
+                mc.ncore : mc.ncore + mc.ncas,  # type: ignore
+            ]  # type: ignore
     return h1e, chol, nelec, enuc, nbasis, nchol
 
 

@@ -2,9 +2,10 @@ import numpy as np
 import pytest
 from ad_afqmc import config, lnoutils
 from pyscf import gto, scf, df
-
+import os
 config.setup_jax()
 
+__test__ = False
 
 options = {
     "dt": 0.005,
@@ -91,7 +92,7 @@ def test_h2o_dimer():
     nelec_act = 8
     norb_frozen = [i for i in range(6)] + [i for i in range(24, 48)]
     chol_cut = 1e-4
-    options["tmpdir"] = "./"
+    options["tmpdir"] = "./tmp/"
     options["maxError"] = 1e-5
 
     orbital_corr = -0.009938226221
