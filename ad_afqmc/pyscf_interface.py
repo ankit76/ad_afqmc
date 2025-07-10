@@ -861,7 +861,7 @@ def read_pyscf_ccsd(mf_or_cc, tmpdir):
                                 np.array(cc.t1), np.array(cc.t1))
         ci2 = ci2.transpose(0, 2, 1, 3)
         ci1 = np.array(cc.t1)
-        np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2)
+        np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2, t1 = cc.t1, t2 = cc.t2)
 
     return mf, cc, norb_frozen
 
@@ -915,8 +915,11 @@ def compute_cholesky_integrals(mol, mf, basis_coeff, integrals, norb_frozen, cho
             mc.mo_coeff = basis_coeff  # type: ignore
             h1e, enuc = mc.get_h1eff()  # type: ignore
             chol = chol.reshape((-1, nbasis, nbasis))
-            chol = chol[:, mc.ncore: mc.ncore + mc.ncas,
-                        mc.ncore: mc.ncore + mc.ncas]  # type: ignore
+            chol = chol[
+                :,
+                mc.ncore : mc.ncore + mc.ncas,  # type: ignore
+                mc.ncore : mc.ncore + mc.ncas,  # type: ignore
+            ]  # type: ignore
     return h1e, chol, nelec, enuc, nbasis, nchol
 
 

@@ -9,7 +9,7 @@ from jax import checkpoint, jit, lax, random
 from ad_afqmc import linalg_utils
 from ad_afqmc.hamiltonian import hamiltonian
 from ad_afqmc.propagation import propagator
-from ad_afqmc.wavefunctions import wave_function
+from ad_afqmc.wavefunctions import rhf_lno, wave_function
 
 
 @dataclass
@@ -115,12 +115,21 @@ class sampler:
             x, y, ham_data, prop, trial, wave_data
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+
+        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        energy_samples = jnp.where(jnp.abs(energy_samples - ham_data['ene0']) > jnp.sqrt(2./propagator.dt), ham_data['ene0'],     energy_samples)
-        block_energy = jnp.sum(energy_samples * prop_data["overlaps"]) / jnp.sum(
-            prop_data["overlaps"]
+
+        energy_samples = jnp.where(
+            jnp.abs(energy_samples - ham_data["ene0"]) > jnp.sqrt(2.0 / propagator.dt),
+            ham_data["ene0"],
+            energy_samples,
         )
-        block_weight = jnp.sum(prop_data["overlaps"])
+        block_energy = jnp.sum(
+            energy_samples * prop_data["overlaps"] * prop_data["weights"]
+        ) / jnp.sum(prop_data["overlaps"] * prop_data["weights"])
+
+        block_weight = jnp.sum(prop_data["overlaps"] * prop_data["weights"])
         return prop_data, (prop_data, block_energy, block_weight)
 
     @partial(jit, static_argnums=(0, 4, 5))
@@ -566,7 +575,7 @@ class sampler_lno(sampler):
         _x: Any,
         ham_data: dict,
         propagator: propagator,
-        trial: wave_function,
+        trial: rhf_lno,
         wave_data: dict,
     ):
         prop_data["key"], subkey = random.split(prop_data["key"])

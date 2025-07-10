@@ -18,7 +18,7 @@ def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=Fal
     prevError = 0.0
     plateauError = None
     for i in blockSizes[blockSizes < nSamples / 2.0]:
-        nBlocks = nSamples // i
+        nBlocks = int(nSamples // i)
         blockedWeights = np.zeros(nBlocks)
         blockedEnergies = np.zeros(nBlocks)
         for j in range(nBlocks):
