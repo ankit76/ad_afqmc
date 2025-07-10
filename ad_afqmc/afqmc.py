@@ -114,6 +114,7 @@ class AFQMC:
 
         ##this can be tr, s2 or sz for time-reversal, S^2, or S_z symmetry projection, respectively
         self.symmetry_projector = None  
+        self.optimize_trial = False
         self.target_spin = 0 ##2S and is only used when symmetry_projector is s2 
         self.symmetry = False
         self.save_walkers = False
@@ -192,6 +193,7 @@ class AFQMC:
                 f.write(self.tmpdir)
             return self.tmpdir
         elif options["free_projection"]:
+            #run_afqmc.optimize_trial(options)
             if (self.mf_or_cc_ket != self.mf_or_cc) and (isinstance(self.mf_or_cc_ket, UCCSD) or isinstance(self.mf_or_cc_ket, CCSD)):
                 pyscf_interface.read_pyscf_ccsd(self.mf_or_cc_ket, options["tmpdir"])
             #options=None, script=None, mpi_prefix=None, nproc=None

@@ -7,7 +7,10 @@ from typing import Optional, Union
 
 import numpy as np
 
-from ad_afqmc import config, launch_script, driver, config
+from ad_afqmc import config, launch_script, driver, config, wavefunctions, optimize_trial
+import jax.numpy as jnp
+from jax import vmap, jit, value_and_grad
+import jaxopt
 
 print = partial(print, flush=True)
 
@@ -119,6 +122,13 @@ def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None, tmpdir=
     ham_data, ham, prop, trial, wave_data, trial_ket, wave_data_ket, sampler, observable, options = (
         launch_script.setup_afqmc(options, options["tmpdir"])
     )
+
+    if (options["symmetry_projector"] == "s2" and isinstance(trial, wavefunctions.uhf) and options["optimize_trial"]):
+        orbitals = optimize_trial.optimize_trial(ham_data, trial, wave_data)
+        wave_data["mo_coeff"] = orbitals
+        nao = orbitals[0].shape[0]
+        wave_data["rdm1"] = jnp.vstack([orbitals[0] @ orbitals[0].T.conj(), orbitals[1] @ orbitals[1].T.conj()]).reshape(-1,nao,nao)
+
     config.setup_jax()
     comm = config.setup_comm()
 
