@@ -5,12 +5,21 @@ import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import h5py
+import jax
 import numpy as np
 from jax import numpy as jnp
 
-from ad_afqmc import config, driver, hamiltonian, propagation, sampling, wavefunctions, Wigner_small_d
+from ad_afqmc import (
+    Wigner_small_d,
+    config,
+    driver,
+    hamiltonian,
+    propagation,
+    sampling,
+    wavefunctions,
+)
 from ad_afqmc.config import mpi_print as print
-import jax
+
 tmpdir = "."
 
 
@@ -146,7 +155,7 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
         "ucisd",
         "ghf_complex",
         "gcisd_complex",
-        "UCISD"
+        "UCISD",
     ]
 
     if options["trial"] is None:
@@ -253,7 +262,7 @@ def apply_symmetry_mask(ham_data: Dict, options: Dict) -> Dict:
 
 def set_trial(
     options: Dict,
-    options_trial: str, 
+    options_trial: str,
     mo_coeff: jnp.ndarray,
     norb: int,
     nelec_sp: Tuple[int, int],
@@ -303,21 +312,33 @@ def set_trial(
                 ]
             )
 
-    if (options.get("symmetry_projector", None)=="s2"):
-        S = options["target_spin"]/2.
-        Sz = (nelec_sp[0] - nelec_sp[1])/2.
-        ngrid = 8 ## this needs to be in the input###*****
+    if options.get("symmetry_projector", None) == "s2":
+        S = options["target_spin"] / 2.0
+        Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
+        ngrid = 8  ## this needs to be in the input###*****
         beta_vals = np.linspace(0, np.pi, ngrid, endpoint=False)
-        wigner = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(S, Sz, Sz, beta_vals)
+        wigner = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+            S, Sz, Sz, beta_vals
+        )
         wave_data["wigner"] = (S, Sz, wigner * jnp.sin(beta_vals), beta_vals)
 
     # Set up trial wavefunction based on specified type
     if options_trial == "rhf":
-        trial = wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"], projector=options["symmetry_projector"])
+        trial = wavefunctions.rhf(
+            norb,
+            nelec_sp,
+            n_batch=options["n_batch"],
+            projector=options["symmetry_projector"],
+        )
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
     elif options_trial == "uhf":
-        trial = wavefunctions.uhf(norb, nelec_sp, n_batch=options["n_batch"], projector=options["symmetry_projector"])
+        trial = wavefunctions.uhf(
+            norb,
+            nelec_sp,
+            n_batch=options["n_batch"],
+            projector=options["symmetry_projector"],
+        )
         wave_data["mo_coeff"] = [
             mo_coeff[0][:, : nelec_sp[0]],
             mo_coeff[1][:, : nelec_sp[1]],
@@ -332,8 +353,11 @@ def set_trial(
         ]
         wave_data["ci_coeffs_dets"] = ci_coeffs_dets
         trial = wavefunctions.noci(
-            norb, nelec_sp, ci_coeffs_dets[0].size, n_batch=options["n_batch"]
-            , projector=options["symmetry_projector"]
+            norb,
+            nelec_sp,
+            ci_coeffs_dets[0].size,
+            n_batch=options["n_batch"],
+            projector=options["symmetry_projector"],
         )
 
     elif options_trial == "cisd":
@@ -368,10 +392,10 @@ def set_trial(
             amplitudes = np.load(directory + "/amplitudes.npz")
             T1 = jnp.array(amplitudes["t1"])
             nex = T1.size
-            T2 = jnp.array(amplitudes["t2"].transpose(0,2,1,3)).reshape(nex, nex)
+            T2 = jnp.array(amplitudes["t2"].transpose(0, 2, 1, 3)).reshape(nex, nex)
             evals, evecs = jnp.linalg.eigh(T2)
             nocc, nvirt = T1.shape[0], T1.shape[1]
- 
+
             hs_ops = jnp.einsum(
                 "i,ijk->ijk",
                 jnp.sqrt(evals + 0.0j),
@@ -379,7 +403,7 @@ def set_trial(
             )
 
             trial_wave_data = {"T1": T1, "T2": T2, "hs_ops": hs_ops}
- 
+
             wave_data.update(trial_wave_data)
             wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
@@ -428,19 +452,23 @@ def set_trial(
                 mixed_real_dtype = jnp.float64
                 mixed_complex_dtype = jnp.complex128
 
-            trial = wavefunctions.ucisd(
-                norb,
-                nelec_sp,
-                n_batch=options["n_batch"],
-                projector=options["symmetry_projector"],
-                mixed_real_dtype=mixed_real_dtype,
-                mixed_complex_dtype=mixed_complex_dtype,
-                memory_mode=options["memory_mode"],
-            ) if options_trial == "ucisd" else wavefunctions.UCISD(
-                norb,
-                nelec_sp,
-                n_batch=options["n_batch"],
-                projector=options["symmetry_projector"],
+            trial = (
+                wavefunctions.ucisd(
+                    norb,
+                    nelec_sp,
+                    n_batch=options["n_batch"],
+                    projector=options["symmetry_projector"],
+                    mixed_real_dtype=mixed_real_dtype,
+                    mixed_complex_dtype=mixed_complex_dtype,
+                    memory_mode=options["memory_mode"],
+                )
+                if options_trial == "ucisd"
+                else wavefunctions.UCISD(
+                    norb,
+                    nelec_sp,
+                    n_batch=options["n_batch"],
+                    projector=options["symmetry_projector"],
+                )
             )
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
@@ -628,8 +656,17 @@ def setup_afqmc(
     ham, ham_data = set_ham(norb, h0, h1, chol, options["ene0"])
     ham_data = apply_symmetry_mask(ham_data, options)
     mo_coeff = load_mo_coefficients(directory)
-    trial, wave_data = set_trial(options, options["trial"], mo_coeff, norb, nelec_sp, directory)
-    trial_ket, wave_data_ket = set_trial(options, options.get("trial_ket", options["trial"]), mo_coeff, norb, nelec_sp, directory)
+    trial, wave_data = set_trial(
+        options, options["trial"], mo_coeff, norb, nelec_sp, directory
+    )
+    trial_ket, wave_data_ket = set_trial(
+        options,
+        options.get("trial_ket", options["trial"]),
+        mo_coeff,
+        norb,
+        nelec_sp,
+        directory,
+    )
     prop = set_prop(options)
     sampler = set_sampler(options)
 
@@ -641,7 +678,18 @@ def setup_afqmc(
             print(f"# {op}: {options[op]}")
     print("#")
 
-    return ham_data, ham, prop, trial, wave_data, trial_ket, wave_data_ket, sampler, observable, options
+    return (
+        ham_data,
+        ham,
+        prop,
+        trial,
+        wave_data,
+        trial_ket,
+        wave_data_ket,
+        sampler,
+        observable,
+        options,
+    )
 
 
 def run_afqmc_calculation(
@@ -668,8 +716,8 @@ def run_afqmc_calculation(
     directory = tmp_dir if tmp_dir is not None else tmpdir
 
     # Prepare all components
-    ham_data, ham, prop, trial, wave_data, _, _, sampler, observable, options = setup_afqmc(
-        options=custom_options, tmp_dir=directory
+    ham_data, ham, prop, trial, wave_data, _, _, sampler, observable, options = (
+        setup_afqmc(options=custom_options, tmp_dir=directory)
     )
 
     assert trial is not None, "Trial wavefunction is None. Cannot run AFQMC."
@@ -694,7 +742,9 @@ def run_afqmc_calculation(
         #     options,
         #     mpi_comm,
         # )
-        raise NotImplementedError("Free projection AFQMC is not supported from launch_script.")
+        raise NotImplementedError(
+            "Free projection AFQMC is not supported from launch_script."
+        )
     else:
         e_afqmc, err_afqmc = driver.afqmc(
             ham_data,

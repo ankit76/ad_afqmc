@@ -9,16 +9,17 @@ import numpy as np
 from jax import dtypes, jvp, random, vjp
 
 from ad_afqmc import (
+    grad_utils,
     hamiltonian,
     misc,
     propagation,
     sampling,
     stat_utils,
     wavefunctions,
-    grad_utils,
 )
 from ad_afqmc.config import mpi_print as print
-from ad_afqmc.walkers import RHFWalkers, UHFWalkers, GHFWalkers
+from ad_afqmc.walkers import GHFWalkers, RHFWalkers, UHFWalkers
+
 
 def afqmc_energy(
     ham_data: dict,
@@ -69,12 +70,14 @@ def afqmc_energy(
         ham_data, propagator, trial, wave_data
     )
     Seed = seed + rank
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
+    prop_data = propagator.init_prop_data(
+        trial, wave_data, ham_data, Seed, init_walkers
+    )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
-    #prop_data["key"] = random.PRNGKey(seed + rank)
+    # prop_data["key"] = random.PRNGKey(seed + rank)
 
     # Equilibration phase
     comm.Barrier()
@@ -240,7 +243,9 @@ def afqmc_LNOenergy(
         ham_data, propagator, trial, wave_data
     )
     local_seed = seed + rank
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, local_seed, init_walkers)
+    prop_data = propagator.init_prop_data(
+        trial, wave_data, ham_data, local_seed, init_walkers
+    )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
@@ -446,12 +451,14 @@ def afqmc_observable(
         ham_data, propagator, trial, wave_data
     )
     Seed = seed + rank
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
+    prop_data = propagator.init_prop_data(
+        trial, wave_data, ham_data, Seed, init_walkers
+    )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
-    #prop_data["key"] = random.PRNGKey(seed + rank)
+    # prop_data["key"] = random.PRNGKey(seed + rank)
 
     trial_observable = np.sum(trial_rdm1 * observable_op)
 
@@ -1480,9 +1487,11 @@ def fp_afqmc(
         ham_data, propagator, trial, wave_data
     )
     Seed = seed + rank
-    prop_data = propagator.init_prop_data(trial_ket, wave_data_ket, ham_data, Seed, init_walkers, trial, wave_data)
-    #prop_data["key"] = random.PRNGKey(seed + rank)
-    
+    prop_data = propagator.init_prop_data(
+        trial_ket, wave_data_ket, ham_data, Seed, init_walkers, trial, wave_data
+    )
+    # prop_data["key"] = random.PRNGKey(seed + rank)
+
     comm.Barrier()
     init_time = time.time() - init
     print("#\n# Sampling sweeps:")
@@ -1492,9 +1501,9 @@ def fp_afqmc(
     # global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
     # global_block_energies = np.zeros(size * sampler.n_ene_blocks) + 0.0j
 
-    total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
-    total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
-    total_sign   = np.ones((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
+    total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
+    total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
+    total_sign = np.ones((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
 
     avg_energy = np.zeros((sampler.n_blocks)) + 0.0j
     avg_weight = np.zeros((sampler.n_blocks)) + 0.0j
@@ -1504,9 +1513,16 @@ def fp_afqmc(
 
         ##initialize a new set of determinants every block
         ##if the ket is CCSD that is being sampled then good to sample it many times
-        if (n != 0):
+        if n != 0:
             prop_data["walkers"], prop_data = trial_ket.get_init_walkers(
-                wave_data_ket, propagator.n_walkers, "unrestricted" if isinstance(prop_data["walkers"], UHFWalkers) else "restricted", prop_data
+                wave_data_ket,
+                propagator.n_walkers,
+                (
+                    "unrestricted"
+                    if isinstance(prop_data["walkers"], UHFWalkers)
+                    else "restricted"
+                ),
+                prop_data,
             )
 
             energy_samples = jnp.real(
@@ -1515,9 +1531,11 @@ def fp_afqmc(
             e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
             prop_data["e_estimate"] = e_estimate
 
-        total_sign[n,0] = jnp.sum(prop_data["overlaps"])/jnp.sum(jnp.abs(prop_data["overlaps"]))
-        total_energy[n,0] = prop_data["e_estimate"]
-        total_weight[n,0] = jnp.sum(prop_data["weights"])
+        total_sign[n, 0] = jnp.sum(prop_data["overlaps"]) / jnp.sum(
+            jnp.abs(prop_data["overlaps"])
+        )
+        total_energy[n, 0] = prop_data["e_estimate"]
+        total_weight[n, 0] = jnp.sum(prop_data["weights"])
 
         (
             prop_data_tr,
@@ -1529,10 +1547,12 @@ def fp_afqmc(
         )
         # global_block_weights[n] = weights[0]
         # global_block_energies[n] = energy_samples[0]
-        avg_sign = jax.vmap(lambda ov : jnp.sum(ov)/jnp.sum(jnp.abs(ov)))(prop_data_tr["overlaps"])
-        total_energy[n,1:] = energy_samples
-        total_weight[n,1:] = weights
-        total_sign[n,1:] = avg_sign
+        avg_sign = jax.vmap(lambda ov: jnp.sum(ov) / jnp.sum(jnp.abs(ov)))(
+            prop_data_tr["overlaps"]
+        )
+        total_energy[n, 1:] = energy_samples
+        total_weight[n, 1:] = weights
+        total_sign[n, 1:] = avg_sign
 
         avg_weight += weights
         avg_energy += weights * (energy_samples - avg_energy) / avg_weight
@@ -1544,19 +1564,33 @@ def fp_afqmc(
                 with open(f"prop_data_{rank}.bin", "wb") as f:
                     pickle.dump(prop_data_tr, f)
 
-        #if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
+        # if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
         comm.Barrier()
         if rank == 0:
             for i in range(avg_energy.shape[0]):
-                print("{0:5.3f}  {1:18.9f}  {2:8.2f}".format((i+1)*propagator.dt * sampler.n_prop_steps, avg_energy[i].real, avg_sign[i].real))
+                print(
+                    "{0:5.3f}  {1:18.9f}  {2:8.2f}".format(
+                        (i + 1) * propagator.dt * sampler.n_prop_steps,
+                        avg_energy[i].real,
+                        avg_sign[i].real,
+                    )
+                )
             print("")
-        times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks+1)
-        mean_energies = np.sum(total_energy[:n+1] * total_weight[:n+1], axis=0) / np.sum(total_weight[:n+1], axis=0)
-        error = np.std(total_energy[:n+1], axis=0) / (n)**0.5
+        times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks + 1)
+        mean_energies = np.sum(
+            total_energy[: n + 1] * total_weight[: n + 1], axis=0
+        ) / np.sum(total_weight[: n + 1], axis=0)
+        error = np.std(total_energy[: n + 1], axis=0) / (n) ** 0.5
         np.savetxt(
-            "samples_raw.dat", np.stack((times, mean_energies.real, error.real, np.mean(total_sign[:n+1], axis=0).real)).T
+            "samples_raw.dat",
+            np.stack(
+                (
+                    times,
+                    mean_energies.real,
+                    error.real,
+                    np.mean(total_sign[: n + 1], axis=0).real,
+                )
+            ).T,
         )
-        np.savetxt(
-            "RawEnergies.dat", total_energy[:n+1].T.real
-        )
-        #print(f"{n:5d}: {mean_energies.real}")
+        np.savetxt("RawEnergies.dat", total_energy[: n + 1].T.real)
+        # print(f"{n:5d}: {mean_energies.real}")

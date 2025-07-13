@@ -101,8 +101,7 @@ def prep_afqmc(
     chol = chol.reshape((chol.shape[0], -1))
 
     # write trial mo coefficients
-    trial_coeffs = write_trial(
-        mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir)
+    trial_coeffs = write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir)
 
     write_dqmc(
         h1e,
@@ -147,10 +146,8 @@ def getCollocationMatrices(
     coords = grids.coords
     weights = grids.weights
     ao = mol.eval_gto("GTOval_sph", coords)  # aos on coords
-    X1 = np.einsum("ri,r->ri", (ao @ mo1), abs(weights)
-                   ** alpha)  # mos on coords
-    X2 = np.einsum("ri,r->ri", (ao @ mo2), abs(weights)
-                   ** alpha)  # mos on coords
+    X1 = np.einsum("ri,r->ri", (ao @ mo1), abs(weights) ** alpha)  # mos on coords
+    X2 = np.einsum("ri,r->ri", (ao @ mo2), abs(weights) ** alpha)  # mos on coords
 
     P = doISDF(X1, X2, thc_eps)
     return X1[P], X2[P]
@@ -219,8 +216,7 @@ def solveLS_twoSided(T, X1, X2):
     X12 = jnp.einsum("Pa,Pb->abP", X1, X2)
     E = jnp.einsum("abP, abcd->Pcd", X12, T).reshape(X1.shape[0], -1)
 
-    E = scipy.linalg.cho_solve(
-        (L, True), E).reshape(-1, T.shape[2], T.shape[3])
+    E = scipy.linalg.cho_solve((L, True), E).reshape(-1, T.shape[2], T.shape[3])
 
     E = jnp.einsum("Pcd, cdQ->PQ", E, X12).T
     V = scipy.linalg.cho_solve((L, True), E)
@@ -332,8 +328,7 @@ def chunked_cholesky(mol, max_error=1e-6, verbose=False, cmax=10):
         shls = (i, i + 1, 0, mol.nbas, i, i + 1, 0, mol.nbas)
         buf = mol.intor("int2e_sph", shls_slice=shls)
         di, dk, dj, dl = buf.shape
-        diag[ndiag: ndiag + di *
-             nao] = buf.reshape(di * nao, di * nao).diagonal()
+        diag[ndiag : ndiag + di * nao] = buf.reshape(di * nao, di * nao).diagonal()
         ndiag += di * nao
     nu = np.argmax(diag)
     delta_max = diag[nu]
@@ -355,8 +350,7 @@ def chunked_cholesky(mol, max_error=1e-6, verbose=False, cmax=10):
         "int2e_sph", shls_slice=(0, mol.nbas, 0, mol.nbas, sj, sj + 1, sl, sl + 1)
     )
     cj, cl = max(j - dims[sj], 0), max(l - dims[sl], 0)
-    chol_vecs[0] = np.copy(
-        eri_col[:, :, cj, cl].reshape(nao * nao)) / delta_max**0.5
+    chol_vecs[0] = np.copy(eri_col[:, :, cj, cl].reshape(nao * nao)) / delta_max**0.5
 
     nchol = 0
     while abs(delta_max) > max_error:
@@ -644,8 +638,7 @@ def get_excitations(
             Acre[nex], Ades[nex] = Acre.get(nex, []) + [occ_idx_a_rel], Ades.get(
                 nex, []
             ) + [np.nonzero((d0a - dia) < 0)]
-            coeff[nex][-1] *= parity(d0a,
-                                     np.nonzero((d0a - dia) > 0), Ades[nex][-1])
+            coeff[nex][-1] *= parity(d0a, np.nonzero((d0a - dia) > 0), Ades[nex][-1])
 
         elif nex[0] == 0 and nex[1] > 0:
             occ_idx_b_rel = (
@@ -656,8 +649,7 @@ def get_excitations(
             Bcre[nex], Bdes[nex] = Bcre.get(nex, []) + [occ_idx_b_rel], Bdes.get(
                 nex, []
             ) + [np.nonzero((d0b - dib) < 0)]
-            coeff[nex][-1] *= parity(d0b,
-                                     np.nonzero((d0b - dib) > 0), Bdes[nex][-1])
+            coeff[nex][-1] *= parity(d0b, np.nonzero((d0b - dib) > 0), Bdes[nex][-1])
 
     coeff[(0, 0)] = np.asarray(coeff[(0, 0)]).reshape(
         -1,
@@ -693,14 +685,10 @@ def get_excitations(
         if i != 0:
             for j in range(1, max_excitation + 1 - i):
                 if (i, j) in Ades:
-                    Ades[(i, j)] = np.asarray(
-                        Ades[(i, j)]).reshape(-1, i) + num_core
-                    Acre[(i, j)] = np.asarray(
-                        Acre[(i, j)]).reshape(-1, i) + num_core
-                    Bdes[(i, j)] = np.asarray(
-                        Bdes[(i, j)]).reshape(-1, j) + num_core
-                    Bcre[(i, j)] = np.asarray(
-                        Bcre[(i, j)]).reshape(-1, j) + num_core
+                    Ades[(i, j)] = np.asarray(Ades[(i, j)]).reshape(-1, i) + num_core
+                    Acre[(i, j)] = np.asarray(Acre[(i, j)]).reshape(-1, i) + num_core
+                    Bdes[(i, j)] = np.asarray(Bdes[(i, j)]).reshape(-1, j) + num_core
+                    Bcre[(i, j)] = np.asarray(Bcre[(i, j)]).reshape(-1, j) + num_core
                     coeff[(i, j)] = np.asarray(coeff[(i, j)]).reshape(
                         -1,
                     )
@@ -820,7 +808,7 @@ def parity(d0: np.ndarray, cre: Sequence, des: Sequence) -> float:
     D = np.asarray(des).flatten()
     for i in range(C.shape[0]):
         I, A = min(D[i], C[i]), max(D[i], C[i])
-        parity *= 1.0 - 2.0 * ((np.sum(d[I + 1: A])) % 2)
+        parity *= 1.0 - 2.0 * ((np.sum(d[I + 1 : A])) % 2)
         d[C[i]] = 0
         d[D[i]] = 1
     return float(parity)
@@ -857,11 +845,10 @@ def read_pyscf_ccsd(mf_or_cc, tmpdir):
             ci2bb=ci2bb,
         )
     else:
-        ci2 = cc.t2 + np.einsum("ia,jb->ijab",
-                                np.array(cc.t1), np.array(cc.t1))
+        ci2 = cc.t2 + np.einsum("ia,jb->ijab", np.array(cc.t1), np.array(cc.t1))
         ci2 = ci2.transpose(0, 2, 1, 3)
         ci1 = np.array(cc.t1)
-        np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2, t1 = cc.t1, t2 = cc.t2)
+        np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2, t1=cc.t1, t2=cc.t2)
 
     return mf, cc, norb_frozen
 
@@ -929,10 +916,12 @@ def write_trial(mol, mf, basis_coeff, nbasis, norb_frozen, tmpdir):
     overlap = mf.get_ovlp(mol)
     if isinstance(mf, (scf.rohf.ROHF, scf.rhf.RHF)):
         uhfCoeffs = construct_uhf_coeffs_from_rhf(
-            basis_coeff, mf.mo_coeff, overlap, norb_frozen, nbasis)
+            basis_coeff, mf.mo_coeff, overlap, norb_frozen, nbasis
+        )
     elif isinstance(mf, scf.uhf.UHF):
         uhfCoeffs = construct_uhf_coeffs_from_uhf(
-            basis_coeff, mf.mo_coeff, overlap, norb_frozen, nbasis)
+            basis_coeff, mf.mo_coeff, overlap, norb_frozen, nbasis
+        )
     else:
         print("Cannot recognize type for mf object in write_trial")
         exit(1)
@@ -951,18 +940,14 @@ def construct_uhf_coeffs_from_uhf(basis_coeff, mo_coeff, overlap, norb_frozen, n
     uhfCoeffs = np.empty((nbasis, 2 * nbasis))
 
     q, r = np.linalg.qr(
-        basis_coeff[:, norb_frozen:]
-        .T.dot(overlap)
-        .dot(mo_coeff[0][:, norb_frozen:])
+        basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mo_coeff[0][:, norb_frozen:])
     )
     sgn = np.sign(r.diagonal())
     q = np.einsum("ij,j->ij", q, sgn)
 
     uhfCoeffs[:, :nbasis] = q
     q, r = np.linalg.qr(
-        basis_coeff[:, norb_frozen:]
-        .T.dot(overlap)
-        .dot(mo_coeff[1][:, norb_frozen:])
+        basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mo_coeff[1][:, norb_frozen:])
     )
     sgn = np.sign(r.diagonal())
     q = np.einsum("ij,j->ij", q, sgn)
@@ -978,9 +963,7 @@ def construct_uhf_coeffs_from_rhf(basis_coeff, mo_coeff, overlap, norb_frozen, n
     uhfCoeffs = np.empty((nbasis, 2 * nbasis))
 
     q, r = np.linalg.qr(
-        basis_coeff[:, norb_frozen:]
-        .T.dot(overlap)
-        .dot(mo_coeff[:, norb_frozen:])
+        basis_coeff[:, norb_frozen:].T.dot(overlap).dot(mo_coeff[:, norb_frozen:])
     )
     sgn = np.sign(r.diagonal())
     q = np.einsum("ij,j->ij", q, sgn)
@@ -1124,9 +1107,12 @@ def prep_afqmc_multislater(mf, state_dict, max_excitation, ndets, chol_cut=1e-5)
     }
 
     import wavefunctions
+
     trial = wavefunctions.multislater(
-        mf.mol.nao, mf.mol.nelec, max_excitation=max_excitation)
+        mf.mol.nao, mf.mol.nelec, max_excitation=max_excitation
+    )
 
     import pickle
+
     with open("trial.pkl", "wb") as f:
         pickle.dump([trial, wave_data], f)

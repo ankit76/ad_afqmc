@@ -11,7 +11,8 @@ from jax import jit, jvp, lax, random, vjp, vmap
 from jax._src.typing import DTypeLike
 
 from ad_afqmc import linalg_utils, walkers
-from ad_afqmc.walkers import RHFWalkers, UHFWalkers, GHFWalkers
+from ad_afqmc.walkers import GHFWalkers, RHFWalkers, UHFWalkers
+
 
 class wave_function(ABC):
     """Base class for wave functions. Contains methods for wave function measurements.
@@ -22,7 +23,7 @@ class wave_function(ABC):
     (nwalkers, norb, nelec[sigma]). In this case the _calc_<property> method is mapped over.
 
     2) restricted (up and down dets are assumed to be the same): walkers is a jax.Array of shape
-    (nwalkers, max(nelec[0], nelec[1])). In this case the _calc_<property>_restricted method is mapped over. 
+    (nwalkers, max(nelec[0], nelec[1])). In this case the _calc_<property>_restricted method is mapped over.
     By default this method is defined to call _calc_<property>. For certain trial states, one can override
     it for computational efficiency.
 
@@ -62,9 +63,9 @@ class wave_function(ABC):
 
     @calc_overlap.register
     def _(self, walkers: UHFWalkers, wave_data: dict) -> jax.Array:
-        if (self.projector == "s2"):
+        if self.projector == "s2":
             return self._calc_overlap_s2(walkers, wave_data)
-        
+
         n_walkers = walkers.data[0].shape[0]
         batch_size = n_walkers // self.n_batch
 
@@ -79,36 +80,50 @@ class wave_function(ABC):
             scanned_fun,
             None,
             (
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
             ),
         )
 
         if self.projector == "tr" and self.nelec[0] == self.nelec[1]:
             _, overlaps2 = lax.scan(
-                    scanned_fun,
-                    None,
-                    (
-                        walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
-                        walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                scanned_fun,
+                None,
+                (
+                    walkers.data[1].reshape(
+                        self.n_batch, batch_size, self.norb, self.nelec[1]
                     ),
-                )
-            return (overlaps+overlaps2).reshape(n_walkers)
+                    walkers.data[0].reshape(
+                        self.n_batch, batch_size, self.norb, self.nelec[0]
+                    ),
+                ),
+            )
+            return (overlaps + overlaps2).reshape(n_walkers)
         else:
             return overlaps.reshape(n_walkers)
 
     def _calc_overlap_s2(self, walkers: UHFWalkers, wave_data: dict) -> jax.Array:
-        #assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
-        S, Sz, wigner, beta_vals = wave_data["wigner"]        
+        # assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
+        S, Sz, wigner, beta_vals = wave_data["wigner"]
 
-        RotMatrix = vmap(lambda beta : jnp.array([[jnp.cos(beta/2), jnp.sin(beta/2)],
-                        [-jnp.sin(beta/2), jnp.cos(beta/2)]]) )(beta_vals)
+        RotMatrix = vmap(
+            lambda beta: jnp.array(
+                [
+                    [jnp.cos(beta / 2), jnp.sin(beta / 2)],
+                    [-jnp.sin(beta / 2), jnp.cos(beta / 2)],
+                ]
+            )
+        )(beta_vals)
 
         def applyRotMat(detA, detB, mat):
-            A, B = detA*mat[0,0], detB*mat[0,1]
-            C, D = detA*mat[1,0], detB*mat[1,1]
+            A, B = detA * mat[0, 0], detB * mat[0, 1]
+            C, D = detA * mat[1, 0], detB * mat[1, 1]
 
-            detAout = jnp.block( [[A, B], [C,D]] )
+            detAout = jnp.block([[A, B], [C, D]])
             return detAout
 
         n_walkers = walkers.data[0].shape[0]
@@ -121,8 +136,8 @@ class wave_function(ABC):
             ovlp = vmap(self._calc_overlap_generalized, (0, None))(S2walkers, wave_data)
             totalOvlp = jnp.sum(ovlp * wigner)
             return totalOvlp
-        
-        #scan to obtain energy
+
+        # scan to obtain energy
         def scanned_fun_o(carry, walker_batch):
             walker_batch_0, walker_batch_1 = walker_batch
             overlap_batch = vmap(_local_overlap, in_axes=(0, 0))(
@@ -134,8 +149,12 @@ class wave_function(ABC):
             scanned_fun_o,
             None,
             (
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
             ),
         )
 
@@ -153,7 +172,9 @@ class wave_function(ABC):
             return carry, overlap_batch
 
         _, overlaps = lax.scan(
-            scanned_fun, None, walkers.data.reshape(self.n_batch, batch_size, self.norb, -1)
+            scanned_fun,
+            None,
+            walkers.data.reshape(self.n_batch, batch_size, self.norb, -1),
         )
         return overlaps.reshape(n_walkers)
 
@@ -169,7 +190,9 @@ class wave_function(ABC):
             return carry, overlap_batch
 
         _, overlaps = lax.scan(
-            scanned_fun, None, walkers.data.reshape(self.n_batch, batch_size, self.norb, -1)
+            scanned_fun,
+            None,
+            walkers.data.reshape(self.n_batch, batch_size, self.norb, -1),
         )
         return overlaps.reshape(n_walkers)
 
@@ -181,17 +204,18 @@ class wave_function(ABC):
         )
 
     @partial(jit, static_argnums=0)
-    def _calc_overlap_unrestricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
+    def _calc_overlap_unrestricted(
+        self, walker: jax.Array, wave_data: dict
+    ) -> jax.Array:
         """Overlap for a single walker."""
         raise NotImplementedError("Overlap not defined")
 
     @partial(jit, static_argnums=0)
-    def _calc_overlap_generalized(self, walker: jax.Array, wave_data: dict) -> jax.Array:
+    def _calc_overlap_generalized(
+        self, walker: jax.Array, wave_data: dict
+    ) -> jax.Array:
         """Overlap for a single walker."""
         raise NotImplementedError("Overlap not defined")
-
-
-
 
     @singledispatchmethod
     def calc_force_bias(self, walkers, ham_data: dict, wave_data: dict) -> jax.Array:
@@ -217,17 +241,21 @@ class wave_function(ABC):
 
         def scanned_fun(carry, walker_batch):
             walker_batch_0, walker_batch_1 = walker_batch
-            fb_batch = vmap(self._calc_force_bias_unrestricted, in_axes=(0, 0, None, None))(
-                walker_batch_0, walker_batch_1, ham_data, wave_data
-            )
+            fb_batch = vmap(
+                self._calc_force_bias_unrestricted, in_axes=(0, 0, None, None)
+            )(walker_batch_0, walker_batch_1, ham_data, wave_data)
             return carry, fb_batch
 
         _, fbs = lax.scan(
             scanned_fun,
             None,
             (
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
             ),
         )
         fbs = jnp.concatenate(fbs, axis=0)
@@ -245,7 +273,9 @@ class wave_function(ABC):
             return carry, fb_batch
 
         _, fbs = lax.scan(
-            scanned_fun, None, walkers.data.reshape(self.n_batch, batch_size, self.norb, -1)
+            scanned_fun,
+            None,
+            walkers.data.reshape(self.n_batch, batch_size, self.norb, -1),
         )
         return fbs.reshape(n_walkers, -1)
 
@@ -261,7 +291,9 @@ class wave_function(ABC):
             return carry, fb_batch
 
         _, fbs = lax.scan(
-            scanned_fun, None, walkers.data.reshape(self.n_batch, batch_size, self.norb, -1)
+            scanned_fun,
+            None,
+            walkers.data.reshape(self.n_batch, batch_size, self.norb, -1),
         )
         return fbs.reshape(n_walkers, -1)
 
@@ -281,7 +313,6 @@ class wave_function(ABC):
         """Force bias for a single walker."""
         raise NotImplementedError("Force bias not defined")
 
-
     @partial(jit, static_argnums=0)
     def _calc_force_bias_unrestricted(
         self,
@@ -292,9 +323,6 @@ class wave_function(ABC):
     ) -> jax.Array:
         """Force bias for a single walker."""
         raise NotImplementedError("Force bias not defined")
-
-
-
 
     @singledispatchmethod
     def calc_energy(self, walkers, ham_data: dict, wave_data: dict) -> jax.Array:
@@ -313,16 +341,18 @@ class wave_function(ABC):
         """
         raise NotImplementedError("Walker type not supported")
 
-    def _calc_energy_tr(self, walkers: UHFWalkers, ham_data: dict, wave_data: dict) -> jax.Array:
+    def _calc_energy_tr(
+        self, walkers: UHFWalkers, ham_data: dict, wave_data: dict
+    ) -> jax.Array:
         n_walkers = walkers.data[0].shape[0]
         batch_size = n_walkers // self.n_batch
 
         # scan to obtain energy
         def scanned_fun_e(carry, walker_batch):
             walker_batch_0, walker_batch_1 = walker_batch
-            energy_batch = vmap(self._calc_energy_unrestricted, in_axes=(0, 0, None, None))(
-                walker_batch_0, walker_batch_1, ham_data, wave_data
-            )
+            energy_batch = vmap(
+                self._calc_energy_unrestricted, in_axes=(0, 0, None, None)
+            )(walker_batch_0, walker_batch_1, ham_data, wave_data)
             return carry, energy_batch
 
         # scan to obtain overlap
@@ -337,8 +367,12 @@ class wave_function(ABC):
             scanned_fun_o,
             None,
             (
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
             ),
         )
 
@@ -346,8 +380,12 @@ class wave_function(ABC):
             scanned_fun_e,
             None,
             (
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
             ),
         )
 
@@ -355,8 +393,12 @@ class wave_function(ABC):
             scanned_fun_o,
             None,
             (
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
             ),
         )
 
@@ -364,42 +406,54 @@ class wave_function(ABC):
             scanned_fun_e,
             None,
             (
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
             ),
         )
-        return (energies1*overlaps1 + energies2*overlaps2)/(overlaps1 + overlaps2)
+        return (energies1 * overlaps1 + energies2 * overlaps2) / (overlaps1 + overlaps2)
 
+    def _calc_energy_s2(
+        self, walkers: UHFWalkers, ham_data: dict, wave_data: dict
+    ) -> jax.Array:
+        # assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
+        S, Sz, wigner, beta_vals = wave_data["wigner"]
 
-    def _calc_energy_s2(self, walkers: UHFWalkers, ham_data: dict, wave_data: dict) -> jax.Array:
-        #assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
-        S, Sz, wigner, beta_vals = wave_data["wigner"]        
-
-        RotMatrix = vmap(lambda beta : jnp.array([[jnp.cos(beta/2), jnp.sin(beta/2)],
-                        [-jnp.sin(beta/2), jnp.cos(beta/2)]]) )(beta_vals)
+        RotMatrix = vmap(
+            lambda beta: jnp.array(
+                [
+                    [jnp.cos(beta / 2), jnp.sin(beta / 2)],
+                    [-jnp.sin(beta / 2), jnp.cos(beta / 2)],
+                ]
+            )
+        )(beta_vals)
 
         def applyRotMat(detA, detB, mat):
-            A, B = detA*mat[0,0], detB*mat[0,1]
-            C, D = detA*mat[1,0], detB*mat[1,1]
+            A, B = detA * mat[0, 0], detB * mat[0, 1]
+            C, D = detA * mat[1, 0], detB * mat[1, 1]
 
-            detAout = jnp.block( [[A, B], [C,D]] )
+            detAout = jnp.block([[A, B], [C, D]])
             return detAout
 
         n_walkers = walkers.data[0].shape[0]
         batch_size = n_walkers // self.n_batch
 
         Atrial, Btrial = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
-        bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
-
+        bra = jnp.block([[Atrial, 0 * Btrial], [0 * Atrial, Btrial]])
 
         def _local_energy(walker1, walker2, ham_data):
             S2walkers = vmap(applyRotMat, (None, None, 0))(walker1, walker2, RotMatrix)
             ovlp = vmap(self._calc_overlap_generalized, (0, None))(S2walkers, wave_data)
-            Eloc = vmap(self._calc_energy_generalized, (0, None, None))(S2walkers, ham_data, wave_data)
+            Eloc = vmap(self._calc_energy_generalized, (0, None, None))(
+                S2walkers, ham_data, wave_data
+            )
             totalOvlp = jnp.sum(ovlp * wigner)
-            return jnp.sum(Eloc * ovlp * wigner)/totalOvlp
-        
-        #scan to obtain energy
+            return jnp.sum(Eloc * ovlp * wigner) / totalOvlp
+
+        # scan to obtain energy
         def scanned_fun_e(carry, walker_batch):
             walker_batch_0, walker_batch_1 = walker_batch
             energy_batch = vmap(_local_energy, in_axes=(0, 0, None))(
@@ -411,8 +465,12 @@ class wave_function(ABC):
             scanned_fun_e,
             None,
             (
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
             ),
         )
 
@@ -425,23 +483,27 @@ class wave_function(ABC):
 
         if self.projector == "tr" and self.nelec[0] == self.nelec[1]:
             return self._calc_energy_tr(walkers, ham_data, wave_data)
-        
+
         n_walkers = walkers.data[0].shape[0]
         batch_size = n_walkers // self.n_batch
 
         def scanned_fun(carry, walker_batch):
             walker_batch_0, walker_batch_1 = walker_batch
-            energy_batch = vmap(self._calc_energy_unrestricted, in_axes=(0, 0, None, None))(
-                walker_batch_0, walker_batch_1, ham_data, wave_data
-            )
+            energy_batch = vmap(
+                self._calc_energy_unrestricted, in_axes=(0, 0, None, None)
+            )(walker_batch_0, walker_batch_1, ham_data, wave_data)
             return carry, energy_batch
 
         _, energies = lax.scan(
             scanned_fun,
             None,
             (
-                walkers.data[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
-                walkers.data[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+                walkers.data[0].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[0]
+                ),
+                walkers.data[1].reshape(
+                    self.n_batch, batch_size, self.norb, self.nelec[1]
+                ),
             ),
         )
         return energies.reshape(n_walkers)
@@ -544,10 +606,7 @@ class wave_function(ABC):
         )
 
     def get_init_walkers(
-        self, wave_data: dict, 
-        n_walkers: int, 
-        walker_type: str,
-        prop_data: dict
+        self, wave_data: dict, n_walkers: int, walker_type: str, prop_data: dict
     ) -> Union[Sequence, jax.Array]:
         """Get the initial walkers. Uses the rdm1 natural orbitals.
 
@@ -573,7 +632,10 @@ class wave_function(ABC):
                 if (
                     np.abs(det_overlap) > 1e-5
                 ):  # probably should scale this threshold with number of electrons
-                    return RHFWalkers(jnp.array([natorbs_up + 0.0j] * n_walkers)), prop_data
+                    return (
+                        RHFWalkers(jnp.array([natorbs_up + 0.0j] * n_walkers)),
+                        prop_data,
+                    )
                 else:
                     overlaps = np.array(
                         [
@@ -589,7 +651,10 @@ class wave_function(ABC):
                         new_vecs.T @ natorbs_up[:, : self.nelec[0]]
                     ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
                     if np.abs(det_overlap) > 1e-5:
-                        return RHFWalkers(jnp.array([new_vecs + 0.0j] * n_walkers)), prop_data
+                        return (
+                            RHFWalkers(jnp.array([new_vecs + 0.0j] * n_walkers)),
+                            prop_data,
+                        )
                     else:
                         raise ValueError(
                             "Cannot find a set of RHF orbitals with good trial overlap."
@@ -601,10 +666,15 @@ class wave_function(ABC):
                 orbs = natorbs_up @ proj_orbs
                 return RHFWalkers(jnp.array([orbs + 0.0j] * n_walkers)), prop_data
         elif walker_type == "unrestricted":
-            return UHFWalkers([
-                jnp.array([natorbs_up + 0.0j] * n_walkers),
-                jnp.array([natorbs_dn + 0.0j] * n_walkers),
-            ]), prop_data
+            return (
+                UHFWalkers(
+                    [
+                        jnp.array([natorbs_up + 0.0j] * n_walkers),
+                        jnp.array([natorbs_dn + 0.0j] * n_walkers),
+                    ]
+                ),
+                prop_data,
+            )
         elif walker_type == "generalized":
             natorbs = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][
                 :, : self.nelec[0] + self.nelec[1]
@@ -738,7 +808,9 @@ class sum_state(wave_function):
         return jnp.sum(
             jnp.array(
                 [
-                    state._calc_overlap_unrestricted(walker_up, walker_dn, wave_data[f"{i}"])
+                    state._calc_overlap_unrestricted(
+                        walker_up, walker_dn, wave_data[f"{i}"]
+                    )
                     * coeffs[i]
                     for i, state in enumerate(self.states)
                 ]
@@ -758,7 +830,9 @@ class sum_state(wave_function):
         )
         overlaps_i = jnp.array(
             [
-                state._calc_overlap_unrestricted(walker_up, walker_dn, wave_data[f"{i}"])
+                state._calc_overlap_unrestricted(
+                    walker_up, walker_dn, wave_data[f"{i}"]
+                )
                 for i, state in enumerate(self.states)
             ]
         )
@@ -798,7 +872,7 @@ class rhf(wave_function):
     n_opt_iter: int = 30
     n_batch: int = 1
     projector: Optional[str] = None
-    
+
     def __post_init__(self):
         assert (
             self.nelec[0] == self.nelec[1]
@@ -823,14 +897,14 @@ class rhf(wave_function):
         return jnp.linalg.det(
             jnp.vstack(
                 [
-                    wave_data["mo_coeff"].T.conj() @ walker[:self.norb],
-                    wave_data["mo_coeff"].T.conj() @ walker[self.norb:],
+                    wave_data["mo_coeff"].T.conj() @ walker[: self.norb],
+                    wave_data["mo_coeff"].T.conj() @ walker[self.norb :],
                 ]
             )
         )
         # Atrial, Btrial = wave_data["mo_coeff"], wave_data["mo_coeff"]
         # bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
-        # return jnp.linalg.det(bra.T.conj() @ walker) 
+        # return jnp.linalg.det(bra.T.conj() @ walker)
 
     @partial(jit, static_argnums=0)
     def _calc_green(self, walker: jax.Array, wave_data: dict) -> jax.Array:
@@ -1021,13 +1095,13 @@ class uhf(wave_function):
     ) -> complex:
         # Atrial, Btrial = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
         # bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
-        # return jnp.linalg.det(bra.T.conj() @ walker) 
-    
+        # return jnp.linalg.det(bra.T.conj() @ walker)
+
         return jnp.linalg.det(
             jnp.vstack(
                 [
-                    wave_data["mo_coeff"][0].T.conj() @ walker[:self.norb],
-                    wave_data["mo_coeff"][1].T.conj() @ walker[self.norb:],
+                    wave_data["mo_coeff"][0].T.conj() @ walker[: self.norb],
+                    wave_data["mo_coeff"][1].T.conj() @ walker[self.norb :],
                 ]
             )
         )
@@ -1119,33 +1193,29 @@ class uhf(wave_function):
         ene0 = h0
 
         Atrial, Btrial = wave_data["mo_coeff"][0], wave_data["mo_coeff"][1]
-        bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
+        bra = jnp.block([[Atrial, 0 * Btrial], [0 * Atrial, Btrial]])
         gf = (walker.dot(jnp.linalg.inv(bra.T.conj() @ walker))).T
 
-        gfA, gfB   = gf[:self.nelec[0],:self.norb], gf[self.nelec[0]:,self.norb:]
-        gfAB, gfBA = gf[:self.nelec[0],self.norb:], gf[self.nelec[0]:,:self.norb]
+        gfA, gfB = gf[: self.nelec[0], : self.norb], gf[self.nelec[0] :, self.norb :]
+        gfAB, gfBA = gf[: self.nelec[0], self.norb :], gf[self.nelec[0] :, : self.norb]
 
-        ene1 = jnp.sum(gfA * rot_h1[0]) + jnp.sum(
-                gfB * rot_h1[1]
-        )
+        ene1 = jnp.sum(gfA * rot_h1[0]) + jnp.sum(gfB * rot_h1[1])
 
-        f_up = jnp.einsum(
-            "gij,jk->gik", rot_chol[0], gfA.T, optimize="optimal"
-        )
-        f_dn = jnp.einsum(
-            "gij,jk->gik", rot_chol[1], gfB.T, optimize="optimal"
-        )
+        f_up = jnp.einsum("gij,jk->gik", rot_chol[0], gfA.T, optimize="optimal")
+        f_dn = jnp.einsum("gij,jk->gik", rot_chol[1], gfB.T, optimize="optimal")
         c_up = vmap(jnp.trace)(f_up)
         c_dn = vmap(jnp.trace)(f_dn)
         J = jnp.sum(c_up * c_up) + jnp.sum(c_dn * c_dn) + 2.0 * jnp.sum(c_up * c_dn)
 
-        K = jnp.sum(vmap(lambda x: x * x.T)(f_up)) + jnp.sum(vmap(lambda x: x * x.T)(f_dn)) 
+        K = jnp.sum(vmap(lambda x: x * x.T)(f_up)) + jnp.sum(
+            vmap(lambda x: x * x.T)(f_dn)
+        )
 
         f_ab = jnp.einsum("gip,pj->gij", rot_chol[0], gfBA.T, optimize="optimal")
         f_ba = jnp.einsum("gip,pj->gij", rot_chol[1], gfAB.T, optimize="optimal")
-        K += 2.*jnp.sum(vmap(lambda x, y: x * y.T)(f_ab, f_ba))
+        K += 2.0 * jnp.sum(vmap(lambda x, y: x * y.T)(f_ab, f_ba))
 
-        return ene1 + (J - K)/2. + h0
+        return ene1 + (J - K) / 2.0 + h0
 
     def _calc_rdm1(self, wave_data: dict) -> jax.Array:
         dm_up = wave_data["mo_coeff"][0] @ wave_data["mo_coeff"][0].T.conj()
@@ -1409,7 +1479,9 @@ class ghf_complex(wave_function):
         )
 
     @partial(jit, static_argnums=0)
-    def _calc_overlap_unrestricted(self, walkerA: jax.Array, walkerB: jax.Array, wave_data: dict) -> jax.Array:
+    def _calc_overlap_unrestricted(
+        self, walkerA: jax.Array, walkerB: jax.Array, wave_data: dict
+    ) -> jax.Array:
         return jnp.linalg.det(
             jnp.hstack(
                 [
@@ -1420,7 +1492,9 @@ class ghf_complex(wave_function):
         )
 
     @partial(jit, static_argnums=0)
-    def _calc_overlap_generalized(self, walker: jax.Array, wave_data: dict) -> jax.Array:
+    def _calc_overlap_generalized(
+        self, walker: jax.Array, wave_data: dict
+    ) -> jax.Array:
         # det(mo_coeff^\dagger . walker)
         return jnp.linalg.det(wave_data["mo_coeff"].T.conj() @ walker)
 
@@ -1534,9 +1608,7 @@ class ghf(wave_function):
     projector: Optional[str] = None
 
     @partial(jit, static_argnums=0)
-    def _calc_overlap_restricted(
-        self, walker: jax.Array, wave_data: dict
-    ) -> jax.Array:
+    def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
         return jnp.linalg.det(
             jnp.hstack(
                 [
@@ -1564,7 +1636,6 @@ class ghf(wave_function):
         self, walker: jax.Array, wave_data: dict
     ) -> jax.Array:
         return jnp.linalg.det(wave_data["mo_coeff"].T.conj() @ walker)
-
 
     @partial(jit, static_argnums=0)
     def _calc_green(
@@ -2206,10 +2277,16 @@ class wave_function_auto(wave_function):
     ) -> jax.Array:
         """Helper function for calculating local energy using AD,
         evaluates < psi_T | exp(x * h1) | walker > to linear order"""
-        walkerout = walker + x*jnp.block(
+        walkerout = walker + x * jnp.block(
             [
-                [h1[0].dot(walker[:self.norb,:self.nelec[0]]), h1[0].dot(walker[:self.norb,self.nelec[0]:])],
-                [h1[1].dot(walker[self.norb:,:self.nelec[0]]), h1[1].dot(walker[self.norb:,self.nelec[0]:])]
+                [
+                    h1[0].dot(walker[: self.norb, : self.nelec[0]]),
+                    h1[0].dot(walker[: self.norb, self.nelec[0] :]),
+                ],
+                [
+                    h1[1].dot(walker[self.norb :, : self.nelec[0]]),
+                    h1[1].dot(walker[self.norb :, self.nelec[0] :]),
+                ],
             ]
         )
         return self._calc_overlap_generalized(walkerout, wave_data)
@@ -2262,21 +2339,33 @@ class wave_function_auto(wave_function):
     ) -> jax.Array:
         """Helper function for calculating local energy using AD,
         evaluates < psi_T | exp(x * chol_i) | walker > to quadratic order"""
-        walker1 = x*jnp.block(
+        walker1 = x * jnp.block(
             [
-                [chol_i.dot(walker[:self.norb,:self.nelec[0]]), chol_i.dot(walker[:self.norb,self.nelec[0]:])],
-                [chol_i.dot(walker[self.norb:,:self.nelec[0]]), chol_i.dot(walker[self.norb:,self.nelec[0]:])]
+                [
+                    chol_i.dot(walker[: self.norb, : self.nelec[0]]),
+                    chol_i.dot(walker[: self.norb, self.nelec[0] :]),
+                ],
+                [
+                    chol_i.dot(walker[self.norb :, : self.nelec[0]]),
+                    chol_i.dot(walker[self.norb :, self.nelec[0] :]),
+                ],
             ]
         )
 
-        walker2 = x*jnp.block(
+        walker2 = x * jnp.block(
             [
-                [chol_i.dot(walker1[:self.norb,:self.nelec[0]]), chol_i.dot(walker1[:self.norb,self.nelec[0]:])],
-                [chol_i.dot(walker1[self.norb:,:self.nelec[0]]), chol_i.dot(walker1[self.norb:,self.nelec[0]:])]
+                [
+                    chol_i.dot(walker1[: self.norb, : self.nelec[0]]),
+                    chol_i.dot(walker1[: self.norb, self.nelec[0] :]),
+                ],
+                [
+                    chol_i.dot(walker1[self.norb :, : self.nelec[0]]),
+                    chol_i.dot(walker1[self.norb :, self.nelec[0] :]),
+                ],
             ]
         )
 
-        walker_out = walker + walker1 + walker2/2.
+        walker_out = walker + walker1 + walker2 / 2.0
         return self._calc_overlap_generalized(walker_out, wave_data)
 
     @partial(jit, static_argnums=0)
@@ -2377,15 +2466,9 @@ class wave_function_auto(wave_function):
                 eps, chol_i, walker, wave_data
             )
 
-        _, overlap_p = lax.scan(
-            scanned_fun, (eps, walker, wave_data), chol
-        )
-        _, overlap_0 = lax.scan(
-            scanned_fun, (0.0, walker, wave_data), chol
-        )
-        _, overlap_m = lax.scan(
-            scanned_fun, (-1.0 * eps, walker, wave_data), chol
-        )
+        _, overlap_p = lax.scan(scanned_fun, (eps, walker, wave_data), chol)
+        _, overlap_0 = lax.scan(scanned_fun, (0.0, walker, wave_data), chol)
+        _, overlap_m = lax.scan(scanned_fun, (-1.0 * eps, walker, wave_data), chol)
         d_2_overlap = (overlap_p - 2.0 * overlap_0 + overlap_m) / eps / eps
 
         # dx2 = (
@@ -2399,7 +2482,6 @@ class wave_function_auto(wave_function):
         # )
 
         return (dx1 + jnp.sum(d_2_overlap) / 2.0) / val1 + h0
-
 
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
@@ -2629,6 +2711,7 @@ class CISD(wave_function_auto):
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
+
 @dataclass
 class ccsd(wave_function):
     """This is meant to be used in free projection as the initial state.
@@ -2678,17 +2761,15 @@ class ccsd(wave_function):
     def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
         return jnp.linalg.det(wave_data["mo_coeff"].T.conj() @ walker) ** 2
 
-
     def get_init_walkers(
-        self, wave_data: dict, 
-        n_walkers: int, 
-        walker_type: str,
-        prop_data: dict
+        self, wave_data: dict, n_walkers: int, walker_type: str, prop_data: dict
     ) -> Tuple:
-        
+
         ops = (
             jnp.transpose(
-                jnp.tile(wave_data['T1'], n_walkers).reshape((self.nvirt, n_walkers, self.nocc)),
+                jnp.tile(wave_data["T1"], n_walkers).reshape(
+                    (self.nvirt, n_walkers, self.nocc)
+                ),
                 (1, 0, 2),
             )
             + 0.0j
@@ -2697,10 +2778,11 @@ class ccsd(wave_function):
         prop_data["key"], subkey = random.split(prop_data["key"])
         fields = random.normal(
             subkey,
-            shape=(n_walkers,
+            shape=(
+                n_walkers,
                 wave_data["hs_ops"].shape[0],
             ),
-        )        
+        )
         ops += jnp.einsum("ij,jkl->ikl", fields, wave_data["hs_ops"])
 
         walkers = (
@@ -2713,12 +2795,17 @@ class ccsd(wave_function):
             + 0.0j
         )
 
-        walkers = RHFWalkers(walkers.at[:, self.nocc :, : self.nocc].set(walkers[:, self.nocc :, : self.nocc]+ops) )
+        walkers = RHFWalkers(
+            walkers.at[:, self.nocc :, : self.nocc].set(
+                walkers[:, self.nocc :, : self.nocc] + ops
+            )
+        )
 
         return walkers, prop_data
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
+
 
 @dataclass
 class gcisd_complex(wave_function_auto):
@@ -3070,24 +3157,32 @@ class UCISD(wave_function_auto):
         return (1.0 + o1 + o2) * o0
 
     @partial(jit, static_argnums=0)
-    def _calc_overlap_generalized(
-        self, walker: jax.Array, wave_data: dict
-    ) -> complex:
+    def _calc_overlap_generalized(self, walker: jax.Array, wave_data: dict) -> complex:
 
         noccA, ci1A, ci2AA = self.nelec[0], wave_data["ci1A"], wave_data["ci2AA"]
         noccB, ci1B, ci2BB = self.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
         ci2AB = wave_data["ci2AB"]
 
-        Atrial, Btrial = wave_data["mo_coeff"][0][:,:noccA], wave_data["mo_coeff"][1][:,:noccB]
-        bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
+        Atrial, Btrial = (
+            wave_data["mo_coeff"][0][:, :noccA],
+            wave_data["mo_coeff"][1][:, :noccB],
+        )
+        bra = jnp.block([[Atrial, 0 * Btrial], [0 * Atrial, Btrial]])
         gf = (walker @ jnp.linalg.inv(bra.T.conj() @ walker) @ bra.T.conj()).T
 
-        gfA, gfB   = gf[:self.nelec[0],:self.norb], gf[self.norb:self.norb+self.nelec[1],self.norb:]
-        gfAB, gfBA = gf[:self.nelec[0],self.norb:], gf[self.norb:self.norb+self.nelec[1],:self.norb]
+        gfA, gfB = (
+            gf[: self.nelec[0], : self.norb],
+            gf[self.norb : self.norb + self.nelec[1], self.norb :],
+        )
+        gfAB, gfBA = (
+            gf[: self.nelec[0], self.norb :],
+            gf[self.norb : self.norb + self.nelec[1], : self.norb],
+        )
 
-        o0 = jnp.linalg.det( bra.T.conj() @ walker)
-        o1 = jnp.einsum("ia,ia", ci1A, gfA[:, noccA:]) \
-            + jnp.einsum("ia,ia", ci1B, gfB[:, noccB:])
+        o0 = jnp.linalg.det(bra.T.conj() @ walker)
+        o1 = jnp.einsum("ia,ia", ci1A, gfA[:, noccA:]) + jnp.einsum(
+            "ia,ia", ci1B, gfB[:, noccB:]
+        )
 
         # AA
         o2 = jnp.einsum("iajb, ia, jb", ci2AA, gfA[:, noccA:], gfA[:, noccA:])
@@ -3098,10 +3193,10 @@ class UCISD(wave_function_auto):
         # o2 -= 0.25 * jnp.einsum("iajb, ib, ja", ci2BB, GFB[:, noccB:], GFB[:, noccB:])
 
         # AB
-        o2 += 2.*jnp.einsum("iajb, ia, jb", ci2AB, gfA[:, noccA:], gfB[:, noccB:])
-        o2 -= 2.*jnp.einsum("iajb, ib, ja", ci2AB, gfAB[:, noccB:], gfBA[:, noccA:])
+        o2 += 2.0 * jnp.einsum("iajb, ia, jb", ci2AB, gfA[:, noccA:], gfB[:, noccB:])
+        o2 -= 2.0 * jnp.einsum("iajb, ib, ja", ci2AB, gfAB[:, noccB:], gfBA[:, noccA:])
 
-        return (1.0 + o1 + o2/2.) * o0
+        return (1.0 + o1 + o2 / 2.0) * o0
         # return (1.0 + o1 ) * o0
 
     def __hash__(self) -> int:
