@@ -209,7 +209,7 @@ class propagator_restricted(propagator):
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
-    n_batch: int = 1
+    n_chunks: int = 1
     vhs_real_dtype: DTypeLike = jnp.float64
     vhs_complex_dtype: DTypeLike = jnp.complex128
 
@@ -320,7 +320,7 @@ class propagator_restricted(propagator):
     ) -> jax.Array:
         """Apply the propagator to a batch of walkers."""
         n_walkers = walkers.shape[0]
-        batch_size = n_walkers // self.n_batch
+        batch_size = n_walkers // self.n_chunks
 
         def scanned_fun(carry, batch):
             field_batch, walker_batch = batch
@@ -342,9 +342,9 @@ class propagator_restricted(propagator):
             scanned_fun,
             None,
             (
-                fields.reshape(self.n_batch, batch_size, -1),
+                fields.reshape(self.n_chunks, batch_size, -1),
                 walkers.reshape(
-                    self.n_batch, batch_size, walkers.shape[1], walkers.shape[2]
+                    self.n_chunks, batch_size, walkers.shape[1], walkers.shape[2]
                 ),
             ),
         )
@@ -433,7 +433,7 @@ class propagator_unrestricted(propagator_restricted):
         self, ham_data: dict, walkers: Sequence, fields: jax.Array
     ) -> List:
         n_walkers = walkers[0].shape[0]
-        batch_size = n_walkers // self.n_batch
+        batch_size = n_walkers // self.n_chunks
 
         def scanned_fun(carry, batch):
             field_batch, walker_batch_0, walker_batch_1 = batch
@@ -456,12 +456,12 @@ class propagator_unrestricted(propagator_restricted):
             scanned_fun,
             None,
             (
-                fields.reshape(self.n_batch, batch_size, -1),
+                fields.reshape(self.n_chunks, batch_size, -1),
                 walkers[0].reshape(
-                    self.n_batch, batch_size, walkers[0].shape[1], walkers[0].shape[2]
+                    self.n_chunks, batch_size, walkers[0].shape[1], walkers[0].shape[2]
                 ),
                 walkers[1].reshape(
-                    self.n_batch, batch_size, walkers[1].shape[1], walkers[1].shape[2]
+                    self.n_chunks, batch_size, walkers[1].shape[1], walkers[1].shape[2]
                 ),
             ),
         )
@@ -595,7 +595,7 @@ class propagator_generalized(propagator_restricted):
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
-    n_batch: int = 1
+    n_chunks: int = 1
 
     def init_prop_data(
         self,
@@ -637,7 +637,7 @@ class propagator_generalized(propagator_restricted):
         self, ham_data: dict, walkers: jax.Array, fields: jax.Array
     ) -> jax.Array:
         n_walkers = walkers.shape[0]
-        batch_size = n_walkers // self.n_batch
+        batch_size = n_walkers // self.n_chunks
 
         def scanned_fun(carry, batch):
             field_batch, walker_batch = batch
@@ -657,9 +657,9 @@ class propagator_generalized(propagator_restricted):
             scanned_fun,
             None,
             (
-                fields.reshape(self.n_batch, batch_size, -1),
+                fields.reshape(self.n_chunks, batch_size, -1),
                 walkers.reshape(
-                    self.n_batch, batch_size, walkers.shape[1], walkers.shape[2]
+                    self.n_chunks, batch_size, walkers.shape[1], walkers.shape[2]
                 ),
             ),
         )

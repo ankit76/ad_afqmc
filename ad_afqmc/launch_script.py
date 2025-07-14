@@ -165,7 +165,7 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
     options["free_projection"] = options.get("free_projection", False)
 
     # performance and memory options
-    options["n_batch"] = options.get("n_batch", 1)
+    options["n_chunks"] = options.get("n_chunks", options.get("n_batch", 1))
     options["vhs_mixed_precision"] = options.get("vhs_mixed_precision", False)
     options["trial_mixed_precision"] = options.get("trial_mixed_precision", False)
     options["memory_mode"] = options.get("memory_mode", "low")
@@ -327,7 +327,7 @@ def set_trial(
         trial = wavefunctions.rhf(
             norb,
             nelec_sp,
-            n_batch=options["n_batch"],
+            n_chunks=options["n_chunks"],
             projector=options["symmetry_projector"],
         )
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
@@ -336,7 +336,7 @@ def set_trial(
         trial = wavefunctions.uhf(
             norb,
             nelec_sp,
-            n_batch=options["n_batch"],
+            n_chunks=options["n_chunks"],
             projector=options["symmetry_projector"],
         )
         wave_data["mo_coeff"] = [
@@ -356,7 +356,7 @@ def set_trial(
             norb,
             nelec_sp,
             ci_coeffs_dets[0].size,
-            n_batch=options["n_batch"],
+            n_chunks=options["n_chunks"],
             projector=options["symmetry_projector"],
         )
 
@@ -378,7 +378,7 @@ def set_trial(
             trial = wavefunctions.cisd(
                 norb,
                 nelec_sp,
-                n_batch=options["n_batch"],
+                n_chunks=options["n_chunks"],
                 projector=options["symmetry_projector"],
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
@@ -419,7 +419,7 @@ def set_trial(
                 nelec_sp,
                 nocc,
                 nvirt,
-                n_batch=options["n_batch"],
+                n_chunks=options["n_chunks"],
                 mixed_real_dtype=mixed_real_dtype,
                 mixed_complex_dtype=mixed_complex_dtype,
                 memory_mode=options["memory_mode"],
@@ -456,7 +456,7 @@ def set_trial(
                 wavefunctions.ucisd(
                     norb,
                     nelec_sp,
-                    n_batch=options["n_batch"],
+                    n_chunks=options["n_chunks"],
                     projector=options["symmetry_projector"],
                     mixed_real_dtype=mixed_real_dtype,
                     mixed_complex_dtype=mixed_complex_dtype,
@@ -466,7 +466,7 @@ def set_trial(
                 else wavefunctions.UCISD(
                     norb,
                     nelec_sp,
-                    n_batch=options["n_batch"],
+                    n_chunks=options["n_chunks"],
                     projector=options["symmetry_projector"],
                 )
             )
@@ -474,7 +474,7 @@ def set_trial(
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
 
     elif options_trial == "ghf_complex":
-        trial = wavefunctions.ghf_complex(norb, nelec_sp, n_batch=options["n_batch"])
+        trial = wavefunctions.ghf_complex(norb, nelec_sp, n_chunks=options["n_chunks"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
 
     elif options_trial == "gcisd_complex":
@@ -497,7 +497,7 @@ def set_trial(
             }
             wave_data.update(trial_wave_data)
             trial = wavefunctions.gcisd_complex(
-                norb, nelec_sp, n_batch=options["n_batch"]
+                norb, nelec_sp, n_chunks=options["n_chunks"]
             )
         except:
             raise ValueError(
@@ -517,7 +517,7 @@ def set_trial(
 
     if options["prjlo"] is not None:  # For LNO
         wave_data["prjlo"] = options["prjlo"]
-        trial = wavefunctions.rhf_lno(norb, nelec_sp, n_batch=options["n_batch"])
+        trial = wavefunctions.rhf_lno(norb, nelec_sp, n_chunks=options["n_chunks"])
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
     return trial, wave_data
@@ -538,13 +538,13 @@ def set_prop(options: Dict) -> Any:
             prop = propagation.propagator_restricted(
                 options["dt"],
                 options["n_walkers"],
-                n_batch=options["n_batch"],
+                n_chunks=options["n_chunks"],
                 vhs_real_dtype=jnp.float32,
                 vhs_complex_dtype=jnp.complex64,
             )
         else:
             prop = propagation.propagator_restricted(
-                options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+                options["dt"], options["n_walkers"], n_chunks=options["n_chunks"]
             )
 
     elif options["walker_type"] == "unrestricted":
@@ -553,14 +553,14 @@ def set_prop(options: Dict) -> Any:
                 options["dt"],
                 options["n_walkers"],
                 10,  # Hard-coded value for free projection
-                n_batch=options["n_batch"],
+                n_chunks=options["n_chunks"],
             )
         else:
             if options["vhs_mixed_precision"]:
                 prop = propagation.propagator_unrestricted(
                     options["dt"],
                     options["n_walkers"],
-                    n_batch=options["n_batch"],
+                    n_chunks=options["n_chunks"],
                     vhs_real_dtype=jnp.float32,
                     vhs_complex_dtype=jnp.complex64,
                 )
@@ -568,11 +568,11 @@ def set_prop(options: Dict) -> Any:
                 prop = propagation.propagator_unrestricted(
                     options["dt"],
                     options["n_walkers"],
-                    n_batch=options["n_batch"],
+                    n_chunks=options["n_chunks"],
                 )
     elif options["walker_type"] == "generalized":
         prop = propagation.propagator_generalized(
-            options["dt"], options["n_walkers"], n_batch=options["n_batch"]
+            options["dt"], options["n_walkers"], n_chunks=options["n_chunks"]
         )
     else:
         raise ValueError(f"Invalid walker type {options['walker_type']}.")
