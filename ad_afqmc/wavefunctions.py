@@ -5360,22 +5360,9 @@ class rhf_lno(rhf, wave_function):
 
     @calc_orbenergy.register
     def _(self, walkers: RHFWalkers, ham_data: dict, wave_data: dict) -> jax.Array:
-        n_walkers = walkers.data.shape[0]
-        batch_size = n_walkers // self.n_chunks
-
-        def scanned_fun(carry, walker_batch):
-            energy_batch = vmap(self._calc_orbenergy, in_axes=(0, None, None))(
-                walker_batch, ham_data, wave_data
-            )
-            return carry, energy_batch
-
-        _, energies = lax.scan(
-            scanned_fun,
-            None,
-            walkers.data.reshape(self.n_chunks, batch_size, self.norb, -1),
+        return walkers.apply_chunked(
+            self._calc_orbenergy, self.n_chunks, ham_data, wave_data
         )
-        return energies.reshape(n_walkers)
-        # raise NotImplementedError("Walker type not supported")
 
     @partial(jit, static_argnums=0)
     def _calc_orbenergy(
