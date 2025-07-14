@@ -9,16 +9,17 @@ import numpy as np
 from jax import dtypes, jvp, random, vjp
 
 from ad_afqmc import (
+    grad_utils,
     hamiltonian,
     misc,
     propagation,
     sampling,
     stat_utils,
     wavefunctions,
-    grad_utils,
 )
 from ad_afqmc.config import mpi_print as print
-from ad_afqmc.walkers import RHFWalkers, UHFWalkers, GHFWalkers
+from ad_afqmc.walkers import GHFWalkers, RHFWalkers, UHFWalkers
+
 
 def afqmc_energy(
     ham_data: dict,
@@ -69,12 +70,14 @@ def afqmc_energy(
         ham_data, propagator, trial, wave_data
     )
     Seed = seed + rank
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
+    prop_data = propagator.init_prop_data(
+        trial, wave_data, ham_data, Seed, init_walkers
+    )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
-    #prop_data["key"] = random.PRNGKey(seed + rank)
+    # prop_data["key"] = random.PRNGKey(seed + rank)
 
     # Equilibration phase
     comm.Barrier()
@@ -152,12 +155,16 @@ def afqmc_energy(
             global_block_energies[n] = block_energy_n
 
         block_energy_n = comm.bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
 
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
 
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_global(prop_data["weights"], zeta, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
 
         # Print progress and save intermediate results
@@ -240,7 +247,9 @@ def afqmc_LNOenergy(
         ham_data, propagator, trial, wave_data
     )
     local_seed = seed + rank
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, local_seed, init_walkers)
+    prop_data = propagator.init_prop_data(
+        trial, wave_data, ham_data, local_seed, init_walkers
+    )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
@@ -334,12 +343,16 @@ def afqmc_LNOenergy(
 
         block_energy_n = comm.bcast(block_energy_n, root=0)
         block_orbE_n = comm.bcast(block_orbE_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data = prop_data.orthonormalize()
 
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
 
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_global(prop_data["weights"], zeta, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
 
         # Print progress and save intermediate results
@@ -446,12 +459,14 @@ def afqmc_observable(
         ham_data, propagator, trial, wave_data
     )
     Seed = seed + rank
-    prop_data = propagator.init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
+    prop_data = propagator.init_prop_data(
+        trial, wave_data, ham_data, Seed, init_walkers
+    )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
-    #prop_data["key"] = random.PRNGKey(seed + rank)
+    # prop_data["key"] = random.PRNGKey(seed + rank)
 
     trial_observable = np.sum(trial_rdm1 * observable_op)
 
@@ -584,10 +599,15 @@ def afqmc_observable(
             )
         # Update walkers
         block_energy_n = comm.bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_global(prop_data["weights"], zeta, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
 
         # Print progress and save intermediate results
@@ -678,8 +698,12 @@ def _run_equilibration(
             block_energy_n = total_block_energy_n / total_block_weight_n
         comm.Bcast(block_weight_n, root=0)
         comm.Bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_global(prop_data["weights"], zeta, comm)
         prop_data["e_estimate"] = (
             0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n[0]
         ).astype("float64")
@@ -1456,8 +1480,8 @@ def fp_afqmc(
     ham_data: dict,
     ham: hamiltonian.hamiltonian,
     propagator: propagation.propagator,
-    trial: wavefunctions.wave_function,
-    wave_data: dict,
+    trial_bra: wavefunctions.wave_function,
+    wave_data_bra: dict,
     trial_ket: wavefunctions.wave_function,
     wave_data_ket: dict,
     sampler: sampling.sampler,
@@ -1472,29 +1496,29 @@ def fp_afqmc(
     rank = comm.Get_rank()
     seed = options["seed"]
 
-    trial_rdm1 = trial.get_rdm1(wave_data)
-    if "rdm1" not in wave_data:
-        wave_data["rdm1"] = trial_rdm1
-    ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+    trial_rdm1 = trial_bra.get_rdm1(wave_data_bra)
+    if "rdm1" not in wave_data_bra:
+        wave_data_bra["rdm1"] = trial_rdm1
+    ham_data = ham.build_measurement_intermediates(ham_data, trial_bra, wave_data_bra)
     ham_data = ham.build_propagation_intermediates(
-        ham_data, propagator, trial, wave_data
+        ham_data, propagator, trial_bra, wave_data_bra
     )
-    Seed = seed + rank
-    prop_data = propagator.init_prop_data(trial_ket, wave_data_ket, ham_data, Seed, init_walkers, trial, wave_data)
-    #prop_data["key"] = random.PRNGKey(seed + rank)
-    
+    local_seed = seed + rank
+    wave_data_ket["key"] = random.PRNGKey(local_seed)
+    prop_data = propagator.init_prop_data(
+        trial_bra, wave_data_bra, ham_data, local_seed, init_walkers
+    )
+    # prop_data["key"] = random.PRNGKey(seed + rank)
+
     comm.Barrier()
     init_time = time.time() - init
     print("#\n# Sampling sweeps:")
     print("#  Iter        Mean energy          Stochastic error       Walltime")
     comm.Barrier()
 
-    # global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
-    # global_block_energies = np.zeros(size * sampler.n_ene_blocks) + 0.0j
-
-    total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
-    total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
-    total_sign   = np.ones((sampler.n_ene_blocks, sampler.n_blocks+1)) + 0.0j
+    total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
+    total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
+    total_sign = np.ones((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
 
     avg_energy = np.zeros((sampler.n_blocks)) + 0.0j
     avg_weight = np.zeros((sampler.n_blocks)) + 0.0j
@@ -1502,22 +1526,31 @@ def fp_afqmc(
         sampler.n_ene_blocks
     ):  # hacking this variable for number of trajectories
 
-        ##initialize a new set of determinants every block
-        ##if the ket is CCSD that is being sampled then good to sample it many times
-        if (n != 0):
-            prop_data["walkers"], prop_data = trial_ket.get_init_walkers(
-                wave_data_ket, propagator.n_walkers, "unrestricted" if isinstance(prop_data["walkers"], UHFWalkers) else "restricted", prop_data
+        # initialize a new set of determinants every block
+        # if the ket is CCSD that is being sampled then good to sample it many times
+        if n != 0:
+            wave_data_ket["key"] = jax.random.PRNGKey(local_seed + n)
+            prop_data["walkers"] = trial_ket.get_init_walkers(
+                wave_data_ket,
+                propagator.n_walkers,
+                (
+                    "unrestricted"
+                    if isinstance(prop_data["walkers"], UHFWalkers)
+                    else "restricted"
+                ),
             )
 
             energy_samples = jnp.real(
-                trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+                trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
             )
             e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
             prop_data["e_estimate"] = e_estimate
 
-        total_sign[n,0] = jnp.sum(prop_data["overlaps"])/jnp.sum(jnp.abs(prop_data["overlaps"]))
-        total_energy[n,0] = prop_data["e_estimate"]
-        total_weight[n,0] = jnp.sum(prop_data["weights"])
+        total_sign[n, 0] = jnp.sum(prop_data["overlaps"]) / jnp.sum(
+            jnp.abs(prop_data["overlaps"])
+        )
+        total_energy[n, 0] = prop_data["e_estimate"]
+        total_weight[n, 0] = jnp.sum(prop_data["weights"])
 
         (
             prop_data_tr,
@@ -1525,14 +1558,16 @@ def fp_afqmc(
             weights,
             prop_data["key"],
         ) = sampler.propagate_free(
-            ham, ham_data, propagator, prop_data, trial, wave_data
+            ham, ham_data, propagator, prop_data, trial_bra, wave_data_bra
         )
         # global_block_weights[n] = weights[0]
         # global_block_energies[n] = energy_samples[0]
-        avg_sign = jax.vmap(lambda ov : jnp.sum(ov)/jnp.sum(jnp.abs(ov)))(prop_data_tr["overlaps"])
-        total_energy[n,1:] = energy_samples
-        total_weight[n,1:] = weights
-        total_sign[n,1:] = avg_sign
+        avg_sign = jax.vmap(lambda ov: jnp.sum(ov) / jnp.sum(jnp.abs(ov)))(
+            prop_data_tr["overlaps"]
+        )
+        total_energy[n, 1:] = energy_samples
+        total_weight[n, 1:] = weights
+        total_sign[n, 1:] = avg_sign
 
         avg_weight += weights
         avg_energy += weights * (energy_samples - avg_energy) / avg_weight
@@ -1544,19 +1579,36 @@ def fp_afqmc(
                 with open(f"prop_data_{rank}.bin", "wb") as f:
                     pickle.dump(prop_data_tr, f)
 
-        #if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
+        # if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
         comm.Barrier()
         if rank == 0:
             for i in range(avg_energy.shape[0]):
-                print("{0:5.3f}  {1:18.9f}  {2:8.2f}".format((i+1)*propagator.dt * sampler.n_prop_steps, avg_energy[i].real, avg_sign[i].real))
+                print(
+                    "{0:5.3f}  {1:18.9f}  {2:8.2f}".format(
+                        (i + 1) * propagator.dt * sampler.n_prop_steps,
+                        avg_energy[i].real,
+                        avg_sign[i].real,
+                    )
+                )
             print("")
-        times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks+1)
-        mean_energies = np.sum(total_energy[:n+1] * total_weight[:n+1], axis=0) / np.sum(total_weight[:n+1], axis=0)
-        error = np.std(total_energy[:n+1], axis=0) / (n)**0.5
+        times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks + 1)
+        mean_energies = np.sum(
+            total_energy[: n + 1] * total_weight[: n + 1], axis=0
+        ) / np.sum(total_weight[: n + 1], axis=0)
+        if n == 0:
+            error = np.zeros_like(mean_energies)
+        else:
+            error = np.std(total_energy[: n + 1], axis=0) / (n) ** 0.5
         np.savetxt(
-            "samples_raw.dat", np.stack((times, mean_energies.real, error.real, np.mean(total_sign[:n+1], axis=0).real)).T
+            "samples_raw.dat",
+            np.stack(
+                (
+                    times,
+                    mean_energies.real,
+                    error.real,
+                    np.mean(total_sign[: n + 1], axis=0).real,
+                )
+            ).T,
         )
-        np.savetxt(
-            "RawEnergies.dat", total_energy[:n+1].T.real
-        )
-        #print(f"{n:5d}: {mean_energies.real}")
+        np.savetxt("RawEnergies.dat", total_energy[: n + 1].T.real)
+        # print(f"{n:5d}: {mean_energies.real}")

@@ -74,7 +74,7 @@ class sampler:
         prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(
             prop_data["weights"]
         )
-        prop_data = prop.orthonormalize_walkers(prop_data)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         energy_samples = jnp.real(
             trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
@@ -116,7 +116,11 @@ class sampler:
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
 
-        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
 
@@ -148,7 +152,11 @@ class sampler:
         prop_data, (block_energy, block_weight) = lax.scan(
             _block_scan_wrapper, prop_data, None, length=self.n_ene_blocks
         )
-        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         return prop_data, (block_energy, block_weight)
 
@@ -544,7 +552,7 @@ class sampler_cpmc(sampler):
         prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(
             prop_data["weights"]
         )
-        prop_data = prop.orthonormalize_walkers(prop_data)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         energy_samples = jnp.real(
             trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
@@ -590,7 +598,7 @@ class sampler_lno(sampler):
         prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(
             prop_data["weights"]
         )
-        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         energy_samples = jnp.real(
             trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
@@ -639,7 +647,11 @@ class sampler_lno(sampler):
         prop_data, (block_energy, block_weight, block_orbE) = lax.scan(
             checkpoint(_block_scan_wrapper), prop_data, None, length=self.n_ene_blocks
         )
-        prop_data = propagator.stochastic_reconfiguration_local(prop_data)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         return prop_data, (block_energy, block_weight, block_orbE)
 

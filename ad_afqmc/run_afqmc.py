@@ -5,12 +5,11 @@ import subprocess
 from functools import partial
 from typing import Optional, Union
 
-import numpy as np
-
-from ad_afqmc import config, launch_script, driver, config, wavefunctions, optimize_trial
 import jax.numpy as jnp
-from jax import vmap, jit, value_and_grad
-import jaxopt
+import numpy as np
+from jax import jit, value_and_grad, vmap
+
+from ad_afqmc import config, driver, launch_script, optimize_trial, wavefunctions
 
 print = partial(print, flush=True)
 
@@ -119,19 +118,44 @@ def run_afqmc(
 
 
 def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None, tmpdir=None):
-    ham_data, ham, prop, trial, wave_data, trial_ket, wave_data_ket, sampler, observable, options = (
-        launch_script.setup_afqmc(options, options["tmpdir"])
-    )
+    (
+        ham_data,
+        ham,
+        prop,
+        trial,
+        wave_data,
+        trial_ket,
+        wave_data_ket,
+        sampler,
+        observable,
+        options,
+    ) = launch_script.setup_afqmc(options, options["tmpdir"])
 
-    if (options["symmetry_projector"] == "s2" and isinstance(trial, wavefunctions.uhf) and options["optimize_trial"]):
+    if (
+        options["symmetry_projector"] == "s2"
+        and isinstance(trial, wavefunctions.uhf)
+        and options["optimize_trial"]
+    ):
         orbitals = optimize_trial.optimize_trial(ham_data, trial, wave_data)
         wave_data["mo_coeff"] = orbitals
         nao = orbitals[0].shape[0]
-        wave_data["rdm1"] = jnp.vstack([orbitals[0] @ orbitals[0].T.conj(), orbitals[1] @ orbitals[1].T.conj()]).reshape(-1,nao,nao)
+        wave_data["rdm1"] = jnp.vstack(
+            [orbitals[0] @ orbitals[0].T.conj(), orbitals[1] @ orbitals[1].T.conj()]
+        ).reshape(-1, nao, nao)
 
     config.setup_jax()
     comm = config.setup_comm()
 
     driver.fp_afqmc(
-        ham_data, ham, prop, trial, wave_data, trial_ket, wave_data_ket, sampler, observable, options, comm
+        ham_data,
+        ham,
+        prop,
+        trial,
+        wave_data,
+        trial_ket,
+        wave_data_ket,
+        sampler,
+        observable,
+        options,
+        comm,
     )

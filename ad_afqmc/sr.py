@@ -45,7 +45,7 @@ def stochastic_reconfiguration_unrestricted(walkers, weights, zeta):
     indices = vmap(jnp.searchsorted, in_axes=(None, 0))(cumulative_weights, z)
     # walkers[0] = walkers[0][indices]
     # walkers[1] = walkers[1][indices]
-    return [walkers[0][indices],walkers[1][indices]], weights
+    return [walkers[0][indices], walkers[1][indices]], weights
 
 
 # this uses numpy but is only called once after each block

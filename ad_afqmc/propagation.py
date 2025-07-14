@@ -11,13 +11,13 @@ from jax import jit, lax, random, vmap
 from jax._src.typing import DTypeLike
 
 from ad_afqmc import linalg_utils, sr, wavefunctions
+from ad_afqmc.walkers import GHFWalkers, RHFWalkers, UHFWalkers
 from ad_afqmc.wavefunctions import wave_function
-from ad_afqmc.walkers import RHFWalkers, UHFWalkers, GHFWalkers
+
 
 @dataclass
 class propagator(ABC):
     """Abstract base class for propagator classes.
-    Contains methods for propagation, orthogonalization, and reconfiguration.
 
     Attributes:
         dt: time step
@@ -36,10 +36,8 @@ class propagator(ABC):
         trial: wave_function,
         wave_data: Any,
         ham_data: dict,
-        Seed: int,
+        seed: int,
         init_walkers: Optional[Union[jax.Array, List]] = None,
-        trial_bra: Optional[wave_function] = None,
-        wave_data_bra: Optional[dict] = None
     ) -> dict:
         """Initialize propagation data. If walkers are not provided they are generated
         using the trial.
@@ -48,26 +46,12 @@ class propagator(ABC):
             trial: trial wave function handler
             wave_data: dictionary containing the wave function data
             ham_data: dictionary containing the Hamiltonian data
+            seed: random seed for key generation
             init_walkers: initial walkers
 
         Returns:
             prop_data: dictionary containing the propagation data
         """
-        pass
-
-    @abstractmethod
-    def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
-        """Perform stochastic reconfiguration locally on a process. Jax friendly."""
-        pass
-
-    @abstractmethod
-    def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        """Perform stochastic reconfiguration globally across processes using MPI. Not jax friendly."""
-        pass
-
-    @abstractmethod
-    def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        """Orthonormalize walkers."""
         pass
 
     # defining this separately because calculating vhs for a batch seems to be faster
@@ -208,7 +192,7 @@ class propagator_restricted(propagator):
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
-    n_batch: int = 1
+    n_chunks: int = 1
     vhs_real_dtype: DTypeLike = jnp.float64
     vhs_complex_dtype: DTypeLike = jnp.complex128
 
@@ -217,65 +201,31 @@ class propagator_restricted(propagator):
         trial: wave_function,
         wave_data: dict,
         ham_data: dict,
-        Seed: int,
+        seed: int,
         init_walkers: Optional[jax.Array] = None,
-        trial_bra: Optional[wave_function] = None,
-        wave_data_bra: Optional[dict] = None
     ) -> dict:
         prop_data = {}
         prop_data["weights"] = jnp.ones(self.n_walkers)
-        prop_data["key"] = random.PRNGKey(Seed)
+        prop_data["key"] = random.PRNGKey(seed)
         if init_walkers is not None:
             prop_data["walkers"] = init_walkers
         else:
-            prop_data["walkers"], prop_data = trial.get_init_walkers(
-                wave_data, self.n_walkers, "restricted", prop_data
+            prop_data["walkers"] = trial.get_init_walkers(
+                wave_data, self.n_walkers, "restricted"
             )
 
-        if (trial_bra is None):
-            energy_samples = jnp.real(
-                trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-            )
-        else:
-            energy_samples = jnp.real(
-                trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
-            )
+        energy_samples = jnp.real(
+            trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+        )
+
         e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
         prop_data["e_estimate"] = e_estimate
         prop_data["pop_control_ene_shift"] = e_estimate
 
-        if (trial_bra is None):
-            prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-        else:
-            prop_data["overlaps"] = trial_bra.calc_overlap(prop_data["walkers"], wave_data_bra)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
         prop_data["normed_overlaps"] = prop_data["overlaps"]
         prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
-        return prop_data
-
-    @partial(jit, static_argnums=(0,))
-    def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        prop_data["walkers"].data, prop_data["weights"] = (
-            sr.stochastic_reconfiguration_restricted(
-                prop_data["walkers"].data, prop_data["weights"], zeta
-            )
-        )
-        return prop_data
-
-    def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        prop_data["walkers"].data, prop_data["weights"] = (
-            sr.stochastic_reconfiguration_mpi_restricted(
-                prop_data["walkers"].data, prop_data["weights"], zeta, comm
-            )
-        )
-        return prop_data
-
-    def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"].data, _ = linalg_utils.qr_vmap_restricted(prop_data["walkers"].data)
         return prop_data
 
     @partial(jit, static_argnums=(0, 1))
@@ -288,25 +238,30 @@ class propagator_restricted(propagator):
         wave_data: Sequence,
     ) -> dict:
         shift_term = jnp.einsum("wg,g->w", fields, ham_data["mf_shifts_fp"])
-        constants = jnp.exp(-jnp.sqrt(self.dt) * shift_term) * jnp.exp(self.dt * ham_data["h0_prop_fp"])
+        constants = jnp.exp(-jnp.sqrt(self.dt) * shift_term) * jnp.exp(
+            self.dt * ham_data["h0_prop_fp"]
+        )
 
         prop_data["walkers"].data = self._apply_trotprop(
             ham_data, prop_data["walkers"].data, fields
         )
 
-        prop_data["walkers"].data = constants.reshape(-1,1,1) * prop_data["walkers"].data
+        prop_data["walkers"].data = (
+            constants.reshape(-1, 1, 1) * prop_data["walkers"].data
+        )
         prop_data["walkers"].data, norms = linalg_utils.qr_vmap_restricted(
             prop_data["walkers"].data
         )
 
         prop_data["weights"] *= (norms * norms).real
-        prop_data = self.stochastic_reconfiguration_local(prop_data)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
 
-        prop_data["overlaps"] = (
-            trial.calc_overlap(prop_data["walkers"], wave_data) 
-        )
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         return prop_data
-
 
     @partial(jit, static_argnums=(0,))
     def _apply_trotprop(
@@ -314,7 +269,7 @@ class propagator_restricted(propagator):
     ) -> jax.Array:
         """Apply the propagator to a batch of walkers."""
         n_walkers = walkers.shape[0]
-        batch_size = n_walkers // self.n_batch
+        batch_size = n_walkers // self.n_chunks
 
         def scanned_fun(carry, batch):
             field_batch, walker_batch = batch
@@ -336,9 +291,9 @@ class propagator_restricted(propagator):
             scanned_fun,
             None,
             (
-                fields.reshape(self.n_batch, batch_size, -1),
+                fields.reshape(self.n_chunks, batch_size, -1),
                 walkers.reshape(
-                    self.n_batch, batch_size, walkers.shape[1], walkers.shape[2]
+                    self.n_chunks, batch_size, walkers.shape[1], walkers.shape[2]
                 ),
             ),
         )
@@ -358,8 +313,10 @@ class propagator_restricted(propagator):
         ham_data["h0_prop"] = (
             -ham_data["h0"] - jnp.sum(ham_data["mf_shifts"] ** 2) / 2.0
         )
-        ham_data["h0_prop_fp"] = (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0] / 2.
-        
+        ham_data["h0_prop_fp"] = (
+            (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0] / 2.0
+        )
+
         v0 = 0.5 * jnp.einsum(
             "gik,gjk->ij",
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
@@ -387,31 +344,24 @@ class propagator_unrestricted(propagator_restricted):
         trial: wave_function,
         wave_data: dict,
         ham_data: dict,
-        Seed: int,        
+        seed: int,
         init_walkers: Optional[Sequence] = None,
-        trial_bra: Optional[wave_function] = None,
-        wave_data_bra: Optional[dict] = None
     ) -> dict:
         prop_data = {}
         prop_data["weights"] = jnp.ones(self.n_walkers)
-        prop_data["key"] = random.PRNGKey(Seed)
+        prop_data["key"] = random.PRNGKey(seed)
         if init_walkers is not None:
             prop_data["walkers"] = init_walkers
         else:
-            prop_data["walkers"], prop_data = trial.get_init_walkers(
-                wave_data, self.n_walkers, "unrestricted", prop_data
+            prop_data["walkers"] = trial.get_init_walkers(
+                wave_data, self.n_walkers, "unrestricted"
             )
         if "e_estimate" in ham_data:
             prop_data["e_estimate"] = ham_data["e_estimate"]
         else:
-            if (trial_bra is None):
-                energy_samples = jnp.real(
-                    trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-                )
-            else:
-                energy_samples = jnp.real(
-                    trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
-                )
+            energy_samples = jnp.real(
+                trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+            )
             e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
             prop_data["e_estimate"] = e_estimate
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
@@ -425,7 +375,7 @@ class propagator_unrestricted(propagator_restricted):
         self, ham_data: dict, walkers: Sequence, fields: jax.Array
     ) -> List:
         n_walkers = walkers[0].shape[0]
-        batch_size = n_walkers // self.n_batch
+        batch_size = n_walkers // self.n_chunks
 
         def scanned_fun(carry, batch):
             field_batch, walker_batch_0, walker_batch_1 = batch
@@ -448,12 +398,12 @@ class propagator_unrestricted(propagator_restricted):
             scanned_fun,
             None,
             (
-                fields.reshape(self.n_batch, batch_size, -1),
+                fields.reshape(self.n_chunks, batch_size, -1),
                 walkers[0].reshape(
-                    self.n_batch, batch_size, walkers[0].shape[1], walkers[0].shape[2]
+                    self.n_chunks, batch_size, walkers[0].shape[1], walkers[0].shape[2]
                 ),
                 walkers[1].reshape(
-                    self.n_batch, batch_size, walkers[1].shape[1], walkers[1].shape[2]
+                    self.n_chunks, batch_size, walkers[1].shape[1], walkers[1].shape[2]
                 ),
             ),
         )
@@ -462,40 +412,6 @@ class propagator_unrestricted(propagator_restricted):
             walkers_new[1].reshape(n_walkers, walkers[1].shape[1], walkers[1].shape[2]),
         ]
         return walkers
-
-    @partial(jit, static_argnums=(0,))
-    def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        prop_data["walkers"].data, prop_data["weights"] = (
-            sr.stochastic_reconfiguration_unrestricted(
-                prop_data["walkers"].data, prop_data["weights"], zeta
-            )
-        )
-        return prop_data
-
-    def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        (
-            prop_data["walkers"].data,
-            prop_data["weights"],
-        ) = sr.stochastic_reconfiguration_mpi_unrestricted(
-            prop_data["walkers"].data, prop_data["weights"], zeta, comm
-        )
-        return prop_data
-
-    def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"].data, _ = linalg_utils.qr_vmap_unrestricted(
-            prop_data["walkers"].data
-        )
-        return prop_data
-
-    def _orthogonalize_walkers(self, prop_data: dict) -> Tuple:
-        prop_data["walkers"].data, norms = linalg_utils.qr_vmap_unrestricted(
-            prop_data["walkers"].data
-        )
-        return prop_data, norms
 
     @partial(jit, static_argnums=(0))
     def _multiply_constant(self, walkers: List, constants: jax.Array) -> Sequence:
@@ -521,15 +437,20 @@ class propagator_unrestricted(propagator_restricted):
         prop_data["walkers"].data = self._apply_trotprop(
             ham_data, prop_data["walkers"].data, fields
         )
-        prop_data["walkers"].data = self._multiply_constant(prop_data["walkers"].data, constants)
-        prop_data, norms = self._orthogonalize_walkers(prop_data)
-
-        prop_data["weights"] *= (norms[0] * norms[1]).real
-        prop_data = self.stochastic_reconfiguration_local(prop_data)
-
-        prop_data["overlaps"] = (
-            trial.calc_overlap(prop_data["walkers"], wave_data) 
+        prop_data["walkers"].data = self._multiply_constant(
+            prop_data["walkers"].data, constants
         )
+        prop_data["walkers"].data, norms = linalg_utils.qr_vmap_unrestricted(
+            prop_data["walkers"].data
+        )
+        prop_data["weights"] *= (norms[0] * norms[1]).real
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
+
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         return prop_data
 
     @partial(jit, static_argnums=(0, 2))
@@ -587,35 +508,29 @@ class propagator_generalized(propagator_restricted):
     dt: float = 0.01
     n_walkers: int = 50
     n_exp_terms: int = 6
-    n_batch: int = 1
+    n_chunks: int = 1
 
     def init_prop_data(
         self,
         trial: wave_function,
         wave_data: dict,
         ham_data: dict,
-        Seed: int,
+        seed: int,
         init_walkers: Optional[Sequence] = None,
-        trial_bra: Optional[wave_function] = None,
-        wave_data_bra: Optional[dict] = None
     ) -> dict:
         prop_data = {}
         prop_data["weights"] = jnp.ones(self.n_walkers)
-        prop_data["key"] = random.PRNGKey(Seed)
+        prop_data["key"] = random.PRNGKey(seed)
         if init_walkers is not None:
             prop_data["walkers"] = init_walkers
         else:
-            prop_data["walkers"], prop_data = trial.get_init_walkers(
-                wave_data, self.n_walkers, "generalized", prop_data
+            prop_data["walkers"] = trial.get_init_walkers(
+                wave_data, self.n_walkers, "generalized"
             )
-        if (trial_bra is None):
-            energy_samples = jnp.real(
-                trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
-            )
-        else:
-            energy_samples = jnp.real(
-                trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
-            )
+        energy_samples = jnp.real(
+            trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+        )
+
         e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
         prop_data["e_estimate"] = e_estimate
         prop_data["pop_control_ene_shift"] = e_estimate
@@ -629,7 +544,7 @@ class propagator_generalized(propagator_restricted):
         self, ham_data: dict, walkers: jax.Array, fields: jax.Array
     ) -> jax.Array:
         n_walkers = walkers.shape[0]
-        batch_size = n_walkers // self.n_batch
+        batch_size = n_walkers // self.n_chunks
 
         def scanned_fun(carry, batch):
             field_batch, walker_batch = batch
@@ -649,9 +564,9 @@ class propagator_generalized(propagator_restricted):
             scanned_fun,
             None,
             (
-                fields.reshape(self.n_batch, batch_size, -1),
+                fields.reshape(self.n_chunks, batch_size, -1),
                 walkers.reshape(
-                    self.n_batch, batch_size, walkers.shape[1], walkers.shape[2]
+                    self.n_chunks, batch_size, walkers.shape[1], walkers.shape[2]
                 ),
             ),
         )
@@ -702,10 +617,12 @@ class propagator_cpmc(propagator_unrestricted):
         trial: wavefunctions.wave_function_cpmc,
         wave_data: dict,
         ham_data: dict,
-        Seed: int,
+        seed: int,
         init_walkers: Optional[Sequence] = None,
     ) -> dict:
-        prop_data = super().init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
+        prop_data = super().init_prop_data(
+            trial, wave_data, ham_data, seed, init_walkers
+        )
         prop_data["walkers"].data[0] = prop_data["walkers"].data[0].real
         prop_data["walkers"].data[1] = prop_data["walkers"].data[1].real
         prop_data["overlaps"] = prop_data["overlaps"].real
@@ -1068,12 +985,18 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         prop_data["walkers"].data[0] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][0], prop_data["walkers"].data[0]
         ) * jnp.exp(
-            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"].data[0].shape[-1]
+            self.dt
+            * (prop_data["e_estimate"])
+            / 2
+            / prop_data["walkers"].data[0].shape[-1]
         )
         prop_data["walkers"].data[1] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"].data[1]
         ) * jnp.exp(
-            self.dt * (prop_data["e_estimate"]) / 2 / prop_data["walkers"].data[1].shape[-1]
+            self.dt
+            * (prop_data["e_estimate"])
+            / 2
+            / prop_data["walkers"].data[1].shape[-1]
         )
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         # prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
@@ -1102,10 +1025,12 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
         trial: wavefunctions.wave_function_cpmc,
         wave_data: dict,
         ham_data: dict,
-        Seed: int,
+        seed: int,
         init_walkers: Optional[Sequence] = None,
     ) -> dict:
-        prop_data = super().init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
+        prop_data = super().init_prop_data(
+            trial, wave_data, ham_data, seed, init_walkers
+        )
         prop_data["greens"] = trial.calc_full_green_vmap(
             prop_data["walkers"].data, wave_data
         )
@@ -1250,7 +1175,10 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_nn"][1],
             )
             new_walkers_up = (
-                carry["walkers"].data[0].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"]
+                .data[0]
+                .at[:, site_i, :]
+                .mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_up = new_walkers_up.at[:, site_j, :].mul(
                 constants[:, 1].reshape(-1, 1)
@@ -1299,10 +1227,16 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_nn"][1],
             )
             new_walkers_up = (
-                carry["walkers"].data[0].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"]
+                .data[0]
+                .at[:, site_i, :]
+                .mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_dn = (
-                carry["walkers"].data[1].at[:, site_j, :].mul(constants[:, 1].reshape(-1, 1))
+                carry["walkers"]
+                .data[1]
+                .at[:, site_j, :]
+                .mul(constants[:, 1].reshape(-1, 1))
             )
             carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
@@ -1348,10 +1282,16 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_nn"][1],
             )
             new_walkers_dn = (
-                carry["walkers"].data[1].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"]
+                .data[1]
+                .at[:, site_i, :]
+                .mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_up = (
-                carry["walkers"].data[0].at[:, site_j, :].mul(constants[:, 1].reshape(-1, 1))
+                carry["walkers"]
+                .data[0]
+                .at[:, site_j, :]
+                .mul(constants[:, 1].reshape(-1, 1))
             )
             carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
@@ -1398,7 +1338,10 @@ class propagator_cpmc_nn(propagator_cpmc, propagator_unrestricted):
                 prop_data["hs_constant_nn"][1],
             )
             new_walkers_dn = (
-                carry["walkers"].data[1].at[:, site_i, :].mul(constants[:, 0].reshape(-1, 1))
+                carry["walkers"]
+                .data[1]
+                .at[:, site_i, :]
+                .mul(constants[:, 0].reshape(-1, 1))
             )
             new_walkers_dn = new_walkers_dn.at[:, site_j, :].mul(
                 constants[:, 1].reshape(-1, 1)
@@ -1446,10 +1389,12 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
         trial: wavefunctions.wave_function_cpmc,
         wave_data: dict,
         ham_data: dict,
-        Seed: int,
+        seed: int,
         init_walkers: Optional[Sequence] = None,
     ) -> dict:
-        prop_data = super().init_prop_data(trial, wave_data, ham_data, Seed, init_walkers)
+        prop_data = super().init_prop_data(
+            trial, wave_data, ham_data, seed, init_walkers
+        )
         prop_data["greens"] = trial.calc_full_green_vmap(
             prop_data["walkers"].data, wave_data
         )
@@ -1514,12 +1459,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
         def scanned_fun(carry, x):
             # field 1
             new_walkers_0_up = (
-                carry["walkers"].data[0]
+                carry["walkers"]
+                .data[0]
                 .at[:, x, :]
                 .mul(prop_data["hs_constant_onsite"][0, 0])
             )
             new_walkers_0_dn = (
-                carry["walkers"].data[1]
+                carry["walkers"]
+                .data[1]
                 .at[:, x, :]
                 .mul(prop_data["hs_constant_onsite"][0, 1])
             )
@@ -1531,12 +1478,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"].data[0]
+                carry["walkers"]
+                .data[0]
                 .at[:, x, :]
                 .mul(prop_data["hs_constant_onsite"][1, 0])
             )
             new_walkers_1_dn = (
-                carry["walkers"].data[1]
+                carry["walkers"]
+                .data[1]
                 .at[:, x, :]
                 .mul(prop_data["hs_constant_onsite"][1, 1])
             )
@@ -1577,7 +1526,8 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             # up up
             # field 1
             new_walkers_0_up = (
-                carry["walkers"].data[0]
+                carry["walkers"]
+                .data[0]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][0, 0])
             )
@@ -1592,7 +1542,8 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"].data[0]
+                carry["walkers"]
+                .data[0]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][1, 0])
             )
@@ -1623,12 +1574,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             # up dn
             # field 1
             new_walkers_0_up = (
-                carry["walkers"].data[0]
+                carry["walkers"]
+                .data[0]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][0, 0])
             )
             new_walkers_0_dn = (
-                carry["walkers"].data[1]
+                carry["walkers"]
+                .data[1]
                 .at[:, site_j, :]
                 .mul(prop_data["hs_constant_nn"][0, 1])
             )
@@ -1640,12 +1593,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
 
             # field 2
             new_walkers_1_up = (
-                carry["walkers"].data[0]
+                carry["walkers"]
+                .data[0]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][1, 0])
             )
             new_walkers_1_dn = (
-                carry["walkers"].data[1]
+                carry["walkers"]
+                .data[1]
                 .at[:, site_j, :]
                 .mul(prop_data["hs_constant_nn"][1, 1])
             )
@@ -1674,12 +1629,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             # dn up
             # field 1
             new_walkers_0_dn = (
-                carry["walkers"].data[1]
+                carry["walkers"]
+                .data[1]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][0, 0])
             )
             new_walkers_0_up = (
-                carry["walkers"].data[0]
+                carry["walkers"]
+                .data[0]
                 .at[:, site_j, :]
                 .mul(prop_data["hs_constant_nn"][0, 1])
             )
@@ -1691,12 +1648,14 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
 
             # field 2
             new_walkers_1_dn = (
-                carry["walkers"].data[1]
+                carry["walkers"]
+                .data[1]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][1, 0])
             )
             new_walkers_1_up = (
-                carry["walkers"].data[0]
+                carry["walkers"]
+                .data[0]
                 .at[:, site_j, :]
                 .mul(prop_data["hs_constant_nn"][1, 1])
             )
@@ -1725,7 +1684,8 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
             # dn dn
             # field 1
             new_walkers_0_dn = (
-                carry["walkers"].data[1]
+                carry["walkers"]
+                .data[1]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][0, 0])
             )
@@ -1740,7 +1700,8 @@ class propagator_cpmc_nn_slow(propagator_unrestricted):
 
             # field 2
             new_walkers_1_dn = (
-                carry["walkers"].data[1]
+                carry["walkers"]
+                .data[1]
                 .at[:, site_i, :]
                 .mul(prop_data["hs_constant_nn"][1, 0])
             )

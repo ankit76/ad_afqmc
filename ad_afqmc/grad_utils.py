@@ -1,9 +1,11 @@
-import os
-import numpy as np
-from pyscf import gto, scf, df, lib, grad
-from ad_afqmc import pyscf_interface
-from scipy.linalg import fractional_matrix_power
 import copy
+import os
+
+import numpy as np
+from pyscf import df, grad, gto, lib, scf
+from scipy.linalg import fractional_matrix_power
+
+from ad_afqmc import pyscf_interface
 
 
 def get_transformation_matrix(S, lin_dep_thresh=1e-10):
@@ -107,10 +109,12 @@ def write_integrals_lowdins(mf, tmpdir="./"):
     if isinstance(mf, scf.uhf.UHF):
         c_ao = [X_inv @ mf.mo_coeff[0], X_inv @ mf.mo_coeff[1]]
     elif isinstance(mf, scf.rhf.RHF):
-        c_ao = X_inv @ mf.mo_coeff
+        c_ao = X_inv @ mf.mo_coeff  # type: ignore
     h1 = np.array(basis0.T @ mf.get_hcore() @ basis0, dtype="float64")
 
-    df0 = df.incore.cholesky_eri(mol, auxbasis=mf.auxbasis)  # ,aosym='s1')
+    df0 = df.incore.cholesky_eri(
+        mol, auxbasis=mf.auxbasis  # type: ignore
+    )  # ,aosym='s1')
     df0 = lib.unpack_tril(df0)
     chol1 = _ao2mo(df0, basis0)
 
@@ -131,7 +135,7 @@ def write_integrals_lowdins(mf, tmpdir="./"):
             mo_coeff=np.array(q),
             X=X,
             X_inv=X_inv,
-            can_mo=mf.mo_coeff,
+            can_mo=mf.mo_coeff,  # type: ignore
         )
     elif isinstance(mf, scf.rhf.RHF):
         np.savez(
@@ -139,7 +143,7 @@ def write_integrals_lowdins(mf, tmpdir="./"):
             mo_coeff=[q, q],
             X=X,
             X_inv=X_inv,
-            can_mo=mf.mo_coeff,
+            can_mo=mf.mo_coeff,  # type: ignore
         )
 
     pyscf_interface.write_dqmc(

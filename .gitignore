@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+*.patch
+
+# IDE
+.vscode/
+.idea/
+
+# Output files
+runs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+pyrightconfig.json
