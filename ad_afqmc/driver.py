@@ -1486,9 +1486,10 @@ def fp_afqmc(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    Seed = seed + rank
+    local_seed = seed + rank
+    wave_data_ket["key"] = random.PRNGKey(local_seed)
     prop_data = propagator.init_prop_data(
-        trial_ket, wave_data_ket, ham_data, Seed, init_walkers, trial, wave_data
+        trial_ket, wave_data_ket, ham_data, local_seed, init_walkers, trial, wave_data
     )
     # prop_data["key"] = random.PRNGKey(seed + rank)
 
@@ -1514,7 +1515,8 @@ def fp_afqmc(
         ##initialize a new set of determinants every block
         ##if the ket is CCSD that is being sampled then good to sample it many times
         if n != 0:
-            prop_data["walkers"], prop_data = trial_ket.get_init_walkers(
+            wave_data_ket["key"] = jax.random.PRNGKey(local_seed + n)
+            prop_data["walkers"] = trial_ket.get_init_walkers(
                 wave_data_ket,
                 propagator.n_walkers,
                 (
@@ -1522,7 +1524,6 @@ def fp_afqmc(
                     if isinstance(prop_data["walkers"], UHFWalkers)
                     else "restricted"
                 ),
-                prop_data,
             )
 
             energy_samples = jnp.real(
@@ -1580,7 +1581,10 @@ def fp_afqmc(
         mean_energies = np.sum(
             total_energy[: n + 1] * total_weight[: n + 1], axis=0
         ) / np.sum(total_weight[: n + 1], axis=0)
-        error = np.std(total_energy[: n + 1], axis=0) / (n) ** 0.5
+        if n == 0:
+            error = np.zeros_like(mean_energies)
+        else:
+            error = np.std(total_energy[: n + 1], axis=0) / (n) ** 0.5
         np.savetxt(
             "samples_raw.dat",
             np.stack(

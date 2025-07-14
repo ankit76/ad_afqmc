@@ -1,3 +1,4 @@
+from abc import ABC
 from dataclasses import dataclass
 from typing import List
 
@@ -5,8 +6,15 @@ import jax
 from jax import tree_util
 
 
+class walker_batch(ABC):
+    """Base class for walkers
+
+    Functions to be added.
+    """
+
+
 @dataclass
-class RHFWalkers:
+class RHFWalkers(walker_batch):
     """Wrapper for RHF walkers"""
 
     data: jax.Array
@@ -23,7 +31,7 @@ tree_util.register_pytree_node(
 
 
 @dataclass
-class UHFWalkers:
+class UHFWalkers(walker_batch):
     """Wrapper for RHF walkers"""
 
     data: List[jax.Array]
@@ -40,7 +48,7 @@ tree_util.register_pytree_node(
 
 
 @dataclass
-class GHFWalkers:
+class GHFWalkers(walker_batch):
     """Wrapper for GHF walkers"""
 
     data: jax.Array

@@ -229,8 +229,8 @@ class propagator_restricted(propagator):
         if init_walkers is not None:
             prop_data["walkers"] = init_walkers
         else:
-            prop_data["walkers"], prop_data = trial.get_init_walkers(
-                wave_data, self.n_walkers, "restricted", prop_data
+            prop_data["walkers"] = trial.get_init_walkers(
+                wave_data, self.n_walkers, "restricted"
             )
 
         if trial_bra is None:
@@ -406,8 +406,8 @@ class propagator_unrestricted(propagator_restricted):
         if init_walkers is not None:
             prop_data["walkers"] = init_walkers
         else:
-            prop_data["walkers"], prop_data = trial.get_init_walkers(
-                wave_data, self.n_walkers, "unrestricted", prop_data
+            prop_data["walkers"] = trial.get_init_walkers(
+                wave_data, self.n_walkers, "unrestricted"
             )
         if "e_estimate" in ham_data:
             prop_data["e_estimate"] = ham_data["e_estimate"]
@@ -613,8 +613,8 @@ class propagator_generalized(propagator_restricted):
         if init_walkers is not None:
             prop_data["walkers"] = init_walkers
         else:
-            prop_data["walkers"], prop_data = trial.get_init_walkers(
-                wave_data, self.n_walkers, "generalized", prop_data
+            prop_data["walkers"] = trial.get_init_walkers(
+                wave_data, self.n_walkers, "generalized"
             )
         if trial_bra is None:
             energy_samples = jnp.real(
