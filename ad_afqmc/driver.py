@@ -1463,8 +1463,8 @@ def fp_afqmc(
     ham_data: dict,
     ham: hamiltonian.hamiltonian,
     propagator: propagation.propagator,
-    trial: wavefunctions.wave_function,
-    wave_data: dict,
+    trial_bra: wavefunctions.wave_function,
+    wave_data_bra: dict,
     trial_ket: wavefunctions.wave_function,
     wave_data_ket: dict,
     sampler: sampling.sampler,
@@ -1479,17 +1479,17 @@ def fp_afqmc(
     rank = comm.Get_rank()
     seed = options["seed"]
 
-    trial_rdm1 = trial.get_rdm1(wave_data)
-    if "rdm1" not in wave_data:
-        wave_data["rdm1"] = trial_rdm1
-    ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
+    trial_rdm1 = trial_bra.get_rdm1(wave_data_bra)
+    if "rdm1" not in wave_data_bra:
+        wave_data_bra["rdm1"] = trial_rdm1
+    ham_data = ham.build_measurement_intermediates(ham_data, trial_bra, wave_data_bra)
     ham_data = ham.build_propagation_intermediates(
-        ham_data, propagator, trial, wave_data
+        ham_data, propagator, trial_bra, wave_data_bra
     )
     local_seed = seed + rank
     wave_data_ket["key"] = random.PRNGKey(local_seed)
     prop_data = propagator.init_prop_data(
-        trial_ket, wave_data_ket, ham_data, local_seed, init_walkers, trial, wave_data
+        trial_bra, wave_data_bra, ham_data, local_seed, init_walkers
     )
     # prop_data["key"] = random.PRNGKey(seed + rank)
 
@@ -1498,9 +1498,6 @@ def fp_afqmc(
     print("#\n# Sampling sweeps:")
     print("#  Iter        Mean energy          Stochastic error       Walltime")
     comm.Barrier()
-
-    # global_block_weights = np.zeros(size * sampler.n_ene_blocks) + 0.0j
-    # global_block_energies = np.zeros(size * sampler.n_ene_blocks) + 0.0j
 
     total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
     total_weight = np.zeros((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
@@ -1512,8 +1509,8 @@ def fp_afqmc(
         sampler.n_ene_blocks
     ):  # hacking this variable for number of trajectories
 
-        ##initialize a new set of determinants every block
-        ##if the ket is CCSD that is being sampled then good to sample it many times
+        # initialize a new set of determinants every block
+        # if the ket is CCSD that is being sampled then good to sample it many times
         if n != 0:
             wave_data_ket["key"] = jax.random.PRNGKey(local_seed + n)
             prop_data["walkers"] = trial_ket.get_init_walkers(
@@ -1527,7 +1524,7 @@ def fp_afqmc(
             )
 
             energy_samples = jnp.real(
-                trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+                trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
             )
             e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
             prop_data["e_estimate"] = e_estimate
@@ -1544,7 +1541,7 @@ def fp_afqmc(
             weights,
             prop_data["key"],
         ) = sampler.propagate_free(
-            ham, ham_data, propagator, prop_data, trial, wave_data
+            ham, ham_data, propagator, prop_data, trial_bra, wave_data_bra
         )
         # global_block_weights[n] = weights[0]
         # global_block_energies[n] = energy_samples[0]
