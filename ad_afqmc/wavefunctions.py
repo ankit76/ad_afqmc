@@ -88,22 +88,7 @@ class wave_function(ABC):
             ),
         )
 
-        if self.projector == "tr" and self.nelec[0] == self.nelec[1]:
-            _, overlaps2 = lax.scan(
-                scanned_fun,
-                None,
-                (
-                    walkers.data[1].reshape(
-                        self.n_batch, batch_size, self.norb, self.nelec[1]
-                    ),
-                    walkers.data[0].reshape(
-                        self.n_batch, batch_size, self.norb, self.nelec[0]
-                    ),
-                ),
-            )
-            return (overlaps + overlaps2).reshape(n_walkers)
-        else:
-            return overlaps.reshape(n_walkers)
+        return overlaps.reshape(n_walkers)
 
     def _calc_overlap_unrestricted_handler(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
