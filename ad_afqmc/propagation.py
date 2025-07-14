@@ -18,7 +18,6 @@ from ad_afqmc.wavefunctions import wave_function
 @dataclass
 class propagator(ABC):
     """Abstract base class for propagator classes.
-    Contains methods for propagation, orthogonalization, and reconfiguration.
 
     Attributes:
         dt: time step
@@ -53,21 +52,6 @@ class propagator(ABC):
         Returns:
             prop_data: dictionary containing the propagation data
         """
-        pass
-
-    @abstractmethod
-    def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
-        """Perform stochastic reconfiguration locally on a process. Jax friendly."""
-        pass
-
-    @abstractmethod
-    def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        """Perform stochastic reconfiguration globally across processes using MPI. Not jax friendly."""
-        pass
-
-    @abstractmethod
-    def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        """Orthonormalize walkers."""
         pass
 
     # defining this separately because calculating vhs for a batch seems to be faster
@@ -244,33 +228,6 @@ class propagator_restricted(propagator):
         prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
         return prop_data
 
-    @partial(jit, static_argnums=(0,))
-    def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        prop_data["walkers"].data, prop_data["weights"] = (
-            sr.stochastic_reconfiguration_restricted(
-                prop_data["walkers"].data, prop_data["weights"], zeta
-            )
-        )
-        return prop_data
-
-    def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        prop_data["walkers"].data, prop_data["weights"] = (
-            sr.stochastic_reconfiguration_mpi_restricted(
-                prop_data["walkers"].data, prop_data["weights"], zeta, comm
-            )
-        )
-        return prop_data
-
-    def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"].data, _ = linalg_utils.qr_vmap_restricted(
-            prop_data["walkers"].data
-        )
-        return prop_data
-
     @partial(jit, static_argnums=(0, 1))
     def propagate_free(
         self,
@@ -297,7 +254,11 @@ class propagator_restricted(propagator):
         )
 
         prop_data["weights"] *= (norms * norms).real
-        prop_data = self.stochastic_reconfiguration_local(prop_data)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
 
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         return prop_data
@@ -452,40 +413,6 @@ class propagator_unrestricted(propagator_restricted):
         ]
         return walkers
 
-    @partial(jit, static_argnums=(0,))
-    def stochastic_reconfiguration_local(self, prop_data: dict) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        prop_data["walkers"].data, prop_data["weights"] = (
-            sr.stochastic_reconfiguration_unrestricted(
-                prop_data["walkers"].data, prop_data["weights"], zeta
-            )
-        )
-        return prop_data
-
-    def stochastic_reconfiguration_global(self, prop_data: dict, comm: Any) -> dict:
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        (
-            prop_data["walkers"].data,
-            prop_data["weights"],
-        ) = sr.stochastic_reconfiguration_mpi_unrestricted(
-            prop_data["walkers"].data, prop_data["weights"], zeta, comm
-        )
-        return prop_data
-
-    def orthonormalize_walkers(self, prop_data: dict) -> dict:
-        prop_data["walkers"].data, _ = linalg_utils.qr_vmap_unrestricted(
-            prop_data["walkers"].data
-        )
-        return prop_data
-
-    def _orthogonalize_walkers(self, prop_data: dict) -> Tuple:
-        prop_data["walkers"].data, norms = linalg_utils.qr_vmap_unrestricted(
-            prop_data["walkers"].data
-        )
-        return prop_data, norms
-
     @partial(jit, static_argnums=(0))
     def _multiply_constant(self, walkers: List, constants: jax.Array) -> Sequence:
         walkers[0] = constants[0].reshape(-1, 1, 1) * walkers[0]
@@ -513,10 +440,15 @@ class propagator_unrestricted(propagator_restricted):
         prop_data["walkers"].data = self._multiply_constant(
             prop_data["walkers"].data, constants
         )
-        prop_data, norms = self._orthogonalize_walkers(prop_data)
-
+        prop_data["walkers"].data, norms = linalg_utils.qr_vmap_unrestricted(
+            prop_data["walkers"].data
+        )
         prop_data["weights"] *= (norms[0] * norms[1]).real
-        prop_data = self.stochastic_reconfiguration_local(prop_data)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
 
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         return prop_data

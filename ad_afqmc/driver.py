@@ -155,12 +155,16 @@ def afqmc_energy(
             global_block_energies[n] = block_energy_n
 
         block_energy_n = comm.bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
 
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
 
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_global(prop_data["weights"], zeta, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
 
         # Print progress and save intermediate results
@@ -339,12 +343,16 @@ def afqmc_LNOenergy(
 
         block_energy_n = comm.bcast(block_energy_n, root=0)
         block_orbE_n = comm.bcast(block_orbE_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data = prop_data.orthonormalize()
 
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
 
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_global(prop_data["weights"], zeta, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
 
         # Print progress and save intermediate results
@@ -591,10 +599,15 @@ def afqmc_observable(
             )
         # Update walkers
         block_energy_n = comm.bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_global(prop_data["weights"], zeta, comm)
         prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
 
         # Print progress and save intermediate results
@@ -685,8 +698,12 @@ def _run_equilibration(
             block_energy_n = total_block_energy_n / total_block_weight_n
         comm.Bcast(block_weight_n, root=0)
         comm.Bcast(block_energy_n, root=0)
-        prop_data = propagator.orthonormalize_walkers(prop_data)
-        prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        prop_data["walkers"], prop_data["weights"] = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_global(prop_data["weights"], zeta, comm)
         prop_data["e_estimate"] = (
             0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n[0]
         ).astype("float64")

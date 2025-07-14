@@ -92,9 +92,13 @@ class TestPropagation(unittest.TestCase):
     __test__ = False
 
     def test_stochastic_reconfiguration_local(self):
-        prop_data_new = prop_handler.stochastic_reconfiguration_local(prop_data)
-        self.assertTrue(prop_data_new["walkers"].shape == prop_data["walkers"].shape)
-        self.assertTrue(prop_data_new["weights"].shape == prop_data["weights"].shape)
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        zeta = random.uniform(subkey)
+        new_walkers, new_weights = prop_data[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
+        self.assertTrue(new_walkers.shape == prop_data["walkers"].shape)
+        self.assertTrue(new_weights.shape == prop_data["weights"].shape)
 
     def test_propagate(self):
         prop_data_new = prop_handler.propagate(
@@ -105,14 +109,18 @@ class TestPropagation(unittest.TestCase):
         self.assertTrue(prop_data_new["overlaps"].shape == prop_data["overlaps"].shape)
 
     def test_stochastic_reconfiguration_local_u(self):
-        prop_data_new = prop_handler_u.stochastic_reconfiguration_local(prop_data_u)
+        prop_data_u["key"], subkey = random.split(prop_data_u["key"])
+        zeta = random.uniform(subkey)
+        new_walkers, new_weights = prop_data_u[
+            "walkers"
+        ].stochastic_reconfiguration_local(prop_data_u["weights"], zeta)
         self.assertTrue(
-            prop_data_new["walkers"][0].shape == prop_data_u["walkers"][0].shape
+            new_walkers.data[0].shape == prop_data_u["walkers"].data[0].shape
         )
         self.assertTrue(
-            prop_data_new["walkers"][1].shape == prop_data_u["walkers"][1].shape
+            new_walkers.data[1].shape == prop_data_u["walkers"].data[1].shape
         )
-        self.assertTrue(prop_data_new["weights"].shape == prop_data_u["weights"].shape)
+        self.assertTrue(new_weights.shape == prop_data_u["weights"].shape)
 
     def test_propagate_u(self):
         prop_data_new = prop_handler_u.propagate(

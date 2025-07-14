@@ -86,9 +86,13 @@ prop_handler_cpmc_nn_slow = propagation.propagator_cpmc_nn_slow(
 
 
 def test_stochastic_reconfiguration_local():
-    prop_data_new = prop_handler.stochastic_reconfiguration_local(prop_data)
-    assert prop_data_new["walkers"].data.shape == prop_data["walkers"].data.shape
-    assert prop_data_new["weights"].shape == prop_data["weights"].shape
+    prop_data["key"], subkey = random.split(prop_data["key"])
+    zeta = random.uniform(subkey)
+    new_walkers, new_weights = prop_data["walkers"].stochastic_reconfiguration_local(
+        prop_data["weights"], zeta
+    )
+    assert new_walkers.data.shape == prop_data["walkers"].data.shape
+    assert new_weights.shape == prop_data["weights"].shape
 
 
 def test_propagate():
@@ -101,14 +105,14 @@ def test_propagate():
 
 
 def test_stochastic_reconfiguration_local_u():
-    prop_data_new = prop_handler_u.stochastic_reconfiguration_local(prop_data_u)
-    assert (
-        prop_data_new["walkers"].data[0].shape == prop_data_u["walkers"].data[0].shape
+    prop_data_u["key"], subkey = random.split(prop_data_u["key"])
+    zeta = random.uniform(subkey)
+    new_walkers, new_weights = prop_data_u["walkers"].stochastic_reconfiguration_local(
+        prop_data_u["weights"], zeta
     )
-    assert (
-        prop_data_new["walkers"].data[1].shape == prop_data_u["walkers"].data[1].shape
-    )
-    assert prop_data_new["weights"].shape == prop_data_u["weights"].shape
+    assert new_walkers.data[0].shape == prop_data_u["walkers"].data[0].shape
+    assert new_walkers.data[1].shape == prop_data_u["walkers"].data[1].shape
+    assert new_weights.shape == prop_data_u["weights"].shape
 
 
 def test_propagate_u():

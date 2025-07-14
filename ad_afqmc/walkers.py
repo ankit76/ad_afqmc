@@ -1,9 +1,11 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Callable, List
+from typing import Any, Callable, List, Tuple
 
 import jax
 from jax import lax, tree_util, vmap
+
+from ad_afqmc import linalg_utils, sr
 
 
 class walker_batch(ABC):
@@ -30,6 +32,25 @@ class walker_batch(ABC):
     @abstractmethod
     def n_walkers(self) -> int:
         """Total number of walkers."""
+        pass
+
+    @abstractmethod
+    def stochastic_reconfiguration_local(
+        self, weights: jax.Array, zeta: float
+    ) -> Tuple["walker_batch", jax.Array]:
+        """Perform stochastic reconfiguration locally on a process. Jax friendly."""
+        pass
+
+    @abstractmethod
+    def stochastic_reconfiguration_global(
+        self, weights: jax.Array, zeta: float, comm: Any
+    ) -> Tuple["walker_batch", jax.Array]:
+        """Perform stochastic reconfiguration globally across processes using MPI. Not jax friendly."""
+        pass
+
+    @abstractmethod
+    def orthonormalize(self) -> "walker_batch":
+        """Orthonormalize walkers."""
         pass
 
 
@@ -62,6 +83,26 @@ class RHFWalkers(walker_batch):
         )
 
         return results.reshape(self.n_walkers, *results.shape[2:])
+
+    def stochastic_reconfiguration_local(
+        self, weights: jax.Array, zeta
+    ) -> Tuple["RHFWalkers", jax.Array]:
+        new_data, new_weights = sr.stochastic_reconfiguration_restricted(
+            self.data, weights, zeta
+        )
+        return self.__class__(new_data), new_weights
+
+    def stochastic_reconfiguration_global(
+        self, weights: jax.Array, zeta: float, comm: Any
+    ) -> Tuple["RHFWalkers", jax.Array]:
+        new_data, new_weights = sr.stochastic_reconfiguration_mpi_restricted(
+            self.data, weights, zeta, comm
+        )
+        return self.__class__(new_data), new_weights
+
+    def orthonormalize(self) -> "RHFWalkers":
+        new_data, _ = linalg_utils.qr_vmap_restricted(self.data)
+        return self.__class__(new_data)
 
 
 # Register with JAX as a PyTree node
@@ -107,6 +148,27 @@ class UHFWalkers(walker_batch):
         )
 
         return results.reshape(self.n_walkers, *results.shape[2:])
+
+    def stochastic_reconfiguration_local(
+        self, weights: jax.Array, zeta: float
+    ) -> Tuple["UHFWalkers", jax.Array]:
+        new_data, new_weights = sr.stochastic_reconfiguration_unrestricted(
+            self.data, weights, zeta
+        )
+        return self.__class__(new_data), new_weights
+
+    def stochastic_reconfiguration_global(
+        self, weights: jax.Array, zeta: float, comm: Any
+    ) -> Tuple["UHFWalkers", jax.Array]:
+        new_data, new_weights = sr.stochastic_reconfiguration_mpi_unrestricted(
+            self.data, weights, zeta, comm
+        )
+        return self.__class__(new_data), new_weights
+
+    def orthonormalize(self) -> "UHFWalkers":
+        new_up, _ = linalg_utils.qr_vmap_restricted(self.data[0])
+        new_dn, _ = linalg_utils.qr_vmap_restricted(self.data[1])
+        return UHFWalkers([new_up, new_dn])
 
 
 tree_util.register_pytree_node(
