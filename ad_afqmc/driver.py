@@ -343,7 +343,7 @@ def afqmc_LNOenergy(
 
         block_energy_n = comm.bcast(block_energy_n, root=0)
         block_orbE_n = comm.bcast(block_orbE_n, root=0)
-        prop_data = prop_data.orthonormalize()
+        prop_data["walkers"] = prop_data["walkers"].orthonormalize()
 
         if options["save_walkers"] == True:
             _save_walkers(prop_data, n, tmpdir, rank)
@@ -389,22 +389,15 @@ def afqmc_LNOenergy(
 
     # Analysis phase
     comm.Barrier()
-    if rank == 0:
-        assert global_block_weights is not None
-        assert global_block_energies is not None
-        e_afqmc, e_err_afqmc = _analyze_LNOenergy_results(
-            global_block_weights,
-            global_block_energies,
-            rank,
-            comm,
-            tmpdir,
-            global_block_orbEs=global_block_orbEs,
-            truncate_at_n=truncate_at_n,
-        )
-    comm.Barrier()
-    e_afqmc = comm.bcast(e_afqmc, root=0)
-    e_err_afqmc = comm.bcast(e_err_afqmc, root=0)
-    comm.Barrier()
+    e_afqmc, e_err_afqmc = _analyze_LNOenergy_results(
+        global_block_weights,
+        global_block_energies,
+        rank,
+        comm,
+        tmpdir,
+        global_block_orbEs=global_block_orbEs,
+        truncate_at_n=truncate_at_n,
+    )
 
     return e_afqmc, e_err_afqmc
 
@@ -1343,8 +1336,8 @@ def _analyze_observable_results(
 
 
 def _analyze_LNOenergy_results(
-    global_block_weights: np.ndarray,
-    global_block_energies: np.ndarray,
+    global_block_weights,
+    global_block_energies,
     rank: int,
     comm,
     tmpdir: str,
