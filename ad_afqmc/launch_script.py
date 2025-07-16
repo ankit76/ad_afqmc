@@ -479,7 +479,7 @@ def set_trial(
 
     elif options_trial == "gcisd_complex":
         try:
-            amplitudes = np.load(tmpdir + "/amplitudes.npz")
+            amplitudes = np.load(directory + "/amplitudes.npz")
 
             t1 = jnp.array(amplitudes["t1"])
             t2 = jnp.array(amplitudes["t2"])
