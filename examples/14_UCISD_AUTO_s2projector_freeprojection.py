@@ -4,7 +4,7 @@ import h5py, pickle
 import numpy as np
 from pyscf import gto, scf, cc
 
-from ad_afqmc import afqmc, pyscf_interface, run_afqmc, config
+from ad_afqmc import afqmc, pyscf_interface, run_afqmc
 import jax.numpy as jnp
 
 print = partial(print, flush=True)
@@ -34,7 +34,6 @@ et = mycc.ccsd_t()
 print(mycc.e_corr + et)
 
 
-config.setup_jax()
 af = afqmc.AFQMC(mycc,mf)
 af.trial = "UCISD"
 af.free_projection = True

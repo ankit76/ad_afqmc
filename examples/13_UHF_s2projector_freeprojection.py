@@ -1,5 +1,5 @@
 from pyscf import gto, scf, fci
-from ad_afqmc import afqmc, config
+from ad_afqmc import afqmc
 
 mol =  gto.M(atom ="""
     N        0.0000000000      0.0000000000      0.0000000000
@@ -28,7 +28,6 @@ print('CCSD(T) correlation energy', mf.e_tot+mycc.e_corr + et)
 # print('E(FCI)', cisolver.kernel()[0])
 
 
-config.setup_jax()
 af = afqmc.AFQMC(mf)
 af.free_projection = True
 af.dt= 0.1
