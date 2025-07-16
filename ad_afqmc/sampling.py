@@ -30,7 +30,9 @@ class sampler:
         wave_data: dict,
     ) -> Tuple[dict, jax.Array]:
         """Phaseless propagation scan function over steps."""
-        prop_data = prop.propagate(trial, ham_data, prop_data, fields, wave_data)
+        prop_data = prop.propagate_constrained(
+            trial, ham_data, prop_data, fields, wave_data
+        )
         return prop_data, fields
 
     @partial(jit, static_argnums=(0, 4, 5))
