@@ -1,14 +1,14 @@
 import os
 import pickle
 from functools import partial
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 from pyscf import __config__, scf
 from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
 
-from ad_afqmc import pyscf_interface, run_afqmc, grad_utils
+from ad_afqmc import grad_utils, pyscf_interface, run_afqmc
 
 print = partial(print, flush=True)
 
@@ -81,9 +81,14 @@ class AFQMC:
     """
 
     def __init__(
-        self, mf_or_cc: Union[scf.uhf.UHF, scf.rhf.RHF, scf.rohf.ROHF, CCSD, UCCSD]
+        self,
+        mf_or_cc: Union[scf.uhf.UHF, scf.rhf.RHF, scf.rohf.ROHF, CCSD, UCCSD],
+        mf_or_cc_ket: Optional[
+            Union[scf.uhf.UHF, scf.rhf.RHF, scf.rohf.ROHF, CCSD, UCCSD]
+        ] = None,
     ):
         self.mf_or_cc = mf_or_cc
+        self.mf_or_cc_ket = mf_or_cc_ket if mf_or_cc_ket is not None else mf_or_cc
         self.basis_coeff = None
         frozen = getattr(mf_or_cc, "frozen", 0)
         if isinstance(frozen, int):
@@ -109,9 +114,15 @@ class AFQMC:
         self.orbital_rotation = True
         self.do_sr = True
         self.walker_type = "restricted"
+
+        ##this can be tr, s2 or sz for time-reversal, S^2, or S_z symmetry projection, respectively
+        self.symmetry_projector = None
+        self.optimize_trial = False
+        self.target_spin = 0  ##2S and is only used when symmetry_projector is s2
         self.symmetry = False
         self.save_walkers = False
         self.dR = 1e-5  # displacement used in finite difference to calculate integral gradients for ad_mode = nuc_grad
+        self.free_projection = False
         if isinstance(mf_or_cc, scf.uhf.UHF) or isinstance(mf_or_cc, scf.rohf.ROHF):
             self.trial = "uhf"
         elif isinstance(mf_or_cc, scf.rhf.RHF):
@@ -122,6 +133,20 @@ class AFQMC:
             self.trial = "cisd"
         else:
             self.trial = None
+
+        if isinstance(mf_or_cc_ket, scf.uhf.UHF) or isinstance(
+            mf_or_cc_ket, scf.rohf.ROHF
+        ):
+            self.trial_ket = "uhf"
+        elif isinstance(mf_or_cc_ket, scf.rhf.RHF):
+            self.trial_ket = "rhf"
+        elif isinstance(mf_or_cc_ket, UCCSD):
+            self.trial_ket = "uccsd"
+        elif isinstance(mf_or_cc_ket, CCSD):
+            self.trial_ket = "ccsd"
+        else:
+            self.trial_ket = self.trial
+
         self.ene0 = 0.0
         self.n_batch = 1
         self.vhs_mixed_precision = False
@@ -172,6 +197,20 @@ class AFQMC:
             with open("tmpdir.txt", "w") as f:
                 f.write(self.tmpdir)
             return self.tmpdir
+        elif options["free_projection"]:
+            # run_afqmc.optimize_trial(options)
+            if (self.mf_or_cc_ket != self.mf_or_cc) and (
+                isinstance(self.mf_or_cc_ket, UCCSD)
+                or isinstance(self.mf_or_cc_ket, CCSD)
+            ):
+                pyscf_interface.read_pyscf_ccsd(self.mf_or_cc_ket, options["tmpdir"])
+            # options=None, script=None, mpi_prefix=None, nproc=None
+            return run_afqmc.run_afqmc_fp(
+                options=options,
+                mpi_prefix=self.mpi_prefix,
+                nproc=self.nproc,
+                tmpdir=self.tmpdir,
+            )
         else:
             return run_afqmc.run_afqmc(
                 mpi_prefix=self.mpi_prefix, nproc=self.nproc, tmpdir=self.tmpdir
