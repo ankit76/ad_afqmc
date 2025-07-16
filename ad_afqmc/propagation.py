@@ -175,7 +175,7 @@ class propagator_afqmc(propagator):
         walker_i = exp_h1 @ walker_i
         return walker_i
 
-    # @partial(jit, static_argnums=(0,))
+    @partial(jit, static_argnums=(0,))
     def _apply_trotprop_single_det(
         self,
         walker_i: jax.Array,
@@ -203,7 +203,7 @@ class propagator_afqmc(propagator):
             )
         return self._apply_trotprop_single_det_vhs(walker_i, vhs_i, ham_data["exp_h1"])
 
-    # @partial(jit, static_argnums=(0,))
+    @partial(jit, static_argnums=(0,))
     def _apply_trotprop_single_det_uhf(
         self,
         walker_i_up: jax.Array,
@@ -271,7 +271,7 @@ class propagator_afqmc(propagator):
             ham_data,
         )
 
-    # @partial(jit, static_argnums=(0, 1))
+    @partial(jit, static_argnums=(0, 1))
     def propagate_constrained(
         self,
         trial: wave_function,
