@@ -136,18 +136,6 @@ def check_cc(mol, mf):
     assert np.isclose(ene1, ene2, atol=1e-6), f"{ene1} vs {ene2}"
     assert np.isclose(err1, err2, atol=1e-8), f"{err1} {err2}"
    
-def test_he():
-    mol = gto.M(atom="""
-        He 0. 0. 0.
-        """,
-        basis="6-31g",
-        verbose=3)
-    mf = scf.UHF(mol)
-    mf.kernel()
-
-    #check_hf(mol, mf)
-    check_cc(mol, mf)
- 
 # H4
 def test_h4():
     mol = gto.M(atom="""
@@ -161,7 +149,7 @@ def test_h4():
     mf = scf.RHF(mol)
     mf.kernel()
     
-    #check_hf(mol, mf)
+    check_hf(mol, mf)
     check_cc(mol, mf)
 
 # H2O
@@ -177,7 +165,7 @@ def test_h2o():
     mf = scf.RHF(mol)
     mf.kernel()
     
-    #check_hf(mol, mf)
+    check_hf(mol, mf)
     check_cc(mol, mf)
 
 # NH2 
@@ -193,11 +181,10 @@ def test_nh2():
     mf = scf.UHF(mol)
     mf.kernel()
 
-    #check_hf(mol, mf)
+    check_hf(mol, mf)
     check_cc(mol, mf)
 
 if __name__ =="__main__":
-    test_he()
-    #test_h4()
-    #test_h2o()
-    #test_nh2()
+    test_h4()
+    test_h2o()
+    test_nh2()
