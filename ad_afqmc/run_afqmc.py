@@ -118,6 +118,8 @@ def run_afqmc(
 
 
 def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None, tmpdir=None):
+    config.setup_jax()
+    comm = config.setup_comm()
     (
         ham_data,
         ham,
@@ -142,9 +144,6 @@ def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None, tmpdir=
         wave_data["rdm1"] = jnp.vstack(
             [orbitals[0] @ orbitals[0].T.conj(), orbitals[1] @ orbitals[1].T.conj()]
         ).reshape(-1, nao, nao)
-
-    config.setup_jax()
-    comm = config.setup_comm()
 
     driver.fp_afqmc(
         ham_data,

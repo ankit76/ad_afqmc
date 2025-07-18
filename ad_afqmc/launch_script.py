@@ -533,51 +533,20 @@ def set_prop(options: Dict) -> Any:
     Returns:
         Propagator object configured according to options
     """
-    if options["walker_type"] == "restricted":
-        if options["vhs_mixed_precision"]:
-            prop = propagation.propagator_restricted(
-                options["dt"],
-                options["n_walkers"],
-                n_chunks=options["n_chunks"],
-                vhs_real_dtype=jnp.float32,
-                vhs_complex_dtype=jnp.complex64,
-            )
-        else:
-            prop = propagation.propagator_restricted(
-                options["dt"], options["n_walkers"], n_chunks=options["n_chunks"]
-            )
-
-    elif options["walker_type"] == "unrestricted":
-        if options["free_projection"]:
-            prop = propagation.propagator_unrestricted(
-                options["dt"],
-                options["n_walkers"],
-                10,  # Hard-coded value for free projection
-                n_chunks=options["n_chunks"],
-            )
-        else:
-            if options["vhs_mixed_precision"]:
-                prop = propagation.propagator_unrestricted(
-                    options["dt"],
-                    options["n_walkers"],
-                    n_chunks=options["n_chunks"],
-                    vhs_real_dtype=jnp.float32,
-                    vhs_complex_dtype=jnp.complex64,
-                )
-            else:
-                prop = propagation.propagator_unrestricted(
-                    options["dt"],
-                    options["n_walkers"],
-                    n_chunks=options["n_chunks"],
-                )
-    elif options["walker_type"] == "generalized":
-        prop = propagation.propagator_generalized(
-            options["dt"], options["n_walkers"], n_chunks=options["n_chunks"]
-        )
-    else:
-        raise ValueError(f"Invalid walker type {options['walker_type']}.")
-
-    return prop
+    vhs_real_dtype = jnp.float32 if options["vhs_mixed_precision"] else jnp.float64
+    vhs_complex_dtype = (
+        jnp.complex64 if options["vhs_mixed_precision"] else jnp.complex128
+    )
+    n_exp_terms = 10 if options["free_projection"] else options.get("n_exp_terms", 6)
+    return propagation.propagator_afqmc(
+        options["dt"],
+        options["n_walkers"],
+        n_exp_terms=n_exp_terms,
+        n_chunks=options["n_chunks"],
+        vhs_real_dtype=vhs_real_dtype,
+        vhs_complex_dtype=vhs_complex_dtype,
+        walker_type=options["walker_type"],
+    )
 
 
 def set_sampler(options: Dict) -> Any:

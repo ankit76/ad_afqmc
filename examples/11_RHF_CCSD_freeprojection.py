@@ -1,5 +1,5 @@
 from pyscf import gto, scf
-from ad_afqmc import afqmc, config
+from ad_afqmc import afqmc
 
 mol =  gto.M(atom ="""
     O        0.0000000000      0.0000000000      0.0000000000
@@ -16,8 +16,6 @@ mf.kernel()
 mycc = mf.CCSD(frozen=0).run()
 et = mycc.ccsd_t()
 print('CCSD(T) correlation energy', mf.e_tot+mycc.e_corr + et)
-
-config.setup_jax()
 
 af = afqmc.AFQMC(mf, mycc)
 af.free_projection = True

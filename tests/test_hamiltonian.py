@@ -24,7 +24,7 @@ wave_data = {}
 wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec[0]]
 wave_data["rdm1"] = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
 mo_coeff = jnp.array(np.random.rand(norb, norb))
-prop_r = propagation.propagator_restricted(dt=0.005)
+prop_r = propagation.propagator_afqmc(dt=0.005)
 
 nelec_sp = 5, 4
 wave_data_u = {}
@@ -46,7 +46,7 @@ ham_data_u["h0"] = np.random.rand(
 ham_data_u["h1"] = jnp.array(np.random.rand(2, norb, norb))
 ham_data_u["chol"] = jnp.array(np.random.rand(nchol, norb * norb))
 ham_data_u["ene0"] = 0.0
-prop_u = propagation.propagator_unrestricted(dt=0.005)
+prop_u = propagation.propagator_afqmc(dt=0.005, walker_type="unrestricted")
 
 ndets = 5
 ci_coeffs = jnp.array(np.random.randn(ndets))

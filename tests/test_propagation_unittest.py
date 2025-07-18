@@ -15,7 +15,7 @@ norb, nelec, nchol = 10, (5, 5), 5
 
 ham_handler = hamiltonian.hamiltonian(norb)
 trial = wavefunctions.rhf(norb, nelec)
-prop_handler = propagation.propagator_restricted(n_walkers=10, n_chunks=5)
+prop_handler = propagation.propagator_afqmc(n_walkers=10, n_chunks=5)
 
 wave_data = {}
 wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec[0]]
@@ -40,7 +40,9 @@ prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
 nelec_sp = (5, 4)
 trial_u = wavefunctions.uhf(norb, nelec_sp)
-prop_handler_u = propagation.propagator_unrestricted(n_walkers=10, n_chunks=5)
+prop_handler_u = propagation.propagator_afqmc(
+    n_walkers=10, n_chunks=5, walker_type="unrestricted"
+)
 
 wave_data_u = {}
 wave_data_u["mo_coeff"] = [
@@ -101,7 +103,7 @@ class TestPropagation(unittest.TestCase):
         self.assertTrue(new_weights.shape == prop_data["weights"].shape)
 
     def test_propagate(self):
-        prop_data_new = prop_handler.propagate(
+        prop_data_new = prop_handler.propagate_constrained(
             trial, ham_data, prop_data, fields, wave_data
         )
         self.assertTrue(prop_data_new["walkers"].shape == prop_data["walkers"].shape)
@@ -123,7 +125,7 @@ class TestPropagation(unittest.TestCase):
         self.assertTrue(new_weights.shape == prop_data_u["weights"].shape)
 
     def test_propagate_u(self):
-        prop_data_new = prop_handler_u.propagate(
+        prop_data_new = prop_handler_u.propagate_constrained(
             trial_u, ham_data_u, prop_data_u, fields, wave_data_u
         )
         self.assertTrue(
@@ -158,7 +160,7 @@ class TestPropagation(unittest.TestCase):
         prop_data_cpmc = prop_handler_cpmc.init_prop_data(
             trial_cpmc_u, wave_data_u, ham_data_u, seed
         )
-        prop_data_new = prop_handler_cpmc.propagate(
+        prop_data_new = prop_handler_cpmc.propagate_constrained(
             trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
         )
         self.assertTrue(
@@ -171,7 +173,7 @@ class TestPropagation(unittest.TestCase):
         self.assertTrue(
             prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
         )
-        prop_data_new_slow = prop_handler_cpmc_slow.propagate(
+        prop_data_new_slow = prop_handler_cpmc_slow.propagate_constrained(
             trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
         )
         self.assertTrue(
@@ -195,7 +197,7 @@ class TestPropagation(unittest.TestCase):
             trial_cpmc_u, wave_data_u, ham_data_u, seed
         )
         prop_data_cpmc["key"] = random.PRNGKey(seed)
-        prop_data_new = prop_handler_cpmc_nn.propagate(
+        prop_data_new = prop_handler_cpmc_nn.propagate_constrained(
             trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
         )
         self.assertTrue(
@@ -209,7 +211,7 @@ class TestPropagation(unittest.TestCase):
             prop_data_new["overlaps"].shape == prop_data_u["overlaps"].shape
         )
         prop_data_cpmc["key"] = random.PRNGKey(seed)
-        prop_data_new_slow = prop_handler_cpmc_nn_slow.propagate(
+        prop_data_new_slow = prop_handler_cpmc_nn_slow.propagate_constrained(
             trial_cpmc_u, ham_data_u, prop_data_cpmc, fields, wave_data_u
         )
         self.assertTrue(
