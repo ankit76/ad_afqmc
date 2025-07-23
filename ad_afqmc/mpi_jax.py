@@ -5,6 +5,7 @@ import argparse
 import h5py
 import numpy as np
 from jax import numpy as jnp
+from jax import scipy as jsp
 from functools import partial
 
 from ad_afqmc import config
@@ -107,6 +108,9 @@ def _prep_afqmc(options=None, tmpdir="."):
             
             if options["walker_type"] == "unrestricted":
                 observable_op = jnp.array([observable_op, observable_op])
+            
+            if options["walker_type"] == "generalized":
+                observable_op = jsp.linalg.block_diag([observable_op, observable_op])
             
             observable = [observable_op, observable_constant]
 

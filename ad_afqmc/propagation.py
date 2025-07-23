@@ -800,7 +800,7 @@ class propagator_cpmc_generalized(propagator_generalized):
             prop_data["greens"] = trial.calc_green_full(
                 prop_data["walkers"], wave_data
             )
-            prop_data["block_rdm1"] = jnp.zeros_like(prop_data["greens"])
+            prop_data["block_rdm1"] = jnp.zeros_like(prop_data["greens"][0])
         except:
             pass
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))

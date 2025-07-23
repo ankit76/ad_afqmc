@@ -229,11 +229,9 @@ def afqmc_observable(
 
     # Initialize data
     trial_rdm1 = trial.get_rdm1(wave_data)
+
     if "rdm1" not in wave_data:
         wave_data["rdm1"] = trial_rdm1
-
-    if isinstance(trial, ghf):
-        trial_rdm1 = jsp.linalg.block_diag(*trial_rdm1)
 
     ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
     ham_data = ham.build_propagation_intermediates(
@@ -245,7 +243,6 @@ def afqmc_observable(
             "Initial overlaps are zero. Pass walkers with non-zero overlap."
         )
     prop_data["key"] = random.PRNGKey(seed + rank)
-
     trial_observable = np.sum(trial_rdm1 * observable_op)
 
     # Equilibration phase
@@ -310,6 +307,7 @@ def afqmc_observable(
             global_block_rdm1s = np.zeros(
                 (size * sampler.n_blocks, *(ham_data["h1"].shape))
             )
+
         elif options["ad_mode"] == "2rdm":
             global_block_rdm2s = np.zeros((size * sampler.n_blocks, *(rdm_2_op.shape)))
 
@@ -333,7 +331,7 @@ def afqmc_observable(
             block_rdm1_n = np.array(prop_data["block_rdm1"], dtype="float32")
             block_observable_n = np.sum(block_rdm1_n * observable_op)
             block_observable_n = np.array([block_observable_n], dtype="float32")
-            
+
             if np.isnan(block_observable_n) or np.isinf(block_observable_n):
                 block_observable_n = trial_observable
                 block_rdm1_n = trial_rdm1
@@ -354,7 +352,7 @@ def afqmc_observable(
             comm.Gather(block_energy_n, gather_energies, root=0)
             comm.Gather(block_observable_n, gather_observables, root=0)
             comm.Gather(block_rdm1_n, gather_rdm1s, root=0)
-
+            
             if rank == 0:
                 global_block_weights[n * size : (n + 1) * size] = gather_weights
                 global_block_energies[n * size : (n + 1) * size] = gather_energies
@@ -371,7 +369,7 @@ def afqmc_observable(
                 _save_walkers(prop_data, n, tmpdir, rank)
             prop_data = propagator.stochastic_reconfiguration_global(prop_data, comm)
             prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy_n
-            prop_data["block_rdm1"] = jnp.zeros((2, trial.norb, trial.norb))
+            prop_data["block_rdm1"] = jnp.zeros_like(prop_data["block_rdm1"])
 
             # Print progress and save intermediate results
             if n % (max(sampler.n_blocks // 10, 1)) == 0:

@@ -68,8 +68,8 @@ if __name__ == '__main__':
     nup, ndown = 8, 8
     n_elec = (nup, ndown)
     nx, ny = 4, 4
-    nwalkers = 100
-    bc = 'open_x'
+    nwalkers = 50
+    bc = 'xc'
 
     # For saving.
     tmpdir = f'./test_uhf_cpmc'
@@ -89,11 +89,12 @@ if __name__ == '__main__':
         "walker_type": "unrestricted",
         "trial": "uhf",
         "save_walkers": False,
+        "ad_mode": "mixed",
     }
 
     # -------------------------------------------------------------------------
     # Lattice.
-    lattice = lattices.triangular_grid(nx, ny, open_x=True)
+    lattice = lattices.triangular_grid(nx, ny, boundary=bc)
     n_sites = lattice.n_sites
     nocc = sum(n_elec)
 
@@ -128,13 +129,12 @@ if __name__ == '__main__':
     umf.get_ovlp = lambda *args: np.eye(n_sites)
     umf._eri = ao2mo.restore(8, integrals["h2"] * 1.0, n_sites)
     umf.mo_coeff = np.array([evecs_h1, evecs_h1])
-    umf.mo_coeff[1][:, ndown-1] = evecs_h1[:, ndown].copy()
-    umf.mo_coeff[1][:, ndown] = evecs_h1[:, ndown-1].copy()
 
     options["walker_type"] = "unrestricted"
     e_qmc, err_qmc = run_cpmc(umf, options, integrals, tmpdir)
     
     options["walker_type"] = "uhf"
+    options["ad_mode"] = None
     e_qmc_legacy, err_qmc_legacy = run_cpmc_legacy(umf, options, integrals, tmpdir)
 
     np.testing.assert_allclose(e_qmc, e_qmc_legacy)

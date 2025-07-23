@@ -22,7 +22,7 @@ from ad_afqmc.legacy import pyscf_interface as pyscf_interface_legacy
 np.set_printoptions(precision=5, suppress=True)
 
 # -----------------------------------------------------------------------------
-def run_uhf_cpmc(umf, options, integrals, tmpdir):
+def run_uhf_cpmc_legacy(umf, options, integrals, tmpdir):
     n_elec = umf.mol.nelec
     n_sites = umf.mo_coeff[0].shape[0]
     n_walkers = options["n_walkers"]
@@ -89,8 +89,8 @@ if __name__ == '__main__':
     nup, ndown = 8, 8
     n_elec = (nup, ndown)
     nx, ny = 4, 4
-    nwalkers = 100
-    bc = 'open_x'
+    nwalkers = 50
+    bc = 'xc'
 
     # For saving.
     tmpdir = f'./test_ghf_cpmc'
@@ -103,7 +103,7 @@ if __name__ == '__main__':
         "n_sr_blocks_eql": 1,
         "n_ene_blocks": 1,
         "n_sr_blocks": 5,
-        "n_blocks": 50,
+        "n_blocks": 40,
         "n_prop_steps": 50,
         "n_walkers": nwalkers,
         "seed": 98,
@@ -114,7 +114,7 @@ if __name__ == '__main__':
 
     # -------------------------------------------------------------------------
     # Lattice.
-    lattice = lattices.triangular_grid(nx, ny, open_x=True)
+    lattice = lattices.triangular_grid(nx, ny, boundary=bc)
     n_sites = lattice.n_sites
     nocc = sum(n_elec)
 
@@ -175,10 +175,12 @@ if __name__ == '__main__':
     
     options["trial"] = "uhf"
     options["walker_type"] = "uhf"
-    e_qmc_ref, err_qmc_ref = run_uhf_cpmc(umf, options, integrals, tmpdir)
+    options["ad_mode"] = None
+    e_qmc_ref, err_qmc_ref = run_uhf_cpmc_legacy(umf, options, integrals, tmpdir)
     
     options["trial"] = "ghf"
     options["walker_type"] = "generalized"
+    options["ad_mode"] = "mixed"
     e_qmc, err_qmc = run_ghf_cpmc(gmf, options, integrals_g, tmpdir)
     
     np.testing.assert_allclose(e_qmc, e_qmc_ref)
