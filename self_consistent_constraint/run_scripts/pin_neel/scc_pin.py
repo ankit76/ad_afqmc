@@ -21,6 +21,9 @@ from ad_afqmc import (
     hamiltonian,
 )
 
+import ad_afqmc
+print(ad_afqmc.__file__)
+
 # -----------------------------------------------------------------------------
 import matplotlib as mpl
 import matplotlib.font_manager as font_manager
@@ -52,17 +55,20 @@ colors = list(mcolors.TABLEAU_COLORS.values())
 def load_dm_qmc(iter, tmpdir='./'):
     npz = numpy.load(f'{tmpdir}rdm1_afqmc.npz')
     
+    # Rename file.
     old_path = f'{tmpdir}rdm1_afqmc.npz'
     new_path = f'{tmpdir}rdm1_afqmc_{iter}.npz'
     try: os.rename(old_path, new_path)
     except FileNotFoundError: print(f"Error: '{old_path}' does not exist.")
     except FileExistsError: print(f"Error: '{new_path}' already exists.")
     except PermissionError: print("Error: Permission denied.")
-
     return npz['rdm1_avg'], npz['rdm1_noise']
 
 def create_datasets(
         filename, dset_names, shape=(0,), maxshape=(None,), append=False, dtype='f8'):
+    """
+    Create hdf5 datasets.
+    """
     if append:
         with h5py.File(f'{filename}.h5', 'a') as f:
             for name in dset_names:
@@ -82,6 +88,9 @@ def create_datasets(
                     name, shape=shape, maxshape=maxshape, chunks=(1,), dtype=dtype)
     
 def push(filename, data, name):
+    """
+    Push data to hdf5 file after each iteration.
+    """
     with h5py.File(f'{filename}.h5', 'a') as f:
         dset = f[name]
         old = dset.shape[0]
@@ -92,6 +101,9 @@ def push(filename, data, name):
 # -----------------------------------------------------------------------------
 # Calculation helper functions.
 def build_mol(n_elec, verbose=0):
+    """
+    Build PySCF `mol` object.
+    """
     mol = gto.Mole()
     mol.nelectron = sum(n_elec)
     mol.incore_anyway = True
@@ -100,59 +112,93 @@ def build_mol(n_elec, verbose=0):
     mol.build()
     return mol
 
-def get_integrals(U, v, lattice, pin_type='fm'):
+def get_integrals(U, v, lattice, pin_sites):
+    """
+    Build integrals in the site basis for CPMC.
+    """
     n_sites = lattice.n_sites
+    sites_1, sites_2, sites_3 = pin_sites
 
-    # Integrals in the Hilbert space of the site basis.
+    # Integrals.
     integrals = {}
     integrals["u"] = U
     integrals["h0"] = 0.0
-    
+    adjacency = lattice.create_adjacency_matrix()
+
     # Nearest-neighbour hopping.
-    h1 = -1.0 * lattice.create_adjacency_matrix()
-    
+    h1 = -1.0 * adjacency
+    h1 = scipy.linalg.block_diag(h1, h1)
+
     # Pinning field.
-    v1a = numpy.zeros(n_sites)
-    v1b = numpy.zeros(n_sites)
-    
-    # Assuming the y-direction is the short one with PBC.
-    for iy in range(lattice.l_y):
-        val = (-1)**iy * v
-        site_num_left = iy * lattice.l_x + 0
-        site_num_right = iy * lattice.l_x + (lattice.l_x - 1)
-        v1a[site_num_left] = val
-        v1b[site_num_left] = -val
+    v *= -1.
 
-        if pin_type == 'fm':
-            v1a[site_num_right] = val
-            v1b[site_num_right] = -val
+    # A sites.
+    vaa_1 = numpy.zeros((n_sites, n_sites))
+    vbb_1 = numpy.zeros((n_sites, n_sites))
 
-        elif pin_type == 'afm':
-            v1a[site_num_right] = -val
-            v1b[site_num_right] = val
+    for idx in sites_1:
+        cz = v
+        vaa_1[idx, idx] = cz
+        vbb_1[idx, idx] = -cz
 
-    integrals["h1"] = numpy.array([h1 + numpy.diag(v1a), h1 + numpy.diag(v1b)])
+    v1 = scipy.linalg.block_diag(vaa_1, vbb_1)
+
+    # B sites.
+    vaa_2 = numpy.zeros((n_sites, n_sites))
+    vab_2 = numpy.zeros((n_sites, n_sites))
+    vba_2 = numpy.zeros((n_sites, n_sites))
+    vbb_2 = numpy.zeros((n_sites, n_sites))
+
+    theta = numpy.pi/6.
+    for idx in sites_2:
+        cx = -v * numpy.cos(theta)
+        cz = -v * numpy.sin(theta)
+        vaa_2[idx, idx] = cz
+        vbb_2[idx, idx] = -cz
+        vab_2[idx, idx] = cx
+        vba_2[idx, idx] = cx
+
+    v2 = numpy.block([[vaa_2, vab_2], [vba_2, vbb_2]])
+
+    # C sites.
+    vaa_3 = numpy.zeros((n_sites, n_sites))
+    vab_3 = numpy.zeros((n_sites, n_sites))
+    vba_3 = numpy.zeros((n_sites, n_sites))
+    vbb_3 = numpy.zeros((n_sites, n_sites))
+
+    theta = numpy.pi/6.
+    for idx in sites_3:
+        cx = v * numpy.cos(theta)
+        cz = -v * numpy.sin(theta)
+        vaa_3[idx, idx] = cz
+        vbb_3[idx, idx] = -cz
+        vab_3[idx, idx] = cx
+        vba_3[idx, idx] = cx
+
+    v3 = numpy.block([[vaa_3, vab_3], [vba_3, vbb_3]])
+
+    integrals["h1"] = h1 + v1 + v2 + v3
 
     h2 = numpy.zeros((n_sites, n_sites, n_sites, n_sites))
     for i in range(n_sites): h2[i, i, i, i] = U
     integrals["h2"] = ao2mo.restore(8, h2, n_sites)
     return integrals
 
-def get_e_estimate(mol, lattice, integrals):
+def get_e_estimate(mol, lattice, integrals, idx_up):
+    """
+    Set the initial energy for CPMC.
+    """
     n_sites = lattice.n_sites
-    dm_init = numpy.zeros((2, n_sites, n_sites))
-
-    for iy in range(lattice.l_y):
-        for ix in range(lattice.l_x):
-            site_num = iy * lattice.l_x + ix
-            if (iy + ix) % 2 == 0: dm_init[0, site_num, site_num] = 1.0
-            else: dm_init[1, site_num, site_num] = 1.0
+    dma_init = numpy.zeros(n_sites)
+    dmb_init = numpy.zeros(n_sites)
+    dma_init[idx_up] = 1
+    dmb_init[numpy.where(dma_init == 0)[0]] = 0.5
+    dm_init = scipy.linalg.block_diag(numpy.diag(dma_init), numpy.diag(dmb_init))
 
     gmf = scf.GHF(mol)
-    gmf.get_hcore = lambda *args: scipy.linalg.block_diag(*integrals["h1"])
+    gmf.get_hcore = lambda *args: integrals["h1"]
     gmf.get_ovlp = lambda *args: numpy.eye(2 * n_sites)
     gmf._eri = ao2mo.restore(8, integrals["h2"], n_sites)
-    dm_init = scipy.linalg.block_diag(dm_init[0], dm_init[1])
     gmf.kernel(dm_init)
     mo1 = gmf.stability(external=True)
     gmf = gmf.newton().run(mo1, gmf.mo_occ)
@@ -164,10 +210,9 @@ def get_e_estimate(mol, lattice, integrals):
     return gmf.e_tot
 
 def plot_density(lattice, density, figname=None, save=False):
-    coords = numpy.array(lattice.sites)
-    x = coords[:, 1]
-    y = coords[:, 0]
-
+    coords = numpy.array([lattice.get_site_coordinate(site) for site in lattice.sites])
+    x = coords[:, 0]
+    y = coords[:, 1]
     density_tot = density[0] + density[1]
     density_hole = 1 - density_tot
     density_spin = density[0] - density[1]
@@ -175,12 +220,12 @@ def plot_density(lattice, density, figname=None, save=False):
 
     for ix in range(lattice.l_x):
         for iy in range(lattice.l_y):
-            site_num = iy * lattice.l_x + ix
+            site_num = iy * lattice.l_y + ix
             density_stag_spin[site_num] = (-1)**(ix+iy) * density_spin[site_num]
 
     dat = [*density, density_tot, density_hole, density_spin, density_stag_spin]
 
-    fig, axs = plt.subplots(6, 1, figsize=(8, 10), sharex=True)
+    fig, axs = plt.subplots(6, 1, figsize=(6, 10), sharex=True)
 
     vmin_tot = numpy.amin(dat[:-2])
     vmax_tot = numpy.amax(dat[:-2])
@@ -194,7 +239,7 @@ def plot_density(lattice, density, figname=None, save=False):
           r'$\langle h \rangle$',
           r'$\langle n_\text{spin} \rangle$',
           r'$\langle n_\text{stag. spin} \rangle$'
-         ]
+    ]
 
     for i, ax in enumerate(axs):
         z = dat[i]
@@ -226,23 +271,27 @@ def plot_density(lattice, density, figname=None, save=False):
         plt.savefig(figname, format='png')
 
 def plot_density_slice(lattice, density, iy=1, figname=None, save=False):
-    coords = numpy.array(lattice.sites)
+    """
+    Plot densities as a function of x, keeping y fixed.
+    """
+    coords = numpy.array([lattice.get_site_coordinate(site) for site in lattice.sites])
 
     density_tot = density[0] + density[1]
     density_hole = 1 - density_tot
     density_spin = density[0] - density[1]
     density_stag_spin = numpy.zeros_like(density_spin)
-
+    
+    # NOTE Use `i, j` rather than `ix, iy` since `iy` is a function argument!
     for i in range(lattice.l_x):
         for j in range(lattice.l_y):
-            site_num = j * lattice.l_x + i
+            site_num = j * lattice.l_y + i
             density_stag_spin[site_num] = (-1)**(i+j) * density_spin[site_num]
 
     # Get slice along iy.
-    site_nums = [iy * lattice.l_x + ix for ix in range(lattice.l_x)]
+    site_nums = [iy * lattice.l_y + ix for ix in range(lattice.l_x)]
     slice_iy = coords[site_nums]
-    x = slice_iy[:, 1]
-    numpy.testing.assert_allclose(slice_iy[:, 0], iy)
+    x = slice_iy[:, 0]
+    numpy.testing.assert_allclose(slice_iy[:, 1], iy * numpy.sin(numpy.pi/3.))
 
     density_a_iy = density[0][site_nums]
     density_b_iy = density[1][site_nums]
@@ -258,7 +307,7 @@ def plot_density_slice(lattice, density, iy=1, figname=None, save=False):
             density_hole_iy, 
             density_spin_iy, 
             density_stag_spin_iy
-        ]
+    ]
 
     fig, axs = plt.subplots(5, 1, figsize=(6, 10), sharex=True)
 
@@ -269,7 +318,7 @@ def plot_density_slice(lattice, density, iy=1, figname=None, save=False):
           r'$\langle h \rangle$',
           r'$\langle n_\text{spin} \rangle$',
           r'$\langle n_\text{stag. spin} \rangle$'
-         ]
+    ]
 
     for i, ax in enumerate(axs):
         if i == 0:
@@ -300,113 +349,60 @@ def plot_density_slice(lattice, density, iy=1, figname=None, save=False):
 
 # -----------------------------------------------------------------------------
 # Build trials.
-def build_fe_single_occ_trial(mol, lattice, integrals, verbose=0):
-    nup, ndown = mol.nelec
-    n_sites = lattice.n_sites
-    evals_h1a, evecs_h1a = numpy.linalg.eigh(integrals["h1"][0])
-    evals_h1b, evecs_h1b = numpy.linalg.eigh(integrals["h1"][1])
-
-
-    umf = scf.UHF(mol)
-    umf.get_hcore = lambda *args: integrals["h1"]
-    umf.get_ovlp = lambda *args: numpy.eye(n_sites)
-    umf._eri = ao2mo.restore(8, integrals["h2"] * 1.0, n_sites)
-    umf.mo_coeff = numpy.array([evecs_h1a, evecs_h1b])
-    umf.mo_coeff[1][:, ndown-1] = evecs_h1b[:, ndown].copy()
-    umf.mo_coeff[1][:, ndown] = evecs_h1b[:, ndown-1].copy()
-    mo_occa = numpy.zeros(n_sites, dtype=int)
-    mo_occb = numpy.zeros(n_sites, dtype=int)
-    mo_occa[:nup] = 1
-    mo_occb[:ndown] = 1
-    umf.mo_occ = [mo_occa, mo_occb]
-    return umf
-
 def build_fe_double_occ_trial(mol, lattice, integrals, verbose=0):
     nup, ndown = mol.nelec
+    nocc = nup + ndown
     n_sites = lattice.n_sites
-    evals_h1a, evecs_h1a = numpy.linalg.eigh(integrals["h1"][0])
-    evals_h1b, evecs_h1b = numpy.linalg.eigh(integrals["h1"][1])
+    evals_h1, evecs_h1 = scipy.linalg.eigh(integrals["h1"])
 
-    umf = scf.UHF(mol)
-    umf.get_hcore = lambda *args: integrals["h1"]
-    umf.get_ovlp = lambda *args: numpy.eye(n_sites)
-    umf._eri = ao2mo.restore(8, integrals["h2"] * 1.0, n_sites)
-    umf.mo_coeff = numpy.array([evecs_h1a, evecs_h1b])
-    mo_occa = numpy.zeros(n_sites, dtype=int)
-    mo_occb = numpy.zeros(n_sites, dtype=int)
-    mo_occa[:nup] = 1
-    mo_occb[:ndown] = 1
-    umf.mo_occ = [mo_occa, mo_occb]
-    return umf
+    gmf = scf.GHF(mol)
+    gmf.get_hcore = lambda *args: integrals["h1"]
+    gmf.get_ovlp = lambda *args: numpy.eye(2 * n_sites)
+    gmf._eri = ao2mo.restore(8, integrals["h2"], n_sites)
+    gmf.mo_coeff = evecs_h1
+    mo_occ = numpy.zeros(2 * n_sites, dtype=int)
+    mo_occ[:nocc] = 1
+    gmf.mo_occ = mo_occ
+    return gmf
 
-def build_uhf_trial(mol, lattice, integrals, seed=1, verbose=0):
+def build_ghf_trial(mol, lattice, integrals, idx_up, seed=1, verbose=0):
     n_sites = lattice.n_sites
     numpy.random.seed(seed)
 
-    umf = scf.UHF(mol)
-    umf.get_hcore = lambda *args: integrals["h1"]
-    umf.get_ovlp = lambda *args: numpy.eye(n_sites)
-    umf._eri = ao2mo.restore(8, integrals["h2"], n_sites)
+    gmf = scf.GHF(mol)
+    gmf.get_hcore = lambda *args: integrals["h1"]
+    gmf.get_ovlp = lambda *args: numpy.eye(2 * n_sites)
+    gmf._eri = ao2mo.restore(8, integrals["h2"], n_sites)
 
-    # dm_init = 1.0 * umf.init_guess_by_1e()
-    # dm_init += 1.0 * numpy.random.randn(*dm_init.shape)
+    dma_init = numpy.zeros(n_sites)
+    dmb_init = numpy.zeros(n_sites)
+    dma_init[idx_up] = 1
+    dmb_init[numpy.where(dma_init == 0)[0]] = 0.5
+    dm_init = scipy.linalg.block_diag(numpy.diag(dma_init), numpy.diag(dmb_init))
 
-    dm_init = 0.0 * umf.init_guess_by_1e()
-    for iy in range(lattice.l_y):
-        for ix in range(lattice.l_x):
-            site_num = iy * lattice.l_x + ix
-            if (iy + ix) % 2 == 0: dm_init[0, site_num, site_num] = 1.0
-            else: dm_init[1, site_num, site_num] = 1.0
+    #dm_init = numpy.random.random((2*n_sites, 2*n_sites))
 
-    umf.kernel(dm_init)
-    mo1 = umf.stability()[0]
-    umf = umf.newton().run(mo1, umf.mo_occ)
-    mo1 = umf.stability()[0]
-    umf = umf.newton().run(mo1, umf.mo_occ)
-    mo1 = umf.stability()[0]
-    umf = umf.newton().run(mo1, umf.mo_occ)
-    mo1 = umf.stability()
-    return umf
-
-def project_trs_trial(umf, wave_data):
-    # Prep free electron trial with singly-occupied orbitals at the Fermi level 
-    # and obeying time-reversal symmetry.
-    n_sites = umf.mo_coeff[0].shape[0]
-    n_elec = umf.nelec
-
-    trial_1 = wavefunctions.uhf_cpmc(n_sites, n_elec)
-    trial_2 = wavefunctions.uhf_cpmc(n_sites, n_elec)
-    trial = wavefunctions.sum_state_cpmc(n_sites, n_elec, (trial_1, trial_2))
-
-    wave_data_0 = wave_data.copy()
-    wave_data_0["mo_coeff"] = [
-        umf.mo_coeff[0][:, : n_elec[0]],
-        umf.mo_coeff[1][:, : n_elec[1]],
-    ]
-
-    wave_data_1 = wave_data.copy()
-    wave_data_1["mo_coeff"] = [
-        umf.mo_coeff[1][:, : n_elec[1]],
-        umf.mo_coeff[0][:, : n_elec[0]],
-    ]
-    
-    # CI coefficients.
-    wave_data["coeffs"] = jnp.array([1 / numpy.sqrt(2.), 1 / numpy.sqrt(2.)])
-    wave_data["0"] = wave_data_0
-    wave_data["1"] = wave_data_1
-
-    return trial, wave_data
+    gmf.kernel(dm_init)
+    mo1 = gmf.stability(external=True)
+    gmf = gmf.newton().run(mo1, gmf.mo_occ)
+    mo1 = gmf.stability(external=True)
+    gmf = gmf.newton().run(mo1, gmf.mo_occ)
+    mo1 = gmf.stability(external=True)
+    gmf = gmf.newton().run(mo1, gmf.mo_occ)
+    mo1 = gmf.stability(external=True)
+    return gmf
 
 # -----------------------------------------------------------------------------
 # QMC.
-def run_qmc(comm, umf, integrals, options, run_cpmc=True, proj_trs=False, 
-            e_estimate=None, tmpdir='./', verbose=False):
-    n_sites = umf.mo_coeff[0].shape[0]
-    n_elec = umf.nelec
+def run_qmc(comm, gmf, integrals, options, run_cpmc=True, e_estimate=None, 
+            tmpdir='./', verbose=False):
+    n_sites = gmf.mo_coeff[0].shape[0] // 2
+    n_elec = gmf.mol.nelec
+    nocc = sum(n_elec)
 
     if comm.rank == 0:
-        pyscf_interface.prep_afqmc(
-                umf, basis_coeff=numpy.eye(n_sites), integrals=integrals, tmpdir=tmpdir)
+        pyscf_interface.prep_afqmc_ghf(
+            gmf, basis_coeff=numpy.eye(2*n_sites), integrals=integrals, tmpdir=tmpdir)
     
     comm.Barrier()
     ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI = (
@@ -415,28 +411,16 @@ def run_qmc(comm, umf, integrals, options, run_cpmc=True, proj_trs=False,
 
     if run_cpmc:
         if verbose: print(f'\n# Using CPMC propagator...')
-        prop = propagation.propagator_cpmc(
+        prop = propagation.propagator_cpmc_generalized(
             dt=options["dt"],
             n_walkers=options["n_walkers"],
         )
-
-        if proj_trs:
-            prop = propagation.propagator_cpmc_slow(
-                dt=options["dt"],
-                n_walkers=options["n_walkers"],
-            )
     
-    wave_data["mo_coeff"] = [umf.mo_coeff[0, :, :n_elec[0]], 
-                             umf.mo_coeff[1, :, :n_elec[1]]]
-    #wave_data["rdm1"] = umf.make_rdm1()
+    trial = wavefunctions.ghf_cpmc(n_sites, n_elec)
+    wave_data["mo_coeff"] = gmf.mo_coeff[:, :nocc]
+    wave_data["rdm1"] = wave_data["mo_coeff"] @ wave_data["mo_coeff"].T
     ham_data["u"] = integrals["u"] # Needed for CPMC.
     if e_estimate is not None: ham_data["e_estimate"] = jnp.float64(e_estimate)
-
-    if proj_trs: 
-        if verbose: print(f'\n# Applying TRS projection for UHF trials...')
-        trial, wave_data = project_trs_trial(umf, wave_data)
-
-    else: trial = wavefunctions.uhf_cpmc(n_sites, n_elec)
 
     e_qmc, err_qmc = driver.afqmc(
         ham_data, ham, prop, trial, wave_data, sampler, observable, options, MPI,
@@ -448,27 +432,38 @@ def run_qmc(comm, umf, integrals, options, run_cpmc=True, proj_trs=False,
 # -----------------------------------------------------------------------------
 # Scanning Ueff.
 def get_bounds(x, a, b, npoint, alpha=2, thresh=0.1):
+    """
+    Get bounds around `x`, the optimal Ueff value determined in the previous
+    iteration, within which to scan Ueff values. If `x` is close to the previous
+    bounds `a, b`, the new bounds span an interval of the same width as the
+    previous iteration. Otherwise, the new bounds span an interval of width
+    2 * alpha * stepsize, where stepsize is defined from the previous bounds.
+    """
     interval = b - a
     dist_a = abs(x - a) / interval
     dist_b = abs(x - b) / interval
     stepsize = interval / (npoint - 1)
 
-    # If x is close to the boundary, we'll use the same stepsize as the previous
+    # If x is close to the boundary, we'll use the same interval as the previous
     # iteration.
     if (dist_a < thresh) or (dist_b < thresh): d = (npoint - 1) // 2 * stepsize
-    d = alpha * stepsize
+    else: d = alpha * stepsize
     xmin = max(1e-3, x-d)
     xmax = x+d
     return [xmin, xmax]
 
-def scan_ueff(iter, mol, lattice, dm_qmc, U=None, Ueff_prev=None, 
-              bounds_prev=None, npoint=10, alpha=2, thresh=0.1, interp=False, 
-              pin_type='fm', v=0.25, verbose=False):
+def scan_ueff(iter, mol, lattice, dm_qmc, pin_sites, U=None, Ueff_prev=None, 
+              bounds_prev=None, npoint=10, alpha=3, thresh=0.1, interp=False, 
+              v=0.25, verbose=False):
+    """
+    Scan Ueff values and determine the optimal Ueff that produces a GHF solution
+    with the minimum RMS error (delta) in the rdm1 relative to the CPMC rdm1.
+    """
     n_sites = lattice.n_sites
     dm_avg_qmc, dm_noise_qmc = dm_qmc
 
     # Rough scan for the first iteration.
-    if iter == 0: 
+    if iter == 1: 
         assert (U is not None)
         bounds = [1, U+4]
         Ueffs = numpy.arange(*bounds)
@@ -478,7 +473,7 @@ def scan_ueff(iter, mol, lattice, dm_qmc, U=None, Ueff_prev=None,
         assert (Ueff_prev is not None)
 
         # Note that we'll only have (npoint - 1) points. This is because we 
-        # obtain the Ueffs interval centered at `Ueff_prev` by concatenating 2 
+        # obtain the Ueff interval centered at `Ueff_prev` by concatenating 2 
         # arrays:
         #   [ bounds[0], Uprev ] -> npoint//2 elements
         #   ( Uprev, bounds[1] ] -> npoint//2 - 1 elements.
@@ -489,7 +484,8 @@ def scan_ueff(iter, mol, lattice, dm_qmc, U=None, Ueff_prev=None,
         Ueffs = numpy.hstack((Ueffs_l, Ueffs_r))
         stepsize = Ueffs[1] - Ueffs[0]
 
-    umfs = []
+    # NOTE These arrays are arranged in the order of `Ueffs`.
+    gmfs = []
     deltas = []
     err_deltas = []
 
@@ -497,29 +493,35 @@ def scan_ueff(iter, mol, lattice, dm_qmc, U=None, Ueff_prev=None,
 
     for Ueff in Ueffs:
         if verbose: print(f'\n# Ueff = {Ueff}')
-        integrals_mf = get_integrals(Ueff, v, lattice, pin_type=pin_type)
+        integrals_mf = get_integrals(Ueff, v, lattice, pin_sites)
 
-        umf = scf.UHF(mol)
-        umf.get_hcore = lambda *args: integrals_mf["h1"]
-        umf.get_ovlp = lambda *args: numpy.eye(n_sites)
-        umf._eri = ao2mo.restore(8, integrals_mf["h2"], n_sites)
+        gmf = scf.GHF(mol)
+        gmf.get_hcore = lambda *args: integrals_mf["h1"]
+        gmf.get_ovlp = lambda *args: numpy.eye(2 * n_sites)
+        gmf._eri = ao2mo.restore(8, integrals_mf["h2"], n_sites)
         
-        umf.kernel(dm_avg_qmc)
-        mo1 = umf.stability()[0]
-        umf = umf.newton().run(mo1, umf.mo_occ)
-        mo1 = umf.stability()[0]
-        umf = umf.newton().run(mo1, umf.mo_occ)
-        mo1 = umf.stability()[0]
-        umf = umf.newton().run(mo1, umf.mo_occ)
-        mo1 = umf.stability()
+        gmf.kernel(dm_avg_qmc)
+        mo1 = gmf.stability(external=True)
+        gmf = gmf.newton().run(mo1, gmf.mo_occ)
+        mo1 = gmf.stability(external=True)
+        gmf = gmf.newton().run(mo1, gmf.mo_occ)
+        mo1 = gmf.stability(external=True)
+        gmf = gmf.newton().run(mo1, gmf.mo_occ)
+        mo1 = gmf.stability(external=True)
 
-        dm = umf.make_rdm1()
-        density = numpy.array([numpy.diag(dm_s) for dm_s in dm])
-        density_qmc = numpy.array([numpy.diag(dm_s) for dm_s in dm_avg_qmc])
-        delta = numpy.sqrt(numpy.sum((density - density_qmc)**2)) / n_sites
+        dm = gmf.make_rdm1()
+        dma = dm[:n_sites, :n_sites]
+        dmb = dm[n_sites:, n_sites:]
+        dma_avg_qmc = dm_avg_qmc[:n_sites, :n_sites]
+        dmb_avg_qmc = dm_avg_qmc[n_sites:, n_sites:]
+        density = numpy.array([numpy.diag(dma), numpy.diag(dmb)])
+        density_qmc = numpy.array([numpy.diag(dma_avg_qmc), numpy.diag(dmb_avg_qmc)])
+
+        # RMS error between the GHF and CPMC rdm1s.
+        delta = numpy.sqrt(numpy.sum( (density - density_qmc)**2 )) / n_sites
         err_delta = dm_noise_qmc / (2.*n_sites)
-
-        umfs.append(umf)
+        
+        gmfs.append(gmf)
         deltas.append(delta)
         err_deltas.append(err_delta)
 
@@ -527,15 +529,18 @@ def scan_ueff(iter, mol, lattice, dm_qmc, U=None, Ueff_prev=None,
     err_deltas = numpy.array(err_deltas)
     cost_func = None
     if interp: cost_func = interp1d(Ueffs, deltas)
-    return Ueffs, deltas, err_deltas, umfs, cost_func
+    return Ueffs, deltas, err_deltas, gmfs, cost_func
 
-def get_ueff_opt(Ueffs, deltas, err_deltas, umfs):
+def get_ueff_opt(Ueffs, deltas, err_deltas, gmfs):
+    """
+    Get the optimal Ueff that produces a minimum `delta` value.
+    """
     imin = numpy.argmin(deltas)
     delta_min = numpy.amin(deltas)
     err_delta_min = err_deltas[imin]
     Ueff_opt = Ueffs[imin]
-    umf_opt = umfs[imin]
-    return Ueff_opt, umf_opt, delta_min, err_delta_min
+    gmf_opt = gmfs[imin]
+    return Ueff_opt, gmf_opt, delta_min, err_delta_min
 
 # -----------------------------------------------------------------------------
 # Self-consistent procedure.
@@ -554,68 +559,54 @@ def check_convergence(dUeff, dE, ddelta_min, err_E, err_delta_min,
     if delta_min_conv: return True
     else: return False
 
-def run_scc(comm, U, nx, ny, n_elec, options, Ueff=None, pin_type='fm', v=0.25, 
-            bc='open_x', run_cpmc=True, set_e_estimate=False, init_trial='fe_single_occ', 
-            proj_trs=False, npoint=10, max_iter=20, tol_delta_min=1e-3,
-            approx_dm_pure=False, do_plot_density=False, save_dm_hf=True, 
-            tmpdir='./', filename='scc.out', verbose=0):
-    if bc == 'open_x': lattice = lattices.two_dimensional_grid(nx, ny, open_x=True)
-    else: lattice = lattices.two_dimensional_grid(nx, ny)
+def run_scc(
+    comm, U, nx, ny, n_elec, pin_sites, idx_up, options, Ueff=None, v=0.5, 
+    bc='xc', run_cpmc=True, set_e_estimate=False, init_trial='ghf', 
+    npoint=10, max_iter=20, tol_delta_min=1e-4,
+    approx_dm_pure=False, do_plot_density=False, save_dm_hf=True, 
+    tmpdir='./', filename='scc.out', verbose=0):
+    """
+    Run the self-consistent procedure.
+    """
+    lattice = lattices.triangular_grid(nx, ny, boundary=bc)
     n_sites = lattice.n_sites
     filling = sum(n_elec) / (2*n_sites)
     density = sum(n_elec) / n_sites
 
     if verbose: 
+        print(f'\n# Boundary condition: {bc}')
         print(f'\n# Filling factor = {filling}')
         print(f'# Density = {density}')
-        print(f'\n# Pinning field = {pin_type}')
-        print(f'# Pinning field strength = {v}')
+        print(f'\n# Pinning field strength = {v}')
     
     mol = build_mol(n_elec, verbose=verbose)
-
-    integrals = get_integrals(U, v, lattice, pin_type=pin_type)
-    #umf_opt = build_uhf_trial(mol, lattice, integrals)
+    integrals = get_integrals(U, v, lattice, pin_sites)
 
     # GHF energy for `e_estimate`.
     e_estimate = None
 
     if set_e_estimate: 
-        e_estimate = get_e_estimate(mol, lattice, integrals)
+        e_estimate = get_e_estimate(mol, lattice, integrals, idx_up)
         if verbose: print(f'\n# Setting `e_estimate` = {e_estimate}')
 
-    if nx == 4:
-        if verbose: print(f'\n# Using open-shell free electron trial...')
-        umf_opt = build_fe_single_occ_trial(mol, lattice, integrals)
+    if init_trial == 'fe_double_occ':
+        gmf_opt = build_fe_double_occ_trial(mol, lattice, integrals)
     
-    elif nx == 6:
-        if verbose: print(f'\n# Using {init_trial} trial...')
-        if init_trial == 'fe_single_occ':
-            umf_opt = build_fe_single_occ_trial(mol, lattice, integrals)
-        
-        elif init_trial == 'fe_double_occ':
-            umf_opt = build_fe_double_occ_trial(mol, lattice, integrals)
+    elif init_trial == 'ghf':
+        gmf_opt = build_ghf_trial(mol, lattice, integrals, idx_up)
 
-        elif init_trial == 'uhf':
-            umf_opt = build_uhf_trial(mol, lattice, integrals)
+    elif init_trial == 'ghf_eff':
+        if Ueff is None: Ueff = U/2.
+        if verbose: print(f'# Ueff = {Ueff}')
+        integrals_mf = get_integrals(Ueff, v, lattice, pin_sites)
+        gmf_opt = build_ghf_trial(mol, lattice, integrals_mf, idx_up)
     
-        elif init_trial == 'uhf_eff':
-            if Ueff is None: Ueff = U/2.
-            if verbose: print(f'# Ueff = {Ueff}')
-            integrals_hf = get_integrals(Ueff, v, lattice, pin_type=pin_type)
-            umf_opt = build_uhf_trial(mol, lattice, integrals_hf)
-
-    else:
-        if init_trial == 'fe_double_occ':
-            umf_opt = build_fe_double_occ_trial(mol, lattice, integrals)
-        
-        elif init_trial == 'uhf':
-            umf_opt = build_uhf_trial(mol, lattice, integrals)
-    
+    # Initial values.
     conv = False
     iter = 0
     Ueff_prev = U
     bounds_prev = None
-    e_qmc_prev = umf_opt.e_tot
+    e_qmc_prev = gmf_opt.e_tot
     err_qmc_prev = 0.
     delta_min_prev = 0.
     err_delta_min_prev = 0.
@@ -632,46 +623,59 @@ def run_scc(comm, U, nx, ny, n_elec, options, Ueff=None, pin_type='fm', v=0.25,
         create_datasets(
                 h5_filename, arr_names, shape=(0,), maxshape=(None,), 
                 dtype=vlen_dtype, append=True)
-
+    
+    # Self-consistency loop.
     while (not conv) and (iter < max_iter):
-        # Run CPMC.
+        # Run CPMC. The mixed estimator for rdm1 is saved by ad_afqmc.
         e_qmc, err_qmc = run_qmc(
-                comm, umf_opt, integrals, options, run_cpmc=run_cpmc, 
-                proj_trs=proj_trs, e_estimate=e_estimate, tmpdir=tmpdir, verbose=verbose)
+            comm, gmf_opt, integrals, options, run_cpmc=run_cpmc, 
+            e_estimate=e_estimate, tmpdir=tmpdir, verbose=verbose)
         
-        # Get rdm1.
+        # Load CPMC rdm1.
         if comm.rank == 0: 
             dm_avg_qmc, dm_noise_qmc = load_dm_qmc(iter, tmpdir=tmpdir)
 
             if approx_dm_pure:
+                # Approximate the pure estimator using
+                #   2 * mixed_rdm1 - ghf_rdm1
                 if verbose: print(f'\n# Approximating the pure rdm1...')
-                dm_hf = numpy.array(umf_opt.make_rdm1())
+                dm_hf = numpy.array(gmf_opt.make_rdm1())
                 dm_avg_qmc = 2 * dm_avg_qmc - dm_hf
                 dm_noise_qmc = 2 * dm_noise_qmc
+
+                # Save HF solution.
+                numpy.savez(tmpdir + f'/rdm1_ghf_{iter}.npz', rdm1_ghf=dm_hf)
+            
+            # Only available at rank 0.
+            dma_avg_qmc = dm_avg_qmc[:n_sites, :n_sites]
+            dmb_avg_qmc = dm_avg_qmc[n_sites:, n_sites:]
+            density_qmc = numpy.array([numpy.diag(dma_avg_qmc), numpy.diag(dmb_avg_qmc)])
 
         else: dm_avg_qmc, dm_noise_qmc = None, None
         dm_avg_qmc = comm.bcast(dm_avg_qmc, root=0)
         dm_noise_qmc = comm.bcast(dm_noise_qmc, root=0)
         dm_qmc = (dm_avg_qmc, dm_noise_qmc)
         
+        # Save densities.
         if do_plot_density and comm.rank == 0:
             iy = 1
-            density_qmc = numpy.array([numpy.diag(dm_s) for dm_s in dm_avg_qmc])
             plot_density(
-                    lattice, density_qmc, f'{tmpdir}cpmc_density_iter={iter}.png', 
-                    save=True)
+                lattice, density_qmc, f'{tmpdir}cpmc_density_iter={iter}.png', 
+                save=True)
             plot_density_slice(
-                    lattice, density_qmc, iy=iy, 
-                    figname=f'{tmpdir}cpmc_density_slice_iy={iy}_iter={iter}.png', 
-                    save=True)
+                lattice, density_qmc, iy=iy, 
+                figname=f'{tmpdir}cpmc_density_slice_iy={iy}_iter={iter}.png', 
+                save=True)
         
-        # Find the optimal Ueff that minimizes the distance between the UHF and 
-        # QMC site densities.
-        Ueffs, deltas, err_deltas, umfs, cost_func = scan_ueff(
-                iter, mol, lattice, dm_qmc, U=U, Ueff_prev=Ueff_prev, 
-                bounds_prev=bounds_prev, npoint=npoint, pin_type=pin_type,
-                v=v, verbose=verbose)
-        Ueff_opt, umf_opt, delta_min, err_delta_min = get_ueff_opt(Ueffs, deltas, err_deltas, umfs)
+        # Find the optimal Ueff that minimizes the distance between the GHF and 
+        # CPMC site densities.
+        iter += 1 # Update iter before each Ueff scan.
+        Ueffs, deltas, err_deltas, gmfs, cost_func = scan_ueff(
+            iter, mol, lattice, dm_qmc, pin_sites, U=U, Ueff_prev=Ueff_prev, 
+            bounds_prev=bounds_prev, npoint=npoint, v=v, verbose=verbose)
+
+        # Update `Ueff_opt` and store the associated `gmf_opt`.
+        Ueff_opt, gmf_opt, delta_min, err_delta_min = get_ueff_opt(Ueffs, deltas, err_deltas, gmfs)
 
         # Check convergence.
         dUeff = Ueff_opt - Ueff_prev
@@ -696,16 +700,15 @@ def run_scc(comm, U, nx, ny, n_elec, options, Ueff=None, pin_type='fm', v=0.25,
             for i, arr in enumerate(arrays): push(h5_filename, arr, arr_names[i])
         
             if conv and save_dm_hf:
-                numpy.savez(tmpdir + '/rdm1_uhf.npz', rdm1_uhf=umf_opt.make_rdm1())
+                numpy.savez(tmpdir + '/rdm1_ghf.npz', rdm1_ghf=gmf_opt.make_rdm1())
 
         # Update values.
         bounds_prev = [Ueffs[0], Ueffs[-1]]
         Ueff_prev = Ueff_opt
-        umf_prev = umf_opt
+        gmf_prev = gmf_opt
         e_qmc_prev = e_qmc
         err_qmc_prev = err_qmc
         delta_min_prev = delta_min
         err_delta_min_prev = err_delta_min
-        iter += 1
     
     return conv

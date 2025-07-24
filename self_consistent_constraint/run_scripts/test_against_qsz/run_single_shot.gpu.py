@@ -208,7 +208,7 @@ mol.build()
 #npz_fname = glob(f'{tmpdir}rdm1_uhf.npz')[0]
 #dm = npz['rdm1_uhf']
 
-npz_fname = sorted(glob(f'{tmpdir}rdm1_afqmc_*.npz'))[-1]
+npz_fname = sorted(glob(f'{tmpdir}run/rdm1_afqmc_*.npz'))[-1]
 npz = np.load(npz_fname)
 dm = npz['rdm1_avg']
 if verbose: print(f'\n# Loading dm from {npz_fname}...')
@@ -279,15 +279,11 @@ if set_e_estimate:
     # GHF energy for `e_estimate`.
     dm_init = 0.0 * umf.init_guess_by_1e()
 
-    for i in range(lattice.l_x):
-        for j in range(lattice.l_y):
-            site_num = j * lattice.l_y + i
-
-            if (i + j) % 2 == 0:
-                dm_init[0, site_num, site_num] = 1.0
-
-            else:
-                dm_init[1, site_num, site_num] = 1.0
+    for ix in range(lattice.l_x):
+        for iy in range(lattice.l_y):
+            site_num = iy * lattice.l_x + ix
+            if (ix + iy) % 2 == 0: dm_init[0, site_num, site_num] = 1.0
+            else: dm_init[1, site_num, site_num] = 1.0
 
     gmf = scf.GHF(mol)
     gmf.get_hcore = lambda *args: sp.linalg.block_diag(*integrals["h1"])

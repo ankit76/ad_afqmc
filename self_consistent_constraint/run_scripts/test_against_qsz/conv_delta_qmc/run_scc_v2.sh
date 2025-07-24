@@ -1,11 +1,11 @@
 #!/bin/bash
 
-nx=16
+nx=4
 ny=4
 
 declare -a nup_arr=(
-    #[0]=14
-    [1]=28
+    [0]=8
+    #[1]=28
 )
 
 declare -a U_arr=(
@@ -17,24 +17,18 @@ declare -a U_arr=(
 bc='open_x'
 run_cpmc=1
 set_e_estimate=1
-
-init_trial='fe_double_occ' 
-#Ueff=3.859375 # approx_dm_pure; fe_double_occ
-Ueff=3.398265624999999
-#Ueff=3.538859374999999 # dm_mixed; fe_double_occ
-
-#init_trial='uhf' 
-#Ueff=4.619140625 # approx_dm_pure; uhf
-
+init_trial='fe_double_occ'
+Ueff=5
 pin_type='afm'
 v=0.25
 proj_trs=0
 approx_dm_pure=0
+tol_delta_qmc=1e-4
 
 dt=0.005
 n_eql=500
 n_blocks=400
-nwalkers=1000
+nwalkers=10
 verbose=3
 
 trs_tag=""
@@ -62,22 +56,22 @@ for i in "${!nup_arr[@]}"; do
         echo "---------------------------------------------------------------------"
         echo "U = $U"
 
-        mkdir -p "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial"
+        mkdir -p "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial/conv_delta_qmc"
 
-        jobname="ss_afqmc_hubbard_${nx}x${ny}_nelec=(${nup},${ndown})_U=${U}"
+        jobname="afqmc_hubbard_${nx}x${ny}_nelec=(${nup},${ndown})_U=${U}"
 
         if [[ $run_cpmc == "1" ]]; then
-            jobname="ss_cpmc_hubbard_${nx}x${ny}_nelec=(${nup},${ndown})_U=${U}"
+            jobname="cpmc_hubbard_${nx}x${ny}_nelec=(${nup},${ndown})_U=${U}"
         fi
 
         sbatch -J ${jobname} \
-               -o "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial/${jobname}.%j.out" \
-               -e "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial/${jobname}.%j.err" \
-               srun_single_shot.gpu.sh \
+               -o "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial/conv_delta_qmc/${jobname}.%j.out" \
+               -e "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial/conv_delta_qmc/${jobname}.%j.err" \
+               srun_scc_v2.sh \
                 ${U} ${nup} ${ndown} ${nx} ${ny} ${nwalkers} ${bc} \
                 ${run_cpmc} ${set_e_estimate} ${dt} ${n_eql} ${n_blocks} \
                 ${init_trial} ${Ueff} ${pin_type} ${v} ${proj_trs} ${approx_dm_pure} \
-                ${verbose}
+                ${tol_delta_qmc} ${verbose}
         echo
     done
 done

@@ -1,17 +1,17 @@
 #!/bin/bash
 
-nx=16
-ny=4
+nx=6
+ny=6
 
 declare -a nup_arr=(
-    #[0]=14
-    [1]=28
+    [8]=18
 )
 
 declare -a U_arr=(
+    #[0]=4.0
     #[0]=6.0
-    [1]=8.0
-    #[2]=12.0
+    #[1]=8.0
+    [2]=12.0
 )
 
 bc='open_x'
@@ -19,10 +19,8 @@ run_cpmc=1
 set_e_estimate=1
 init_trial='uhf'
 Ueff=5
-pin_type='afm'
-v=0.25
-proj_trs=0
-approx_dm_pure=1
+proj_trs=1
+approx_dm_pure=0
 tol_delta_min=1e-4
 
 dt=0.005
@@ -41,7 +39,7 @@ if [[ "$approx_dm_pure" = "1" ]]; then
     dm_tag="approx_dm_pure"
 fi
 
-outdir="/projects/bcdd/shufay/hubbard_tri/self_consistent_constraint/test_against_qsz/${trs_tag}/${dm_tag}/${nx}x${ny}/${bc}"
+outdir="/projects/bcdd/shufay/hubbard_tri/self_consistent_constraint/${trs_tag}/${dm_tag}/${nx}x${ny}/${bc}"
 
 echo "nx, ny = $nx, $ny"
 
@@ -56,7 +54,7 @@ for i in "${!nup_arr[@]}"; do
         echo "---------------------------------------------------------------------"
         echo "U = $U"
 
-        mkdir -p "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial"
+        mkdir -p "${outdir}/U=${U}/${init_trial}_trial"
 
         jobname="afqmc_hubbard_${nx}x${ny}_nelec=(${nup},${ndown})_U=${U}"
 
@@ -65,12 +63,12 @@ for i in "${!nup_arr[@]}"; do
         fi
 
         sbatch -J ${jobname} \
-               -o "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial/${jobname}.%j.out" \
-               -e "${outdir}/U=${U}/pin=${pin_type}/${init_trial}_trial/${jobname}.%j.err" \
+               -o "${outdir}/U=${U}/${init_trial}_trial/${jobname}.%j.out" \
+               -e "${outdir}/U=${U}/${init_trial}_trial/${jobname}.%j.err" \
                srun_scc.gpu.sh \
                 ${U} ${nup} ${ndown} ${nx} ${ny} ${nwalkers} ${bc} \
                 ${run_cpmc} ${set_e_estimate} ${dt} ${n_eql} ${n_blocks} \
-                ${init_trial} ${Ueff} ${pin_type} ${v} ${proj_trs} ${approx_dm_pure} \
+                ${init_trial} ${Ueff} ${proj_trs} ${approx_dm_pure} \
                 ${tol_delta_min} ${verbose}
         echo
     done
