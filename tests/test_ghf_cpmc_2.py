@@ -1,3 +1,6 @@
+import sys
+sys.path.append('../')
+
 import numpy as np
 import scipy as sp
 import jax.numpy as jnp
@@ -11,6 +14,7 @@ from ad_afqmc import (
     propagation,
     wavefunctions,
     pyscf_interface,
+    io_utils,
 )
 
 from ad_afqmc.legacy import driver as driver_legacy
@@ -89,11 +93,12 @@ if __name__ == '__main__':
     nup, ndown = 8, 8
     n_elec = (nup, ndown)
     nx, ny = 4, 4
-    nwalkers = 100
-    bc = 'open_x'
+    nwalkers = 50
+    bc = 'xc'
 
     # For saving.
     tmpdir = f'./test_ghf_cpmc'
+    io_utils.check_dir(tmpdir)
 
     # QMC options.
     options = {
@@ -103,7 +108,7 @@ if __name__ == '__main__':
         "n_sr_blocks_eql": 1,
         "n_ene_blocks": 1,
         "n_sr_blocks": 5,
-        "n_blocks": 50,
+        "n_blocks": 40,
         "n_prop_steps": 50,
         "n_walkers": nwalkers,
         "seed": 98,
@@ -114,7 +119,7 @@ if __name__ == '__main__':
 
     # -------------------------------------------------------------------------
     # Lattice.
-    lattice = lattices.triangular_grid(nx, ny, open_x=True)
+    lattice = lattices.triangular_grid(nx, ny, boundary=bc)
     n_sites = lattice.n_sites
     nocc = sum(n_elec)
 
@@ -162,7 +167,7 @@ if __name__ == '__main__':
     umf.get_hcore = lambda *args: integrals["h1"]
     umf.get_ovlp = lambda *args: np.eye(n_sites)
     umf._eri = ao2mo.restore(8, integrals["h2"], n_sites)
-    umf.mo_coeff = [evecs_h1, evecs_h1]
+    umf.mo_coeff = np.array([evecs_h1, evecs_h1])
 
     # GHF.
     gmf = scf.GHF(mol)
@@ -183,5 +188,6 @@ if __name__ == '__main__':
     options["walker_type"] = "generalized"
     e_qmc, err_qmc = run_ghf_cpmc(gmf, options, integrals_g, tmpdir)
     
+    # Should fail!
     np.testing.assert_allclose(e_qmc, e_qmc_ref)
     np.testing.assert_allclose(err_qmc, err_qmc_ref)

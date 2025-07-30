@@ -1,3 +1,6 @@
+import sys
+sys.path.append('../')
+
 import numpy as np
 import scipy as sp
 import jax.numpy as jnp
@@ -11,6 +14,7 @@ from ad_afqmc import (
     propagation,
     wavefunctions,
     pyscf_interface,
+    io_utils,
 )
 
 from ad_afqmc.legacy import driver as driver_legacy
@@ -94,6 +98,7 @@ if __name__ == '__main__':
 
     # For saving.
     tmpdir = f'./test_ghf_cpmc'
+    io_utils.check_dir(tmpdir)
 
     # QMC options.
     options = {
