@@ -836,6 +836,9 @@ class propagator_cpmc_generalized(propagator_generalized):
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
         prop_data["weights"] = jnp.where(
+            jnp.isnan(prop_data["weights"]), 0.0, prop_data["weights"]
+        )
+        prop_data["weights"] = jnp.where(
             prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
         )
         prop_data["overlaps"] = overlaps_new

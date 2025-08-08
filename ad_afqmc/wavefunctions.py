@@ -1516,6 +1516,8 @@ class ghf_cpmc(ghf, wave_function_cpmc):
             green[:, j],
             update_constants[0] * (green[j, i] * sg_i - green[i, i] * sg_j) - sg_j,
         )
+        green = jnp.where(jnp.isinf(green), 0.0, green)
+        green = jnp.where(jnp.isnan(green), 0.0, green)
         return green
 
     def __hash__(self) -> int:
