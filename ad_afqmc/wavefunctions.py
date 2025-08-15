@@ -1347,8 +1347,20 @@ class ghf(wave_function):
         h0, rot_h1, rot_chol = ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"]
         ene0 = h0
         green_walker = self._calc_green(walker_up, walker_dn, wave_data)
-        ene1 = jnp.sum(green_walker * rot_h1)
-        f = jnp.einsum("gij,jk->gik", rot_chol, green_walker.T, optimize="optimal")
+        #ene1 = jnp.sum(green_walker * rot_h1)
+        #f = jnp.einsum("gij,jk->gik", rot_chol, green_walker.T, optimize="optimal")
+        
+        ene1 = jnp.sum(green_walker[:self.nelec[0], :self.norb] * rot_h1[0])
+        ene1 += jnp.sum(green_walker[self.nelec[0]:, self.norb:] * rot_h1[1])
+        f = jnp.einsum(
+                "gij,jk->gik", rot_chol[0], 
+                green_walker[:self.nelec[0], :self.norb].T, optimize="optimal"
+        )
+        f += jnp.einsum(
+                "gij,jk->gik", rot_chol[1], 
+                green_walker[self.nelec[0]:, self.norb:].T, optimize="optimal"
+        )
+        
         coul = vmap(jnp.trace)(f)
         exc = jnp.sum(vmap(lambda x: x * x.T)(f))
         ene2 = (jnp.sum(coul * coul) - exc) / 2.0
@@ -1381,17 +1393,41 @@ class ghf(wave_function):
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         """
-        `h1` has shape (2, 2*norb, 2*norb).
+        `h1` has shape (2*norb, 2*norb).
         `chol` has shape (nchol, 2*norb, 2*norb)
         """
-        ham_data["h1"] = (
-            ham_data["h1"].at[:].set((ham_data["h1"] + ham_data["h1"].T) / 2.0)
-        )
-        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"]
+        if jnp.array(ham_data["h1"]).ndim == 3: # UHF walkers.
+            ham_data["h1"] = (
+                ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
+            )
+            ham_data["h1"] = (
+                ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
+            )
+            ham_data["rot_h1"] = [
+                wave_data["mo_coeff"][:self.norb, :self.norb].T.conj() @ ham_data["h1"][0],
+                wave_data["mo_coeff"][self.norb:, self.norb:].T.conj() @ ham_data["h1"][1],
+            ]
+            ham_data["rot_chol"] = [
+                jnp.einsum(
+                    "pi,gij->gpj",
+                    wave_data["mo_coeff"][:self.norb, :self.norb].T.conj(),
+                    ham_data["chol"].reshape(-1, self.norb, self.norb),
+                ),
+                jnp.einsum(
+                    "pi,gij->gpj",
+                    wave_data["mo_coeff"][self.norb:, self.norb:].T.conj(),
+                    ham_data["chol"].reshape(-1, self.norb, self.norb),
+                ),
+            ]
 
-        ham_data["rot_chol"] = vmap(
-            lambda x: wave_data["mo_coeff"].T.conj() @ x, 
-            in_axes=(0))(ham_data["chol"].reshape(-1, 2*self.norb, 2*self.norb))
+        elif jnp.array(ham_data["h1"]).ndim == 2: # RHF/GHF walkers.
+            ham_data["h1"] = (
+                ham_data["h1"].at[:].set((ham_data["h1"] + ham_data["h1"].T) / 2.0)
+            )
+            ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"]
+            ham_data["rot_chol"] = vmap(
+                lambda x: wave_data["mo_coeff"].T.conj() @ x, 
+                in_axes=(0))(ham_data["chol"].reshape(-1, 2*self.norb, 2*self.norb))
 
         return ham_data
 

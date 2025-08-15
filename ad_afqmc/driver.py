@@ -385,6 +385,11 @@ def afqmc_observable(
                     tmpdir,
                     options["ad_mode"],
                 )
+                if rank == 0:
+                    try:
+                        print(f"node encounters on proc 0: {prop_data['node_crossings']}")
+                    except:
+                        pass
 
     else:
         # Initialize prop_data_tangent and block data
@@ -469,6 +474,11 @@ def afqmc_observable(
                     tmpdir,
                     options["ad_mode"],
                 )
+                if rank == 0:
+                    try:
+                        print(f"node encounters on proc 0: {prop_data['node_crossings']}")
+                    except:
+                        pass
 
     # Report large deviations
     global_large_deviations = np.array(0)
