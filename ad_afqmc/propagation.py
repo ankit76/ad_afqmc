@@ -750,13 +750,29 @@ class propagator_cpmc(propagator_unrestricted):
                 prop_data["hs_constant"][0],
                 prop_data["hs_constant"][1],
             )
-            new_walkers_up = (
-                carry["walkers"][0].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
-            )
-            new_walkers_dn = (
-                carry["walkers"][1].at[:, x, :].mul(constants[:, 1].reshape(-1, 1))
-            )
-            carry["walkers"] = [new_walkers_up, new_walkers_dn]
+
+            #new_walkers_up = (
+            #    carry["walkers"][0].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
+            #)
+            #new_walkers_dn = (
+            #    carry["walkers"][1].at[:, x, :].mul(constants[:, 1].reshape(-1, 1))
+            #)
+            #carry["walkers"] = [new_walkers_up, new_walkers_dn]
+
+            w_up, w_dn = carry["walkers"]
+            c_up = constants[:, 0][:, None, None]
+            c_dn = constants[:, 1][:, None, None]
+
+            # slice -> scale -> write-back, using dynamic indices
+            col_up = lax.dynamic_slice_in_dim(w_up, x, 1, axis=1)   # (W,1,F)
+            upd_up = col_up * c_up
+            w_up = lax.dynamic_update_slice_in_dim(w_up, upd_up, x, axis=1)
+            
+            col_dn = lax.dynamic_slice_in_dim(w_dn, x, 1, axis=1)   # (W,1,F)
+            upd_dn = col_dn * c_dn
+            w_dn = lax.dynamic_update_slice_in_dim(w_dn, upd_dn, x, axis=1)
+            carry["walkers"] = [w_up, w_dn]
+
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
             carry["greens"] = trial.update_green(
