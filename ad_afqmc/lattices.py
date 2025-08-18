@@ -196,7 +196,7 @@ class two_dimensional_grid(lattice):
     n_sites: Optional[int] = None
     hop_signs: Sequence = (-1.0, -1.0, 1.0, 1.0)
     coord_num: int = 4
-    open_x: bool = False
+    bc: str = 'open_x'
 
     def __post_init__(self):
         self.shape = (self.l_y, self.l_x)
@@ -348,9 +348,15 @@ class two_dimensional_grid(lattice):
         left = (pos[0], (pos[1] - 1) % self.l_x)
         up = ((pos[0] - 1) % self.l_y, pos[1])
 
-        if self.open_x:
+        if self.bc == 'open_x':
             right = (pos[0], pos[1] + 1)
             left = (pos[0], pos[1] - 1)
+
+        elif self.bc == 'obc':
+            right = (pos[0], pos[1] + 1)
+            down = (pos[0] + 1, pos[1])
+            left = (pos[0], pos[1] - 1)
+            up = (pos[0] - 1, pos[1])
 
         return jnp.array([right, down, left, up])
 
