@@ -1208,6 +1208,21 @@ class uhf_cpmc(uhf, wave_function_cpmc):
         green = jnp.where(jnp.isnan(green), 0.0, green)
         return green
 
+    @partial(jit, static_argnums=0)
+    def _calc_energy(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        ham_data: dict,
+        wave_data: dict,
+    ) -> jax.Array:
+        green = self._calc_green_full(walker_up, walker_dn, wave_data)
+        h1 = ham_data["h1"]
+        u = ham_data["u"]
+        energy_1 = jnp.sum(green[0] * h1[0]) + jnp.sum(green[1] * h1[1])
+        energy_2 = u * jnp.sum(green[0].diagonal() * green[1].diagonal())
+        return energy_1 + energy_2
+
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 

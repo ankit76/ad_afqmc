@@ -766,11 +766,11 @@ class propagator_cpmc(propagator_unrestricted):
             c_dn = constants[:, 1][:, None, None]
 
             # slice -> scale -> write-back, using dynamic indices
-            col_up = lax.dynamic_slice_in_dim(w_up, x, 1, axis=1)   # (W,1,F)
+            col_up = lax.dynamic_slice_in_dim(w_up, x, 1, axis=1)
             upd_up = col_up * c_up
             w_up = lax.dynamic_update_slice_in_dim(w_up, upd_up, x, axis=1)
             
-            col_dn = lax.dynamic_slice_in_dim(w_dn, x, 1, axis=1)   # (W,1,F)
+            col_dn = lax.dynamic_slice_in_dim(w_dn, x, 1, axis=1)
             upd_dn = col_dn * c_dn
             w_dn = lax.dynamic_update_slice_in_dim(w_dn, upd_dn, x, axis=1)
             carry["walkers"] = [w_up, w_dn]
