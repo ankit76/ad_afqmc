@@ -648,8 +648,8 @@ class propagator_cpmc(propagator_unrestricted):
         const = jnp.exp(-self.dt * ham_data["u"] / 2)
         prop_data["hs_constant"] = const * jnp.array(
             [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
-        )
-        prop_data["node_crossings"] = 0
+        ) # [[(+1, up), (+1, dn)], [(-1, up), (-1, dn)]].
+        prop_data["node_crossings"] = jnp.int32(0)
         return prop_data
 
     @partial(jit, static_argnums=(0, 2))
@@ -688,7 +688,7 @@ class propagator_cpmc(propagator_unrestricted):
         prop_data["overlaps"] = overlaps_new
         prop_data["greens"] = trial.calc_green_full(prop_data["walkers"], wave_data)
         return prop_data
-
+    
     @partial(jit, static_argnums=(0, 1))
     def propagate(
         self,
@@ -698,7 +698,7 @@ class propagator_cpmc(propagator_unrestricted):
         gaussian_rns: jnp.array,
         wave_data: dict,
     ) -> dict:
-        """
+        '''
         Propagate the walkers using the CPMC algorithm.
 
         Args:
@@ -710,13 +710,14 @@ class propagator_cpmc(propagator_unrestricted):
 
         Returns:
             prop_data: dictionary containing the updated propagation data
-        """
+        '''
         # one body
         prop_data = self.propagate_one_body(trial, ham_data, prop_data, wave_data)
 
         # two body
         # TODO: define separate sampler that feeds uniform_rns instead of gaussian_rns
         uniform_rns = (jsp.special.erf(gaussian_rns / 2**0.5) + 1) / 2
+        hs_const = prop_data["hs_constant"]
 
         # iterate over sites
         def scanned_fun(carry, x):
@@ -724,19 +725,19 @@ class propagator_cpmc(propagator_unrestricted):
             ratio_0 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, x], [1, x]]),
-                prop_data["hs_constant"][0] - 1,
+                hs_const[0] - 1,
             )
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0) # Constrained path condition.
-            carry["node_crossings"] += jnp.sum(jnp.array(ratio_0) == 0.0)
+            carry["node_crossings"] += jnp.sum(jnp.array(ratio_0) == 0.0, dtype=jnp.int32)
 
             # field 2
             ratio_1 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, x], [1, x]]),
-                prop_data["hs_constant"][1] - 1,
+                hs_const[1] - 1,
             )
             ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1) # Constrained path condition.
-            carry["node_crossings"] += jnp.sum(jnp.array(ratio_1) == 0.0)
+            carry["node_crossings"] += jnp.sum(jnp.array(ratio_1) == 0.0, dtype=jnp.int32)
 
             # normalize
             prob_0 = ratio_0.real / 2.0
@@ -744,22 +745,17 @@ class propagator_cpmc(propagator_unrestricted):
             norm = prob_0 + prob_1 + 1e-13
             prob_0 /= norm
 
-            # update
-            rns = uniform_rns[:, x]
-            mask = rns < prob_0
+            # update walkers
+            rns = uniform_rns[:, x] # (nwalkers,)
+
+            # use importance-sampled probability dist. to determine the value
+            # of the discrete auxiliary fields
+            mask = rns < prob_0 # (nwalkers,)
             constants = jnp.where(
                 mask.reshape(-1, 1),
-                prop_data["hs_constant"][0],
-                prop_data["hs_constant"][1],
+                hs_const[0], # x = +1.
+                hs_const[1], # x = -1.
             )
-
-            #new_walkers_up = (
-            #    carry["walkers"][0].at[:, x, :].mul(constants[:, 0].reshape(-1, 1))
-            #)
-            #new_walkers_dn = (
-            #    carry["walkers"][1].at[:, x, :].mul(constants[:, 1].reshape(-1, 1))
-            #)
-            #carry["walkers"] = [new_walkers_up, new_walkers_dn]
 
             w_up, w_dn = carry["walkers"]
             c_up = constants[:, 0][:, None, None]
@@ -767,23 +763,20 @@ class propagator_cpmc(propagator_unrestricted):
 
             # slice -> scale -> write-back, using dynamic indices
             col_up = lax.dynamic_slice_in_dim(w_up, x, 1, axis=1)
-            upd_up = col_up * c_up
-            w_up = lax.dynamic_update_slice_in_dim(w_up, upd_up, x, axis=1)
+            w_up = lax.dynamic_update_slice_in_dim(w_up, col_up * c_up, x, axis=1)
             
             col_dn = lax.dynamic_slice_in_dim(w_dn, x, 1, axis=1)
-            upd_dn = col_dn * c_dn
-            w_dn = lax.dynamic_update_slice_in_dim(w_dn, upd_dn, x, axis=1)
+            w_dn = lax.dynamic_update_slice_in_dim(w_dn, col_dn * c_dn, x, axis=1)
             carry["walkers"] = [w_up, w_dn]
 
-            ratios = jnp.where(mask, ratio_0, ratio_1)
-            update_constants = constants - 1
+            masked_ratios = jnp.where(mask, ratio_0, ratio_1)
             carry["greens"] = trial.update_green(
                 carry["greens"],
-                ratios,
+                masked_ratios,
                 jnp.array([[0, x], [1, x]]),
-                update_constants,
+                constants - 1,
             )
-            carry["overlaps"] = ratios * carry["overlaps"]
+            carry["overlaps"] = masked_ratios * carry["overlaps"]
             carry["weights"] *= norm
             return carry, x
 
@@ -901,7 +894,7 @@ class propagator_cpmc_generalized(propagator_generalized):
                 prop_data["hs_constant"][0] - 1,
             )
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0) # Constrained path condition.
-            carry["node_crossings"] += jnp.sum(jnp.array(ratio_0) == 0.0)
+            carry["node_crossings"] += jnp.sum(ratio_0 == 0.0)
 
             # field 2
             ratio_1 = trial.calc_overlap_ratio(
@@ -910,7 +903,7 @@ class propagator_cpmc_generalized(propagator_generalized):
                 prop_data["hs_constant"][1] - 1,
             )
             ratio_1 = jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1) # Constrained path condition.
-            carry["node_crossings"] += jnp.sum(jnp.array(ratio_1) == 0.0)
+            carry["node_crossings"] += jnp.sum(ratio_1 == 0.0)
 
             # normalize
             # p'(x) = p(x) * ovlp_ratio(x)

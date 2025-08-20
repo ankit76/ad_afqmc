@@ -660,7 +660,6 @@ class sum_state_cpmc(sum_state, wave_function_cpmc):
             w_i = coeffs[i] * ovlp_i
             green += w_i * green_i
             ovlp += w_i
-        
         return jnp.array(green / ovlp)
 
     @partial(jit, static_argnums=0)
@@ -706,6 +705,8 @@ class sum_state_cpmc(sum_state, wave_function_cpmc):
                 update_constants[0] * (g_ji * sg_i - g_ii * sg_j) - sg_j,
             )
         )
+        green = jnp.where(jnp.isinf(green), 0.0, green)
+        green = jnp.where(jnp.isnan(green), 0.0, green)
         return green
 
     @partial(jit, static_argnums=0)
