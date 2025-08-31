@@ -78,7 +78,8 @@ class wave_function(ABC):
                 walkers[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
             ),
         )
-        return overlaps.reshape(n_walkers)
+        try: return overlaps.reshape(n_walkers)
+        except: return overlaps[0].reshape(n_walkers), overlaps[1].reshape(n_walkers, -1)
 
     @calc_overlap.register
     def _(self, walkers: jax.Array, wave_data: dict) -> jax.Array:
@@ -501,6 +502,19 @@ class wave_function_cpmc(wave_function):
             green, update_indices, update_constants
         )
 
+    @calc_overlap_ratio.register
+    def _(
+            self, 
+            greens: jax.Array, 
+            overlaps: jax.Array, 
+            coeffs: jax.Array, 
+            update_indices: jax.Array, 
+            update_constants: jax.Array
+    ) -> jax.Array:
+        return vmap(self._calc_overlap_ratio, in_axes=(0, 0, None, None, None))(
+            greens, overlaps, coeffs, update_indices, update_constants
+        )
+
     @partial(jit, static_argnums=0)
     def _calc_overlap_ratio(
             self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
@@ -564,30 +578,28 @@ class sum_state(wave_function):
     @partial(jit, static_argnums=0)
     def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
         coeffs = wave_data["coeffs"]
-        return jnp.sum(
-            jnp.array(
-                [
-                    state._calc_overlap_restricted(walker, wave_data[f"{i}"])
-                    * coeffs[i]
-                    for i, state in enumerate(self.states)
-                ]
-            )
+        overlaps = jnp.array(
+            [
+                state._calc_overlap_restricted(walker, wave_data[f"{i}"])
+                for i, state in enumerate(self.states)
+            ]
         )
+        overlap = jnp.sum(overlaps * coeffs)
+        return overlap, overlaps
 
     @partial(jit, static_argnums=0)
     def _calc_overlap(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
         coeffs = wave_data["coeffs"]
-        return jnp.sum(
-            jnp.array(
-                [
-                    state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
-                    * coeffs[i]
-                    for i, state in enumerate(self.states)
-                ]
-            )
+        overlaps = jnp.array(
+            [
+                state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
+                for i, state in enumerate(self.states)
+            ]
         )
+        overlap = jnp.sum(overlaps * coeffs)
+        return overlap, overlaps
 
     @partial(jit, static_argnums=0)
     def _calc_energy(self, walker_up, walker_dn, ham_data, wave_data):
@@ -634,80 +646,68 @@ class sum_state_cpmc(sum_state, wave_function_cpmc):
             self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
         coeffs = wave_data["coeffs"]
-        ovlp = 0.
+        overlap = 0.
         green = np.zeros((2, self.norb))
 
         for i, state in enumerate(self.states):
             green_i = state._calc_green_diagonal(walker_up, walker_dn, wave_data[f"{i}"])
-            ovlp_i = state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
-            w_i = coeffs[i] * ovlp_i
+            overlap_i = state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
+            w_i = coeffs[i] * overlap_i
             green += w_i * green_i
-            ovlp += w_i
+            overlap += w_i
         
-        return jnp.array(green / ovlp)
+        return jnp.array(green / overlap)
 
     @partial(jit, static_argnums=0)
     def _calc_green_full(
             self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
         coeffs = wave_data["coeffs"]
-        ovlp = 0.
-        green = np.zeros((2, self.norb, self.norb))
-
-        for i, state in enumerate(self.states):
-            green_i = state._calc_green_full(walker_up, walker_dn, wave_data[f"{i}"])
-            ovlp_i = state._calc_overlap(walker_up, walker_dn, wave_data[f"{i}"])
-            w_i = coeffs[i] * ovlp_i
-            green += w_i * green_i
-            ovlp += w_i
-        return jnp.array(green / ovlp)
+        greens = jnp.array(
+            [
+                state._calc_green_full(walker_up, walker_dn, wave_data[f"{i}"])
+                for i, state in enumerate(self.states)
+            
+            ]
+        )
+        return greens
 
     @partial(jit, static_argnums=0)
     def _calc_overlap_ratio(
-        self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
+        self, 
+        greens: jax.Array, 
+        overlaps: jax.Array, 
+        coeffs: jax.Array, 
+        update_indices: jax.Array, 
+        update_constants: jax.Array
     ) -> float:
-        spin_i, i = update_indices[0]
-        spin_j, j = update_indices[1]
-        ratio = (1 + update_constants[0] * green[spin_i, i, i]) * (
-            1 + update_constants[1] * green[spin_j, j, j]
-        ) - (spin_i == spin_j) * update_constants[0] * update_constants[1] * (
-            green[spin_i, i, j] * green[spin_j, j, i]
+        overlap_ratios = jnp.array(
+            [
+                state._calc_overlap_ratio(greens[i], update_indices, update_constants)
+                for i, state in enumerate(self.states)
+            ]
         )
-        return ratio
+        overlap = jnp.sum(coeffs * overlaps)
+        overlap_ratio = jnp.sum(coeffs * overlaps * overlap_ratios) / overlap
+        return overlap_ratio, overlap_ratios
 
     @partial(jit, static_argnums=0)
     def _update_green(
         self,
-        green: jax.Array,
-        ratio: float,
+        greens: jax.Array,
+        ratios: jax.Array,
         update_indices: jax.Array,
         update_constants: jax.Array,
     ) -> jax.Array:
-        spin_i, i = update_indices[0]
-        spin_j, j = update_indices[1]
-        sg_i = green[spin_i, i].at[i].add(-1)
-        sg_j = green[spin_j, j].at[j].add(-1)
-        g_ii = green[spin_i, i, i]
-        g_jj = green[spin_j, j, j]
-        g_ij = (spin_i == spin_j) * green[spin_i, i, j]
-        g_ji = (spin_i == spin_j) * green[spin_j, j, i]
-        green = green.at[spin_i, :, :].add(
-            (update_constants[0] / ratio)
-            * jnp.outer(
-                green[spin_i, :, i],
-                update_constants[1] * (g_ij * sg_j - g_jj * sg_i) - sg_i,
-            )
+        new_green = jnp.array(
+            [
+                state._update_green(greens[i], ratios[i], update_indices, update_constants)
+                for i, state in enumerate(self.states)
+            ]
         )
-        green = green.at[spin_j, :, :].add(
-            (update_constants[1] / ratio)
-            * jnp.outer(
-                green[spin_j, :, j],
-                update_constants[0] * (g_ji * sg_i - g_ii * sg_j) - sg_j,
-            )
-        )
-        green = jnp.where(jnp.isinf(green), 0.0, green)
-        green = jnp.where(jnp.isnan(green), 0.0, green)
-        return green
+        new_green = jnp.where(jnp.isinf(new_green), 0.0, new_green)
+        new_green = jnp.where(jnp.isnan(new_green), 0.0, new_green)
+        return new_green
 
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data, wave_data):
@@ -1147,19 +1147,6 @@ class uhf_cpmc(uhf, wave_function_cpmc):
         return jnp.array([green_up, green_dn])
 
     @partial(jit, static_argnums=0)
-    def _calc_overlap_ratio(
-        self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
-    ) -> float:
-        spin_i, i = update_indices[0]
-        spin_j, j = update_indices[1]
-        ratio = (1 + update_constants[0] * green[spin_i, i, i]) * (
-            1 + update_constants[1] * green[spin_j, j, j]
-        ) - (spin_i == spin_j) * update_constants[0] * update_constants[1] * (
-            green[spin_i, i, j] * green[spin_j, j, i]
-        )
-        return ratio
-
-    @partial(jit, static_argnums=0)
     def _calc_green_full(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
@@ -1174,6 +1161,19 @@ class uhf_cpmc(uhf, wave_function_cpmc):
             @ wave_data["mo_coeff"][1].T
         ).T
         return jnp.array([green_up, green_dn])
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_ratio(
+        self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
+    ) -> float:
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+        ratio = (1 + update_constants[0] * green[spin_i, i, i]) * (
+            1 + update_constants[1] * green[spin_j, j, j]
+        ) - (spin_i == spin_j) * update_constants[0] * update_constants[1] * (
+            green[spin_i, i, j] * green[spin_j, j, i]
+        )
+        return ratio
 
     @partial(jit, static_argnums=0)
     def _update_green(
@@ -1223,6 +1223,39 @@ class uhf_cpmc(uhf, wave_function_cpmc):
         energy_1 = jnp.sum(green[0] * h1[0]) + jnp.sum(green[1] * h1[1])
         energy_2 = u * jnp.sum(green[0].diagonal() * green[1].diagonal())
         return energy_1 + energy_2
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy_2(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        ham_data: dict,
+        wave_data: dict,
+    ) -> jax.Array:
+        h0, rot_h1, rot_chol = ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"]
+        ene0 = h0
+        green_walker = self._calc_green(walker_up, walker_dn, wave_data)
+        ene1 = jnp.sum(green_walker[0] * rot_h1[0]) + jnp.sum(
+            green_walker[1] * rot_h1[1]
+        )
+        f_up = jnp.einsum(
+            "gij,jk->gik", rot_chol[0], green_walker[0].T, optimize="optimal"
+        )
+        f_dn = jnp.einsum(
+            "gij,jk->gik", rot_chol[1], green_walker[1].T, optimize="optimal"
+        )
+        c_up = vmap(jnp.trace)(f_up)
+        c_dn = vmap(jnp.trace)(f_dn)
+        exc_up = jnp.sum(vmap(lambda x: x * x.T)(f_up))
+        exc_dn = jnp.sum(vmap(lambda x: x * x.T)(f_dn))
+        ene2 = (
+            jnp.sum(c_up * c_up)
+            + jnp.sum(c_dn * c_dn)
+            + 2.0 * jnp.sum(c_up * c_dn)
+            - exc_up
+            - exc_dn
+        ) / 2.0
+        return ene2 + ene1 + ene0
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
@@ -1494,22 +1527,6 @@ class ghf_cpmc(ghf, wave_function_cpmc):
         return green
 
     @partial(jit, static_argnums=0)
-    def _calc_overlap_ratio(
-        self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
-    ) -> float:
-        """
-        Method for UHF/GHF walkers.
-        """
-        spin_i, i = update_indices[0]
-        spin_j, j = update_indices[1]
-        i = i + (spin_i == 1) * self.norb
-        j = j + (spin_j == 1) * self.norb
-        ratio = (1 + update_constants[0] * green[i, i]) * (
-            1 + update_constants[1] * green[j, j]
-        ) - update_constants[0] * update_constants[1] * (green[i, j] * green[j, i])
-        return ratio
-
-    @partial(jit, static_argnums=0)
     def _calc_green_full(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
@@ -1543,6 +1560,22 @@ class ghf_cpmc(ghf, wave_function_cpmc):
             @ wave_data["mo_coeff"][:, : self.nelec[0] + self.nelec[1]].T.conj()
         ).T
         return green
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_ratio(
+        self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
+    ) -> float:
+        """
+        Method for UHF/GHF walkers.
+        """
+        spin_i, i = update_indices[0]
+        spin_j, j = update_indices[1]
+        i = i + (spin_i == 1) * self.norb
+        j = j + (spin_j == 1) * self.norb
+        ratio = (1 + update_constants[0] * green[i, i]) * (
+            1 + update_constants[1] * green[j, j]
+        ) - update_constants[0] * update_constants[1] * (green[i, j] * green[j, i])
+        return ratio
 
     @partial(jit, static_argnums=0)
     def _update_green(

@@ -75,7 +75,10 @@ class sampler:
             prop_data["weights"]
         )
         prop_data = prop.orthonormalize_walkers(prop_data)
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        if isinstance(trial, sum_state):
+            prop_data["overlaps"], _ = trial.calc_overlap(prop_data["walkers"], wave_data)
+        else:
+            prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         energy_samples = jnp.real(
             trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
         )
@@ -140,7 +143,10 @@ class sampler:
             _block_scan_wrapper, prop_data, None, length=self.n_ene_blocks
         )
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        if isinstance(trial, sum_state):
+            prop_data["overlaps"], _ = trial.calc_overlap(prop_data["walkers"], wave_data)
+        else:
+            prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         return prop_data, (block_energy, block_weight)
 
     @partial(jit, static_argnums=(0, 3, 4))
@@ -328,8 +334,10 @@ class sampler:
     ) -> Tuple[jax.Array, dict]:
         def _sr_block_scan_wrapper(x, y):
             return self._sr_block_scan(x, y, ham_data, prop, trial, wave_data)
-
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        if isinstance(trial, sum_state):
+            prop_data["overlaps"], _ = trial.calc_overlap(prop_data["walkers"], wave_data)
+        else:
+            prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["n_killed_walkers"] = 0
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
         prop_data, (block_energy, block_weight) = lax.scan(
