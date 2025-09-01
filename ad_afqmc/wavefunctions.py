@@ -2931,30 +2931,35 @@ class UCISD(wave_function_auto):
         ci2AB = wave_data["ci2AB"]
 
         Atrial, Btrial = (
-            wave_data["mo_coeff"][0][:,:noccA],
-            wave_data["mo_coeff"][1][:,:noccB],
+            wave_data["mo_coeff"][0][:, :noccA],
+            wave_data["mo_coeff"][1][:, :noccB],
         )
-        bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
+        bra = jnp.block([[Atrial, 0 * Btrial], [0 * Atrial, Btrial]])
 
-        walker_ = jnp.vstack([walker[:self.norb], wave_data["mo_coeff"][1].T.dot(walker[self.norb:, :])]
-        ) # put walker_dn in the basis of alpha reference
+        walker_ = jnp.vstack(
+            [
+                walker[: self.norb],
+                wave_data["mo_coeff"][1].T.dot(walker[self.norb :, :]),
+            ]
+        )  # put walker_dn in the basis of alpha reference
         ovlpMat = bra.T.conj() @ walker_
 
         gf = (walker_ @ jnp.linalg.inv(ovlpMat) @ bra.T.conj()).T
         gfA, gfB = (
-            gf[:self.nelec[0],:self.norb],
-            gf[self.norb:self.norb+self.nelec[1],self.norb:],
+            gf[: self.nelec[0], : self.norb],
+            gf[self.norb : self.norb + self.nelec[1], self.norb :],
         )
         gfAB, gfBA = (
-            gf[:self.nelec[0],self.norb:],
-            gf[self.norb:self.norb+self.nelec[1],:self.norb],
+            gf[: self.nelec[0], self.norb :],
+            gf[self.norb : self.norb + self.nelec[1], : self.norb],
         )
 
-        o0 = jnp.linalg.det( ovlpMat)
+        o0 = jnp.linalg.det(ovlpMat)
 
-        o0 = jnp.linalg.det( bra.T.conj() @ walker)
-        o1 = jnp.einsum("ia,ia", ci1A, gfA[:, noccA:]) \
-            + jnp.einsum("ia,ia", ci1B, gfB[:, noccB:])
+        o0 = jnp.linalg.det(bra.T.conj() @ walker)
+        o1 = jnp.einsum("ia,ia", ci1A, gfA[:, noccA:]) + jnp.einsum(
+            "ia,ia", ci1B, gfB[:, noccB:]
+        )
 
         # AA
         o2 = jnp.einsum("iajb, ia, jb", ci2AA, gfA[:, noccA:], gfA[:, noccA:])
