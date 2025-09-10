@@ -561,12 +561,13 @@ def _run_equilibration(
         )
 
         comm.Barrier()
-        if rank == 0:
+        if rank == 0: 
             if n % (max(sampler_eq.n_blocks // 5, 1)) == 0:
                 print(
                     f"# {n:>10}      {block_weight_n[0]:<20.9e} {block_energy_n[0]:<20.9e} {time.time() - init:<10.2e} ",
                     flush=True,
                 )
+                print(f"pop_control_ene_shift: {prop_data['pop_control_ene_shift']}")
                 # print(
                 #    f"# {n:5d}      {block_energy_n[0]:.9e}     {time.time() - init:.2e} ",
                 #    flush=True,

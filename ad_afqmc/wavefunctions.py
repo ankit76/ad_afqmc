@@ -477,7 +477,10 @@ class wave_function_cpmc(wave_function):
     
     @singledispatchmethod
     def calc_overlap_ratio(
-        self, green, update_indices: jax.Array, update_constants: jax.Array
+            self, 
+            green: jax.Array, 
+            update_indices: jax.Array, 
+            update_constants: jax.Array
     ) -> jax.Array:
         """Calculate the overlap ratio.
 
@@ -496,28 +499,26 @@ class wave_function_cpmc(wave_function):
             self, 
             green: jax.Array, 
             update_indices: jax.Array, 
-            update_constants: jax.Array
+            update_constants: jax.Array,
+            overlaps: Union[jax.Array, None] = None, 
+            coeffs: Union[jax.Array,  None] = None
     ) -> jax.Array:
-        return vmap(self._calc_overlap_ratio, in_axes=(0, None, None))(
-            green, update_indices, update_constants
+        if (overlaps is not None) and (coeffs is not None):
+            return vmap(self._calc_overlap_ratio, in_axes=(0, 0, None, None, None))(
+                green, overlaps, coeffs, update_indices, update_constants
         )
 
-    @calc_overlap_ratio.register
-    def _(
-            self, 
-            greens: jax.Array, 
-            overlaps: jax.Array, 
-            coeffs: jax.Array, 
-            update_indices: jax.Array, 
-            update_constants: jax.Array
-    ) -> jax.Array:
-        return vmap(self._calc_overlap_ratio, in_axes=(0, 0, None, None, None))(
-            greens, overlaps, coeffs, update_indices, update_constants
-        )
+        else:
+            return vmap(self._calc_overlap_ratio, in_axes=(0, None, None))(
+                green, update_indices, update_constants
+            )
 
     @partial(jit, static_argnums=0)
     def _calc_overlap_ratio(
-            self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
+            self, 
+            green: jax.Array, 
+            update_indices: jax.Array, 
+            update_constants: jax.Array
     ) -> jax.Array:
         """Overlap ratio for a single walker."""
         raise NotImplementedError("Overlap ratio not defined")
@@ -525,7 +526,7 @@ class wave_function_cpmc(wave_function):
     @singledispatchmethod
     def update_green(
         self,
-        green,
+        green: jax.Array,
         ratios: jax.Array,
         update_indices: jax.Array,
         update_constants: jax.Array,

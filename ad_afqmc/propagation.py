@@ -790,9 +790,10 @@ class propagator_cpmc(propagator_unrestricted):
         prop_data["weights"] = jnp.where(
             prop_data["weights"] > 100.0, 0.0, prop_data["weights"]
         )
-        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"] - 0.1 * jnp.array(
+        prop_data["pop_control_ene_shift"] = (
+            prop_data["e_estimate"] - 0.1 * jnp.array(
             jnp.log(jnp.sum(prop_data["weights"]) / self.n_walkers) / self.dt
-        )
+        ))
         return prop_data
 
 
