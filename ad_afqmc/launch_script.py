@@ -313,14 +313,32 @@ def set_trial(
             )
 
     if options.get("symmetry_projector", None) == "s2":
+        from numpy.polynomial.legendre import leggauss
+
+        # Gauss-Legendre
+        #
+        # \int_0^\pi sin(\beta) f(\beta) \dd\beta
+        # x = \cos(beta), \dd x = -\sin(beta)
+        # = \int_{-1}^{1} f(\arccos(x)) \dd x
+        #\approx \sum_{i=1}^n w_i f(\arccos(x_i))
+        #
         S = options["target_spin"] / 2.0
         Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
-        ngrid = 8  ## this needs to be in the input###*****
-        beta_vals = np.linspace(0, np.pi, ngrid, endpoint=False)
-        wigner = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
-            S, Sz, Sz, beta_vals
-        )
-        wave_data["wigner"] = (S, Sz, wigner * jnp.sin(beta_vals), beta_vals)
+        ngrid = options.get("ngrid")  # number of points for the quadrature
+
+        # Gauss–Legendre
+        x, w = leggauss(ngrid)
+        beta_vals = jnp.arccos(x)  # map [-1, 1] to [0, pi]
+
+        # Wigner small-d matrix elements for each point
+        wigner_d = jax.vmap(
+            Wigner_small_d.wigner_small_d, (None, None, None, 0)
+        )(S, Sz, Sz, beta_vals)
+
+        # Combine
+        prefactor = 0.5 * (2*S + 1)
+        wigner = prefactor * w * wigner_d
+        wave_data["wigner"] = (S, Sz, wigner, beta_vals)
 
     # Set up trial wavefunction based on specified type
     if options_trial == "rhf":
