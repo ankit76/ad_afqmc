@@ -1475,7 +1475,6 @@ def afqmc(
         )
         return e_afqmc, e_err_afqmc
 
-
 def fp_afqmc(
     ham_data: dict,
     ham: hamiltonian.hamiltonian,
@@ -1522,10 +1521,10 @@ def fp_afqmc(
 
     avg_energy = np.zeros((sampler.n_blocks)) + 0.0j
     avg_weight = np.zeros((sampler.n_blocks)) + 0.0j
+
     for n in range(
         sampler.n_ene_blocks
     ):  # hacking this variable for number of trajectories
-
         # initialize a new set of determinants every block
         # if the ket is CCSD that is being sampled then good to sample it many times
         if n != 0:
@@ -1553,7 +1552,8 @@ def fp_afqmc(
         total_weight[n, 0] = jnp.sum(prop_data["weights"])
 
         (
-            prop_data_tr,
+            ov,
+            abs_ov,
             energy_samples,
             weights,
             prop_data["key"],
@@ -1562,22 +1562,23 @@ def fp_afqmc(
         )
         # global_block_weights[n] = weights[0]
         # global_block_energies[n] = energy_samples[0]
-        avg_sign = jax.vmap(lambda ov: jnp.sum(ov) / jnp.sum(jnp.abs(ov)))(
-            prop_data_tr["overlaps"]
-        )
+
         total_energy[n, 1:] = energy_samples
         total_weight[n, 1:] = weights
-        total_sign[n, 1:] = avg_sign
+        total_sign[n, 1:] = ov / abs_ov
 
         avg_weight += weights
         avg_energy += weights * (energy_samples - avg_energy) / avg_weight
-        if options["save_walkers"] == True:
-            if n > 0:
-                with open(f"prop_data_{rank}.bin", "ab") as f:
-                    pickle.dump(prop_data_tr, f)
-            else:
-                with open(f"prop_data_{rank}.bin", "wb") as f:
-                    pickle.dump(prop_data_tr, f)
+
+        # Requieres to revert the changes done to propagate_free and block_scan_free
+        # to return a list of n_blocks * n_walkers walkers.
+        #if options["save_walkers"] == True:
+        #    if n > 0:
+        #        with open(f"prop_data_{rank}.bin", "ab") as f:
+        #            pickle.dump(prop_data_tr, f)
+        #    else:
+        #        with open(f"prop_data_{rank}.bin", "wb") as f:
+        #            pickle.dump(prop_data_tr, f)
 
         # if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
         comm.Barrier()
