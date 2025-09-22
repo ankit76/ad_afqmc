@@ -69,9 +69,9 @@ def afqmc_energy(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    Seed = seed + rank
+    local_seed = seed + rank
     prop_data = propagator.init_prop_data(
-        trial, wave_data, ham_data, Seed, init_walkers
+        trial, wave_data, ham_data, local_seed, init_walkers
     )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
@@ -451,9 +451,9 @@ def afqmc_observable(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    Seed = seed + rank
+    local_seed = seed + rank
     prop_data = propagator.init_prop_data(
-        trial, wave_data, ham_data, Seed, init_walkers
+        trial, wave_data, ham_data, local_seed, init_walkers
     )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
