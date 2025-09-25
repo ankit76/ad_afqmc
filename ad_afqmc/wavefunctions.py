@@ -2530,51 +2530,208 @@ class ccsd(wave_function):
     def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
         return jnp.linalg.det(wave_data["mo_coeff"].T.conj() @ walker) ** 2
 
+    def hs_op(self, wave_data: dict, t2):
+
+        nO = self.nocc
+        nV = self.nvirt
+        nex = nO*nV
+
+        assert t2.shape == (nO, nO, nV, nV)
+
+        # T2 = LL^T
+        t2 = np.einsum("ijab->aibj", t2)
+        t2 = t2.reshape(nex, nex)
+        e_val, e_vec = np.linalg.eigh(t2)
+        L = e_vec @ np.diag(np.sqrt(e_val+0.0j))
+        assert abs(np.linalg.norm(t2 - L @ L.T)) < 1e-12
+
+        # Summation on the left
+        L = L.T.reshape(nex, nV, nO)
+
+        wave_data["T2_L"] = L
+
+        return wave_data
+
     def get_init_walkers(
         self, wave_data: dict, n_walkers: int, walker_type: str
     ) -> walker_batch:
 
-        ops = (
-            jnp.transpose(
-                jnp.tile(wave_data["T1"], n_walkers).reshape(
-                    (self.nvirt, n_walkers, self.nocc)
-                ),
-                (1, 0, 2),
-            )
-            + 0.0j
-        )
+        nO, nV = self.nocc, self.nvirt
+        n = nO+nV
+        nex = nO*nV
+
+        t1 = wave_data["t1"]
+
+        C_occ, C_vir = np.split(wave_data["mo_coeff"], [nO], axis=1)
+
+        # e^T1
+        e_t1 = t1.T + 0.0j
+        ops = jnp.array([e_t1] * n_walkers)
+
+        L = wave_data["T2_L"]
 
         wave_data["key"], subkey = random.split(wave_data["key"])
         fields = random.normal(
             subkey,
             shape=(
                 n_walkers,
-                wave_data["hs_ops"].shape[0],
+                L.shape[0],
             ),
         )
-        ops += jnp.einsum("ij,jkl->ikl", fields, wave_data["hs_ops"])
 
-        walkers = (
-            jnp.transpose(
-                jnp.tile(jnp.eye(self.norb, self.nocc), n_walkers).reshape(
-                    (self.norb, n_walkers, self.nocc)
-                ),
-                (1, 0, 2),
-            )
-            + 0.0j
-        )
+        # e^{T1+T2}
+        ops += jnp.einsum("wg,gai->wai", fields, L)
+
+        # Initial walkers
+        rdm1 = self.get_rdm1(wave_data)
+        natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
+
+        walkers = np.array([natorbs_up + 0.0j] * n_walkers)
+        identity = np.array([np.identity(n) + 0.0j] * n_walkers)
+
+        # e^{T1+T2} \ket{\phi}
+        walkers = (identity + np.einsum("pa,wai,iq -> wpq", C_vir, ops, C_occ.T)) @ walkers
+        walkers = jnp.array(walkers)
 
         walkers = RHFWalkers(
-            walkers.at[:, self.nocc :, : self.nocc].set(
-                walkers[:, self.nocc :, : self.nocc] + ops
-            )
+            walkers
         )
-
         return walkers
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
+@dataclass
+class uccsd(wave_function):
+    """This is meant to be used in free projection as the initial state.
+    The wave_data need to store the coefficient T1(ia) and T2(ia jb)
+    """
+
+    norb: int
+    nelec: Tuple[int, int]
+    nocc: Tuple[int, int]
+    nvirt: Tuple[int, int]
+    n_chunks: int = 1
+    mixed_real_dtype: DTypeLike = jnp.float64
+    mixed_complex_dtype: DTypeLike = jnp.complex128
+    memory_mode: Literal["high", "low"] = "low"
+    _mixed_real_dtype_testing: DTypeLike = jnp.float32
+    _mixed_complex_dtype_testing: DTypeLike = jnp.complex64
+
+    def hs_op(self, wave_data: dict, t2aa, t2ab, t2bb) -> dict:
+        nOa, nOb = self.nocc
+        nVa, nVb = self.nvirt
+        n = self.norb
+
+        # Number of excitations
+        nex_a = nOa*nVa
+        nex_b = nOb*nVb
+
+        assert n == nOb + nVb
+        assert t2aa.shape == (nOa, nOa, nVa, nVa)
+        assert t2ab.shape == (nOa, nOb, nVa, nVb)
+        assert t2bb.shape == (nOb, nOb, nVb, nVb)
+
+        # t2(i,j,a,b) -> t2(ai,bj)
+        t2aa = np.einsum("ijab->aibj", t2aa)
+        t2ab = np.einsum("ijab->aibj", t2ab)
+        t2bb = np.einsum("ijab->aibj", t2bb)
+
+        t2aa = t2aa.reshape(nex_a, nex_a)
+        t2ab = t2ab.reshape(nex_a, nex_b)
+        t2bb = t2bb.reshape(nex_b, nex_b)
+
+        # Symmetric t2 =
+        # t2aa/2 t2ab
+        # t2ab^T t2bb
+        t2 = np.zeros((nex_a+nex_b, nex_a+nex_b))
+        t2[:nex_a,:nex_a] = 0.5 * t2aa
+        t2[nex_a:,:nex_a] = t2ab.T
+        t2[:nex_a,nex_a:] = t2ab
+        t2[nex_a:,nex_a:] = 0.5 * t2bb
+
+        # t2 = LL^T
+        e_val, e_vec = np.linalg.eigh(t2)
+        L = e_vec @ np.diag(np.sqrt(e_val+0.0j))
+        assert abs(np.linalg.norm(t2 - L @ L.T)) < 1e-12
+
+        # alpha/beta operators for HS
+        # Summation on the left to have a list of operators
+        La = L[:nex_a,:]
+        Lb = L[nex_a:,:]
+        La = La.T.reshape(nex_a+nex_b,nVa,nOa)
+        Lb = Lb.T.reshape(nex_a+nex_b,nVb,nOb)
+
+        wave_data["T2_La"] = La
+        wave_data["T2_Lb"] = Lb
+
+        return wave_data
+
+    def get_init_walkers(
+        self, wave_data: dict, n_walkers: int, walker_type: str
+    ) -> walker_batch:
+
+        nOa, nOb = self.nocc
+        nVa, nVb = self.nvirt
+        n = self.norb
+
+        nex_a = nOa*nVa
+        nex_b = nOb*nVb
+
+        t1a = wave_data["t1a"]
+        t1b = wave_data["t1b"]
+
+        Ca_occ, Ca_vir = np.split(wave_data["mo_coeff"][0], [nOa], axis=1)
+        Cb_occ, Cb_vir = np.split(wave_data["mo_coeff"][1], [nOb], axis=1)
+
+        # e^T1
+        e_t1a = t1a.T + 0.0j
+        e_t1b = t1b.T + 0.0j
+
+        ops_a = np.array([e_t1a] * n_walkers)
+        ops_b = np.array([e_t1b] * n_walkers)
+
+        La = wave_data["T2_La"]
+        Lb = wave_data["T2_Lb"]
+
+        wave_data["key"], subkey = random.split(wave_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(
+                n_walkers,
+                La.shape[0],
+            ),
+        )
+
+        # e^{T1+T2}
+        ops_a += np.einsum("wg,gai->wai", fields, La)
+        ops_b += np.einsum("wg,gai->wai", fields, Lb)
+
+        # Initial walkers
+        rdm1 = self.get_rdm1(wave_data)
+        natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, :nOa]
+        natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, :nOb]
+
+        walkers_a = np.array([natorbs_up + 0.0j] * n_walkers)
+        walkers_b = np.array([natorbs_dn + 0.0j] * n_walkers)
+
+        id_a = np.array([np.identity(n) + 0.0j] * n_walkers)
+        id_b = np.array([np.identity(n) + 0.0j] * n_walkers)
+
+        # e^{T1+T2} \ket{\phi}
+        walkers_a = (id_a + np.einsum("pa,wai,iq -> wpq", Ca_vir, ops_a, Ca_occ.T)) @ walkers_a
+        walkers_b = (id_b + np.einsum("pa,wai,iq -> wpq", Cb_vir, ops_b, Cb_occ.T)) @ walkers_b
+
+        walkers_a = jnp.array(walkers_a)
+        walkers_b = jnp.array(walkers_b)
+
+        walkers = UHFWalkers(
+            [walkers_a, walkers_b]
+        )
+        return walkers
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
 
 @dataclass
 class gcisd_complex(wave_function_auto):
@@ -4051,7 +4208,6 @@ class ucisd(wave_function):
         # n_ob (  5    6    7    8  )
         #
         green = (walker_ @ jnp.linalg.inv(bra.T.conj() @ walker_)).T
-        #jax.debug.print("green\n {}", green)
 
         # (1, 2)
         green_aa=  green[:n_oa, :n_mo]
@@ -4127,32 +4283,25 @@ class ucisd(wave_function):
         # 1 body energy
         # ref
         e1_0 = jnp.einsum("pq,pq->", rot_h1, green)
-        #jax.debug.print("e1_0 {}", e1_0)
 
         # single excitations
         #e1_1 = jnp.einsum("pq,ia,pq,ia->", rot_h1, ci1.conj(), green, green_occ)
         e1_1_0 = jnp.einsum("pq,ia,pq,ia->", rot_h1, ci1, green, green_occ)
-        #jax.debug.print("e1_1_0 {}", e1_1_0)
 
         #e1_1 -= jnp.einsum("pq,ia,iq,pa->", h1, ci1.conj(), green, greenp)
         e1_1_1 = -jnp.einsum("pq,ia,iq,pa->", h1, ci1, green, greenp)
-        #jax.debug.print("e1_1_1 {}", e1_1_1)
 
         e1_1 = e1_1_0 + e1_1_1
-        #jax.debug.print("e1_1 {}", e1_1)
 
         ## double excitations
         #e1_2 = 2.0 * jnp.einsum("rq,rq,iajb,ia,jb", rot_h1, green, ci2.conj(), green_occ, green_occ)
         e1_2_0 = 2.0 * jnp.einsum("rq,rq,iajb,ia,jb", rot_h1, green, ci2, green_occ, green_occ)
-        #jax.debug.print("e1_2_0 {}", e1_2_0)
 
         #e1_2 -= 4.0 * jnp.einsum("pq,iajb,pa,iq,jb", h1, ci2.conj(), greenp, green, green_occ)
         e1_2_1 = - 4.0 * jnp.einsum("pq,iajb,pa,iq,jb", h1, ci2.conj(), greenp, green, green_occ)
-        #jax.debug.print("e1_2_1 {}", e1_2_1)
 
         e1_2 = e1_2_0 + e1_2_1
         e1_2 *= 0.25
-        #jax.debug.print("e1_2 {}", e1_2)
 
         # 2 body energy
         # ref
@@ -4160,7 +4309,6 @@ class ucisd(wave_function):
         c = vmap(jnp.trace)(f)
         exc = jnp.sum(vmap(lambda x: x * x.T)(f))
         e2_0 = (jnp.sum(c * c) - exc) / 2.0
-        #jax.debug.print("e2_0 {}", e2_0)
 
         # single excitations
         #e2_1 = jnp.einsum( "gpr,gqs,ia,ir,ps,qa->", chol[:, :nocc, :], chol[:, :, :], ci1.conj(), green, green, greenp)
@@ -4182,7 +4330,6 @@ class ucisd(wave_function):
         e2_1 -= jnp.einsum( "gpr,gqs,ia,qr,ia,ps->", rot_chol, rot_chol, ci1, green, green_occ, green)
 
         e2_1 *= 0.5
-        #jax.debug.print("e2_1 {}", e2_1)
 
         ## double excitations
         #e2_2 = 2.0 * jnp.einsum("gpr,gqs,iajb,ir,js,pa,qb->", chol, chol, ci2.conj(), green, green, greenp, greenp)
@@ -4211,11 +4358,8 @@ class ucisd(wave_function):
         e2_2 -= 2.0 * jnp.einsum("gpr,gqs,iajb,qr,ps,ia,jb->", rot_chol, rot_chol, ci2, green, green, green_occ, green_occ)
 
         e2_2 *= 0.5 * 0.25
-        #jax.debug.print("e2_2 {}", e2_2)
 
         e = e1_0 + e1_1 + e1_2 + e2_0 + e2_1 + e2_2
-        #jax.debug.print("u e1 {} {} {}", e1_0, e1_1, e1_2)
-        #jax.debug.print("u e2 {} {} {}", e2_0, e2_1, e2_2)
         o1 = jnp.einsum("ia,ia", ci1A, green_occ_aa) \
         + jnp.einsum("ia,ia", ci1B, green_occ_bb)
         o2 =  jnp.einsum("iajb, ia, jb", ci2AA, green_occ_aa, green_occ_aa)
