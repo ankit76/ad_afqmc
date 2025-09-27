@@ -1042,24 +1042,55 @@ def _analyze_observable_results(
             avg_rdm1 = np.einsum(
                 "i,i...->...", clean_weights_rdm, clean_rdm1s
             ) / np.sum(clean_weights_rdm)
-            errors_rdm1 = np.array(
-                list(map(np.linalg.norm, clean_rdm1s - avg_rdm1))
-            ) / np.linalg.norm(avg_rdm1)
-
-            print(f"# RDM noise:", flush=True)
-            rdm_noise, rdm_noise_err = stat_utils.blocking_analysis(
-                clean_weights_rdm, errors_rdm1, neql=0, printQ=True
+            
+            # Estimate errors.
+            v1 = clean_weights_rdm.sum()
+            v2 = (clean_weights_rdm**2).sum()
+            nsamp = clean_rdm1s.shape[0]
+            errors_rdm1 = (
+                np.multiply(
+                    clean_weights_rdm.reshape(nsamp, 1, 1, 1), 
+                    (clean_rdm1s - avg_rdm1) ** 2
+                ).sum(axis=0)
+                / (v1 - v2 / v1)
+                / (nsamp - 1)
+            ) ** 0.5
+            
+            sd_rdm1 = np.sqrt(
+                np.sum((clean_rdm1s - avg_rdm1)**2, axis=0) / (nsamp - 1)
             )
+            
+            print(f"# RDM1:", flush=True)
+            print(f"# Mean: {np.mean(avg_rdm1):.3e}", flush=True)
+            print(f"# SD: {np.std(avg_rdm1):.3e}", flush=True)
+            print(f"# Max: {np.amax(avg_rdm1):.3e}", flush=True)
+
+            print(f"\n# RDM1 errors:", flush=True)
+            print(f"# Mean: {np.mean(errors_rdm1):.3e}", flush=True)
+            print(f"# SD: {np.std(errors_rdm1):.3e}", flush=True)
+            print(f"# Max: {np.amax(errors_rdm1):.3e}", flush=True)
+
+            # Estimate noise from the relative L2 distance of each sample.
+            #print(f"# RDM noise:", flush=True)
+            # Compute relative L2 distance of each rdm1 sample from the average.
+            #errors_rdm1 = np.array(
+            #    list(map(np.linalg.norm, clean_rdm1s - avg_rdm1))
+            #) / np.linalg.norm(avg_rdm1)
+            #rdm_noise, rdm_noise_err = stat_utils.blocking_analysis(
+            #    clean_weights_rdm, errors_rdm1, neql=0, printQ=True
+            #)
+            #rdm1_noise, rdm1_noise_err = stat_utils.blocking_analysis(
+            #    clean_weights_rdm, clean_rdm1s, neql=0, printQ=False
+            #)
 
             # Save RDM1 data
             np.savez(tmpdir + "/rdm1_afqmc.npz", 
                      rdm1_avg=avg_rdm1,
                      rdm1_err=errors_rdm1, 
-                     rdm1_noise=rdm_noise,
-                     rdm1_noise_err=rdm_noise_err)
+                     rdm1_sd=sd_rdm1)
             observable_data["rdm1"] = avg_rdm1
-            observable_data["rdm1_noise"] = rdm_noise
-            observable_data["rdm1_noise_err"] = rdm_noise_err
+            #observable_data["rdm1_noise"] = rdm1_noise
+            #observable_data["rdm1_noise_err"] = rdm1_noise_err
 
         elif ad_mode == "2rdm" and clean_rdm2s is not None:
             # Calculate average RDM2

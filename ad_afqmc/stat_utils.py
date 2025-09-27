@@ -4,7 +4,6 @@ import numpy as np
 
 print = partial(print, flush=True)
 
-
 def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=False):
     nSamples = weights.shape[0] - neql
     weights = weights[neql:]
@@ -50,6 +49,69 @@ def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=Fal
             print(f"# Stocahstic error estimate: {plateauError:.6e}\n#")
 
     return meanEnergy, plateauError
+
+"""
+def blocking_analysis(weights, obs, neql=0, printQ=False, writeBlockedQ=False):
+    ndim = obs.ndim
+    shape = obs.shape
+    nSamples = weights.shape[0] - neql
+    weights = weights[neql:].reshape(nSamples, -1)
+    print(weights.shape)
+    obs = obs[neql:].reshape(nSamples, -1) # Flatten array.
+    weightedObs = np.multiply(weights, obs)
+    meanObs = weightedObs.sum(axis=0) / weights.sum(axis=0)
+    if ndim > 1: meanObs = meanObs.reshape(shape[1:])
+    if printQ and (ndim == 1):
+        print(f"#\n# Mean: {meanObs[0]:.8e}")
+        print("# Block size    # of blocks         Mean                Error")
+    blockSizes = np.array([1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 1000, 10000])
+    prevError = np.zeros(obs.shape[-1])
+    plateauError = [None] * obs.shape[-1]
+
+    for i in blockSizes[blockSizes < nSamples / 2.0]:
+        nBlocks = nSamples // i
+        blockedWeights = np.zeros((nBlocks, 1))
+        blockedObs = np.zeros((nBlocks, obs.shape[-1]))
+        for j in range(nBlocks):
+            blockedWeights[j] = weights[j * i : (j + 1) * i].sum()
+            blockedObs[j] = (
+                weightedObs[j * i : (j + 1) * i].sum(axis=0) / blockedWeights[j]
+            )
+        v1 = blockedWeights.sum()
+        v2 = (blockedWeights**2).sum()
+        mean = np.multiply(blockedWeights, blockedObs).sum(axis=0) / v1
+        error = (
+            np.multiply(blockedWeights, (blockedObs - mean) ** 2).sum(axis=0)
+            / (v1 - v2 / v1)
+            / (nBlocks - 1)
+        ) ** 0.5
+        if writeBlockedQ:
+            np.savetxt(
+                f"samples_blocked_{i}.dat",
+                np.stack((blockedWeights, blockedObs)).T,
+            )
+        
+            if printQ and (ndim == 1):
+                print(f"  {i:5d}           {nBlocks:6d}       {mean[0]:.8e}       {error[0]:.6e}")
+        
+        for i in range(blockedObs.shape[-1]):
+            error_i = error[i]
+            prevError_i = prevError[i]
+            plateauError_i = plateauError[i]
+
+            if (error_i < 1.05 * prevError_i) and (plateauError_i is None):
+                plateauError[i] = max(error_i, prevError_i)
+
+            prevError[i] = error_i
+
+    if printQ:
+        if (plateauError[0] is not None) and (ndim == 1):
+            print(f"# Stocahstic error estimate: {plateauError[0]:.6e}\n#")
+    
+    print(plateauError)
+    if ndim > 1: return meanObs, np.array(plateauError).reshape(shape[1:])
+    return meanObs[0], plateauError[0]
+"""
 
 
 def reject_outliers(data, obs, m=10.0, min_threshold=1e-5):
