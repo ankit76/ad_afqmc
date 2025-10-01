@@ -408,9 +408,11 @@ def set_trial(
     elif options_trial == "ccsd":
         assert options["walker_type"] == "restricted"
         try:
-            amplitudes = np.load(directory + "/amplitudes.npz")
+            amplitudes = jnp.load(directory + "/amplitudes.npz")
+
             t1 = jnp.array(amplitudes["t1"])
-            t2 = jnp.array(amplitudes["t1"])
+            t2 = jnp.array(amplitudes["t2"])
+
             nocc, nvirt = t1.shape
 
             trial_wave_data = {
@@ -437,18 +439,24 @@ def set_trial(
                 mixed_complex_dtype=mixed_complex_dtype,
                 memory_mode=options["memory_mode"],
             )
-            wave_data = trial.hs_op(wave_data, amplitudes["t2"])
+            wave_data = trial.hs_op(wave_data, t2)
         except:
             raise ValueError("Trial specified as ccsd, but amplitudes.npz not found.")
 
     elif options_trial == "uccsd":
         assert options["walker_type"] == "unrestricted"
         try:
-            amplitudes = np.load(directory + "/amplitudes.npz")
+            amplitudes = jnp.load(directory + "/amplitudes.npz")
+
+            t1a = jnp.array(amplitudes["t1a"])
+            t1b = jnp.array(amplitudes["t1b"])
+            t2aa = jnp.array(amplitudes["t2aa"])
+            t2ab = jnp.array(amplitudes["t2ab"])
+            t2bb = jnp.array(amplitudes["t2bb"])
 
             trial_wave_data = {
-                "t1a": amplitudes["t1a"],
-                "t1b": amplitudes["t1b"],
+                "t1a": t1a,
+                "t1b": t1b,
             }
 
             nOa, nVa = amplitudes["t1a"].shape
@@ -481,9 +489,9 @@ def set_trial(
             )
 
             wave_data = trial.hs_op(wave_data,
-                amplitudes["t2aa"],
-                amplitudes["t2ab"],
-                amplitudes["t2bb"],
+                t2aa,
+                t2ab,
+                t2bb,
             )
         except:
             raise ValueError("Trial specified as uccsd, but amplitudes.npz not found.")

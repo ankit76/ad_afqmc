@@ -1527,23 +1527,23 @@ def fp_afqmc(
     ):  # hacking this variable for number of trajectories
         # initialize a new set of determinants every block
         # if the ket is CCSD that is being sampled then good to sample it many times
-        if n != 0:
-            wave_data_ket["key"] = jax.random.PRNGKey(local_seed + n)
-            prop_data["walkers"] = trial_ket.get_init_walkers(
-                wave_data_ket,
-                propagator.n_walkers,
-                (
-                    "unrestricted"
-                    if isinstance(prop_data["walkers"], UHFWalkers)
-                    else "restricted"
-                ),
-            )
 
-            energy_samples = jnp.real(
-                trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
-            )
-            e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
-            prop_data["e_estimate"] = e_estimate
+        wave_data_ket["key"] = jax.random.PRNGKey(local_seed + n)
+        prop_data["walkers"] = trial_ket.get_init_walkers(
+            wave_data_ket,
+            propagator.n_walkers,
+            (
+                "unrestricted"
+                if isinstance(prop_data["walkers"], UHFWalkers)
+                else "restricted"
+            ),
+        )
+
+        energy_samples = jnp.real(
+            trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
+        )
+        e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
+        prop_data["e_estimate"] = e_estimate
 
         # Just to print
         energy_samples = jnp.real(

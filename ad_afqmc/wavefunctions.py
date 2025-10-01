@@ -2539,11 +2539,11 @@ class ccsd(wave_function):
         assert t2.shape == (nO, nO, nV, nV)
 
         # T2 = LL^T
-        t2 = np.einsum("ijab->aibj", t2)
+        t2 = jnp.einsum("ijab->aibj", t2)
         t2 = t2.reshape(nex, nex)
-        e_val, e_vec = np.linalg.eigh(t2)
-        L = e_vec @ np.diag(np.sqrt(e_val+0.0j))
-        assert abs(np.linalg.norm(t2 - L @ L.T)) < 1e-12
+        e_val, e_vec = jnp.linalg.eigh(t2)
+        L = e_vec @ jnp.diag(np.sqrt(e_val+0.0j))
+        assert abs(jnp.linalg.norm(t2 - L @ L.T)) < 1e-12
 
         # Summation on the left
         L = L.T.reshape(nex, nV, nO)
@@ -2552,6 +2552,7 @@ class ccsd(wave_function):
 
         return wave_data
 
+    @partial(jax.jit, static_argnums=(0, 2, 3))
     def get_init_walkers(
         self, wave_data: dict, n_walkers: int, walker_type: str
     ) -> walker_batch:
@@ -2562,7 +2563,7 @@ class ccsd(wave_function):
 
         t1 = wave_data["t1"]
 
-        C_occ, C_vir = np.split(wave_data["mo_coeff"], [nO], axis=1)
+        C_occ, C_vir = jnp.split(wave_data["mo_coeff"], [nO], axis=1)
 
         # e^T1
         e_t1 = t1.T + 0.0j
@@ -2580,17 +2581,17 @@ class ccsd(wave_function):
         )
 
         # e^{T1+T2}
-        ops += jnp.einsum("wg,gai->wai", fields, L)
+        ops = ops + jnp.einsum("wg,gai->wai", fields, L)
 
         # Initial walkers
         rdm1 = self.get_rdm1(wave_data)
         natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
 
-        walkers = np.array([natorbs_up + 0.0j] * n_walkers)
-        identity = np.array([np.identity(n) + 0.0j] * n_walkers)
+        walkers = jnp.array([natorbs_up + 0.0j] * n_walkers)
+        identity = jnp.array([np.identity(n) + 0.0j] * n_walkers)
 
         # e^{T1+T2} \ket{\phi}
-        walkers = (identity + np.einsum("pa,wai,iq -> wpq", C_vir, ops, C_occ.T)) @ walkers
+        walkers = (identity + jnp.einsum("pa,wai,iq -> wpq", C_vir, ops, C_occ.T)) @ walkers
         walkers = jnp.array(walkers)
 
         walkers = RHFWalkers(
@@ -2633,9 +2634,9 @@ class uccsd(wave_function):
         assert t2bb.shape == (nOb, nOb, nVb, nVb)
 
         # t2(i,j,a,b) -> t2(ai,bj)
-        t2aa = np.einsum("ijab->aibj", t2aa)
-        t2ab = np.einsum("ijab->aibj", t2ab)
-        t2bb = np.einsum("ijab->aibj", t2bb)
+        t2aa = jnp.einsum("ijab->aibj", t2aa)
+        t2ab = jnp.einsum("ijab->aibj", t2ab)
+        t2bb = jnp.einsum("ijab->aibj", t2bb)
 
         t2aa = t2aa.reshape(nex_a, nex_a)
         t2ab = t2ab.reshape(nex_a, nex_b)
@@ -2651,9 +2652,9 @@ class uccsd(wave_function):
         t2[nex_a:,nex_a:] = 0.5 * t2bb
 
         # t2 = LL^T
-        e_val, e_vec = np.linalg.eigh(t2)
-        L = e_vec @ np.diag(np.sqrt(e_val+0.0j))
-        assert abs(np.linalg.norm(t2 - L @ L.T)) < 1e-12
+        e_val, e_vec = jnp.linalg.eigh(t2)
+        L = e_vec @ jnp.diag(np.sqrt(e_val+0.0j))
+        assert abs(jnp.linalg.norm(t2 - L @ L.T)) < 1e-12
 
         # alpha/beta operators for HS
         # Summation on the left to have a list of operators
@@ -2667,6 +2668,7 @@ class uccsd(wave_function):
 
         return wave_data
 
+    @partial(jax.jit, static_argnums=(0, 2, 3))
     def get_init_walkers(
         self, wave_data: dict, n_walkers: int, walker_type: str
     ) -> walker_batch:
@@ -2681,15 +2683,15 @@ class uccsd(wave_function):
         t1a = wave_data["t1a"]
         t1b = wave_data["t1b"]
 
-        Ca_occ, Ca_vir = np.split(wave_data["mo_coeff"][0], [nOa], axis=1)
-        Cb_occ, Cb_vir = np.split(wave_data["mo_coeff"][1], [nOb], axis=1)
+        Ca_occ, Ca_vir = jnp.split(wave_data["mo_coeff"][0], [nOa], axis=1)
+        Cb_occ, Cb_vir = jnp.split(wave_data["mo_coeff"][1], [nOb], axis=1)
 
         # e^T1
         e_t1a = t1a.T + 0.0j
         e_t1b = t1b.T + 0.0j
 
-        ops_a = np.array([e_t1a] * n_walkers)
-        ops_b = np.array([e_t1b] * n_walkers)
+        ops_a = jnp.array([e_t1a] * n_walkers)
+        ops_b = jnp.array([e_t1b] * n_walkers)
 
         La = wave_data["T2_La"]
         Lb = wave_data["T2_Lb"]
@@ -2704,23 +2706,23 @@ class uccsd(wave_function):
         )
 
         # e^{T1+T2}
-        ops_a += np.einsum("wg,gai->wai", fields, La)
-        ops_b += np.einsum("wg,gai->wai", fields, Lb)
+        ops_a = ops_a + jnp.einsum("wg,gai->wai", fields, La)
+        ops_b = ops_b + jnp.einsum("wg,gai->wai", fields, Lb)
 
         # Initial walkers
         rdm1 = self.get_rdm1(wave_data)
         natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, :nOa]
         natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, :nOb]
 
-        walkers_a = np.array([natorbs_up + 0.0j] * n_walkers)
-        walkers_b = np.array([natorbs_dn + 0.0j] * n_walkers)
+        walkers_a = jnp.array([natorbs_up + 0.0j] * n_walkers)
+        walkers_b = jnp.array([natorbs_dn + 0.0j] * n_walkers)
 
-        id_a = np.array([np.identity(n) + 0.0j] * n_walkers)
-        id_b = np.array([np.identity(n) + 0.0j] * n_walkers)
+        id_a = jnp.array([np.identity(n) + 0.0j] * n_walkers)
+        id_b = jnp.array([np.identity(n) + 0.0j] * n_walkers)
 
         # e^{T1+T2} \ket{\phi}
-        walkers_a = (id_a + np.einsum("pa,wai,iq -> wpq", Ca_vir, ops_a, Ca_occ.T)) @ walkers_a
-        walkers_b = (id_b + np.einsum("pa,wai,iq -> wpq", Cb_vir, ops_b, Cb_occ.T)) @ walkers_b
+        walkers_a = (id_a + jnp.einsum("pa,wai,iq -> wpq", Ca_vir, ops_a, Ca_occ.T)) @ walkers_a
+        walkers_b = (id_b + jnp.einsum("pa,wai,iq -> wpq", Cb_vir, ops_b, Cb_occ.T)) @ walkers_b
 
         walkers_a = jnp.array(walkers_a)
         walkers_b = jnp.array(walkers_b)
