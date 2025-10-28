@@ -619,7 +619,6 @@ class sum_state(wave_function):
         return hash(tuple(self.__dict__.values()))
 
 
-# we assume afqmc is performed in the rhf orbital basis
 @dataclass
 class rhf(wave_function):
     """Class for the restricted Hartree-Fock wave function.
