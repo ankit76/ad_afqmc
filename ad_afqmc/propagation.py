@@ -1187,9 +1187,17 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             e_estimate = jnp.array(jnp.sum(energy_samples) / self.n_walkers)
             prop_data["e_estimate"] = e_estimate
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
-        prop_data["overlaps"], prop_data["overlaps_i"] = trial.calc_overlap(
-            prop_data["walkers"], wave_data
-        )
+
+        try:
+            prop_data["overlaps"], prop_data["overlaps_i"] = trial.calc_overlap(
+                prop_data["walkers"], wave_data
+            )
+
+        except ValueError:
+            prop_data["overlaps"] = trial.calc_overlap(
+                prop_data["walkers"], wave_data
+            )
+
         prop_data["normed_overlaps"] = prop_data["overlaps"]
         prop_data["norms"] = jnp.ones(self.n_walkers) + 0.0j
 
@@ -1238,7 +1246,13 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         prop_data["walkers"][1] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
         )
-        overlaps_new, _ = trial.calc_overlap(prop_data["walkers"], wave_data)
+
+        try:
+            overlaps_new, _ = trial.calc_overlap(prop_data["walkers"], wave_data)
+
+        except ValueError:
+            overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
+
         prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
         prop_data["weights"] = jnp.where(
             prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
@@ -1259,9 +1273,17 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             new_walkers_0_dn = (
                 carry["walkers"][1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
             )
-            overlaps_new_0, _ = trial.calc_overlap(
-                [new_walkers_0_up, new_walkers_0_dn], wave_data
-            )
+
+            try:
+                overlaps_new_0, _ = trial.calc_overlap(
+                    [new_walkers_0_up, new_walkers_0_dn], wave_data
+                )
+
+            except ValueError:
+                overlaps_new_0 = trial.calc_overlap(
+                    [new_walkers_0_up, new_walkers_0_dn], wave_data
+                )
+
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
             carry["node_crossings"] += jnp.sum(jnp.array(ratio_0) == 0.0, dtype=jnp.int32)
@@ -1273,9 +1295,17 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
             new_walkers_1_dn = (
                 carry["walkers"][1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
             )
-            overlaps_new_1, _ = trial.calc_overlap(
-                [new_walkers_1_up, new_walkers_1_dn], wave_data
-            )
+
+            try:
+                overlaps_new_1, _ = trial.calc_overlap(
+                    [new_walkers_1_up, new_walkers_1_dn], wave_data
+                )
+
+            except ValueError:
+                overlaps_new_1 = trial.calc_overlap(
+                    [new_walkers_1_up, new_walkers_1_dn], wave_data
+                )
+
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
             carry["node_crossings"] += jnp.sum(jnp.array(ratio_1) == 0.0, dtype=jnp.int32)
@@ -1306,7 +1336,13 @@ class propagator_cpmc_slow(propagator_cpmc, propagator_unrestricted):
         prop_data["walkers"][1] = jnp.einsum(
             "ij,wjk->wik", ham_data["exp_h1"][1], prop_data["walkers"][1]
         )
-        overlaps_new, _ = trial.calc_overlap(prop_data["walkers"], wave_data)
+
+        try:
+            overlaps_new, _ = trial.calc_overlap(prop_data["walkers"], wave_data)
+
+        except ValueError:
+            overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
+        
         prop_data["weights"] *= (overlaps_new / prop_data["overlaps"]).real
         prop_data["weights"] = jnp.array(
             jnp.where(prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"])
