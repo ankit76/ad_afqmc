@@ -9,7 +9,15 @@ import jax.scipy as jsp
 import numpy as np
 from jax import dtypes, jvp, random, vjp
 
-from ad_afqmc import hamiltonian, wavefunctions, propagation, sampling, misc, stat_utils
+from ad_afqmc import (
+    hamiltonian, 
+    wavefunctions, 
+    propagation, 
+    sampling, 
+    misc, 
+    stat_utils,
+    io_utils
+)
 from ad_afqmc.wavefunctions import ghf
 
 print = partial(print, flush=True)
@@ -107,6 +115,7 @@ def afqmc_energy(
         sampler_eq,
         init,
         MPI,
+        tmpdir,
     )
 
     # Sampling phase
@@ -282,6 +291,7 @@ def afqmc_observable(
         sampler_eq,
         init,
         MPI,
+        tmpdir,
     )
 
     # Sampling phase
@@ -523,9 +533,17 @@ def _run_equilibration(
     sampler_eq: sampling.sampler,
     init: float,
     MPI: Any,
+    tmpdir: str = ".",
 ):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
+
+    # For saving.
+    if comm.rank == 0:
+        scalar_names = ['weight', 'energy']
+        h5_filename = tmpdir + '/samples_raw_eq'
+        io_utils.create_datasets(h5_filename, scalar_names, shape=(0,), maxshape=(None,))
+
     for n in range(1, sampler_eq.n_blocks + 1):
         block_energy_n, prop_data = sampler_eq.propagate_phaseless(
             ham, ham_data, propagator, prop_data, trial, wave_data
@@ -573,8 +591,10 @@ def _run_equilibration(
                 #    flush=True,
                 # )
         comm.Barrier()
-    return prop_data
+        io_utils.push(h5_filename, block_weight_n, 'weight')
+        io_utils.push(h5_filename, block_energy_n, 'energy')
 
+    return prop_data
 
 def _setup_rdm_operators(ad_mode, ham_data, ham, trial, wave_data):
     """Set up RDM operators based on AD mode"""

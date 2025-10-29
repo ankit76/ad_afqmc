@@ -34,8 +34,8 @@ def large_ci(ci, norb, nelec, tol=0.1, return_strs=True):
         occslstb = cistring._strs2occslst(strsb, norb)
         return list(zip(ci[addra,addrb], occslsta, occslstb))
 
-def get_fci_state(ci_coeffs, norb, nelec, ndets=None, tol=1e-4):
-    if ndets is None: ndets = int(ci_coeffs.size)
+def get_fci_state(ci_coeffs, norb, nelec, ndet=None, tol=1e-4):
+    if ndet is None: ndet = int(ci_coeffs.size)
     coeffs, occ_a, occ_b = zip(
         *large_ci(ci_coeffs, norb, nelec, tol=tol, return_strs=False)
     )
@@ -43,7 +43,7 @@ def get_fci_state(ci_coeffs, norb, nelec, ndets=None, tol=1e-4):
         *sorted(zip(coeffs, occ_a, occ_b), key=lambda x: -abs(x[0]))
     )
     state = {}
-    for i in range(min(ndets, len(coeffs))):
+    for i in range(min(ndet, len(coeffs))):
         det = [[0 for _ in range(norb)], [0 for _ in range(norb)]]
         for j in range(nelec[0]):
             det[0][occ_a[i][j]] = 1
@@ -52,7 +52,7 @@ def get_fci_state(ci_coeffs, norb, nelec, ndets=None, tol=1e-4):
         state[tuple(map(tuple, det))] = coeffs[i]
     return state
 
-def create_msd_from_casci(casci, fci_state, wave_data, copy=True, update=False, verbose=False):
+def create_msd_from_casci(casci, fci_state, _wave_data, update=False, verbose=False):
     # Create MSD state.
     mo_coeff = casci.mo_coeff
     nbsf = mo_coeff.shape[0]
@@ -71,13 +71,13 @@ def create_msd_from_casci(casci, fci_state, wave_data, copy=True, update=False, 
         nocc_b = np.array(ncore*(1,) + det[1] + nextern*(0,))
         if verbose: print(f'# {det} --> {nocc_a}, {nocc_b} : {fci_state[det]}')
 
-        wave_data_i = wave_data.copy()
+        wave_data_i = _wave_data.copy()
         wave_data_i['mo_coeff'] = [mo_coeff[:, nocc_a>0], mo_coeff[:, nocc_b>0]]
         del wave_data_i['rdm1']
         wave_data_arr.append(wave_data_i)
         coeffs.append(fci_state[det])
 
-    if copy: wave_data = wave_data.copy()
+    wave_data = _wave_data.copy()
     for i in range(ndet): wave_data[f'{i}'] = wave_data_arr[i]
 
     # Check if coeffs are normalized.
@@ -86,12 +86,14 @@ def create_msd_from_casci(casci, fci_state, wave_data, copy=True, update=False, 
     try: np.testing.assert_allclose(norm, 1.)
     except: coeffs /= norm
     wave_data['coeffs'] = np.array(coeffs)
-
+    
+    # Used to initialize initial walkers.
     if update:
         mo_coeff = wave_data['0']['mo_coeff'].copy()
         rdm1 = [mo_coeff[0] @ mo_coeff[0].T.conj(), mo_coeff[1] @ mo_coeff[1].T.conj()]
         wave_data['mo_coeff'] = mo_coeff
         wave_data['rdm1'] = rdm1
-
+    
+    if verbose: print(wave_data['coeffs'])
     return wave_data
 

@@ -1,4 +1,5 @@
 import os
+import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -8,6 +9,40 @@ from ad_afqmc import spin_utils
 def check_dir(dirname):
     if not os.path.exists(dirname):
         os.makedirs(dirname)
+
+def push(filename, data, name):
+    """
+    Push data to hdf5 file after each iteration.
+    """
+    with h5py.File(f'{filename}.h5', 'a') as f:
+        dset = f[name]
+        old = dset.shape[0]
+        new = old + 1
+        dset.resize(new, axis=0)
+        dset[old:new] = data
+
+def create_datasets(
+    filename, dset_names, shape=(0,), maxshape=(None,), append=False, dtype='f8'):
+    """
+    Create hdf5 datasets.
+    """
+    if append:
+        with h5py.File(f'{filename}.h5', 'a') as f:
+            for name in dset_names:
+                if name not in f:
+                    f.create_dataset(
+                        name, shape=shape, maxshape=maxshape, chunks=(1,), dtype=dtype)
+
+    else:
+        with h5py.File(f'{filename}.h5', 'w') as f:
+            name = dset_names[0]
+            f.create_dataset(
+                name, shape=shape, maxshape=maxshape, chunks=(1,), dtype=dtype)
+
+        with h5py.File(f'{filename}.h5', 'a') as f:
+            for name in dset_names[1:]:
+                f.create_dataset(
+                    name, shape=shape, maxshape=maxshape, chunks=(1,), dtype=dtype)
 
 def plot_ghf_spin(gmf, coords, adjacency, save=False, figname=None):
     n_sites = gmf.mo_coeff.shape[0] // 2
