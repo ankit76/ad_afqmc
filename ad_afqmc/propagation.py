@@ -668,7 +668,9 @@ class propagator_cpmc_slow(propagator_cpmc):
                 carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap(
-                UHFWalkers([new_walkers_0_up, new_walkers_0_dn]), wave_data
+                UHFWalkers(
+                    [jnp.array(new_walkers_0_up), jnp.array(new_walkers_0_dn)]
+                ), wave_data
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
@@ -682,7 +684,9 @@ class propagator_cpmc_slow(propagator_cpmc):
                 carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap(
-                UHFWalkers([new_walkers_1_up, new_walkers_1_dn]), wave_data
+                UHFWalkers(
+                    [jnp.array(new_walkers_1_up), jnp.array(new_walkers_1_dn)]
+                ), wave_data
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))

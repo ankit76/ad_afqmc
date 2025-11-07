@@ -150,6 +150,7 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
         None,
         "rhf",
         "uhf",
+        "ghf",
         "noci",
         "cisd",
         "ucisd",
@@ -294,7 +295,7 @@ def set_trial(
         print(f"# Read RDM1 from disk")
     except:
         # Construct RDM1 from mo_coeff if file not found
-        if options_trial in ["ghf_complex", "gcisd_complex"]:
+        if options_trial in ["ghf", "ghf_complex", "gcisd_complex"]:
             wave_data["rdm1"] = jnp.array(
                 [
                     mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
@@ -473,8 +474,22 @@ def set_trial(
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
 
+    elif options_trial == "ghf":
+        trial = wavefunctions.ghf(
+            norb, 
+            nelec_sp, 
+            n_chunks=options["n_chunks"],
+            projector=options["symmetry_projector"],
+        )
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
+
     elif options_trial == "ghf_complex":
-        trial = wavefunctions.ghf_complex(norb, nelec_sp, n_chunks=options["n_chunks"])
+        trial = wavefunctions.ghf_complex(
+            norb, 
+            nelec_sp, 
+            n_chunks=options["n_chunks"],
+            projector=options["symmetry_projector"],
+        )
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
 
     elif options_trial == "gcisd_complex":
