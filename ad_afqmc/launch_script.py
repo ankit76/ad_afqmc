@@ -316,7 +316,7 @@ def set_trial(
     if options.get("symmetry_projector", None) == "s2":
         S = options["target_spin"] / 2.0
         Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
-        ngrid = 8  ## this needs to be in the input###*****
+        ngrid = options.get("s2_projector_ngrid", 8)
         beta_vals = np.linspace(0, np.pi, ngrid, endpoint=False)
         wigner = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
             S, Sz, Sz, beta_vals

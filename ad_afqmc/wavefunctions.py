@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import partial, singledispatchmethod
+from itertools import product
+from functools import partial, singledispatchmethod, reduce
 from typing import Any, List, Literal, Optional, Sequence, Tuple, Union
 
 import jax
@@ -48,6 +49,33 @@ class wave_function(ABC):
     n_chunks: int = 1
     projector: Optional[str] = None
 
+    def chain_external_projectors(self, wave_data: dict):
+        def _chain(mats):
+            """Multiply an array of matrices: M[k] @ ... @ M[1] @ M[0].
+
+            Args:
+                wave_data : dict
+                    The trial wave function data.
+
+            Returns:
+                wave_data with added key "chained_projectors".
+            """
+            return reduce(np.matmul, mats)
+        
+        wave_data["chained_projectors"] = {}
+        groups = wave_data["groups"]
+        labels = [[f"{G}_{i}" for i in range(len(groups[G]))] for G in groups]
+        
+        for idx_tuple in product(*[range(len(G)) for G in groups.values()]):
+            ops = [list(groups.values())[iG][i] for iG, i in enumerate(idx_tuple)]
+            ops_labels = tuple(labels[iG][i] for iG, i in enumerate(idx_tuple))
+
+            # Apply groups[0] first, then groups[1], ...  => multiply reversed
+            op = _chain(ops[::-1])
+            wave_data["chained_projectors"][ops_labels] = op
+
+        return wave_data
+
     @singledispatchmethod
     def calc_overlap(self, walkers, wave_data: dict) -> jax.Array:
         """Calculate the overlap < psi_t | walker > for a batch of walkers.
@@ -76,10 +104,12 @@ class wave_function(ABC):
             return self._calc_overlap_s2(walker_up, walker_dn, wave_data)
         elif self.projector == "tr" and self.nelec[0] == self.nelec[1]:
             return self._calc_overlap_tr(walker_up, walker_dn, wave_data)
-        elif self.projector == "pg":
-            return self._calc_overlap_pg(walker_up, walker_dn, wave_data)
-        elif self.projector == "pg_tr" and self.nelec[0] == self.nelec[1]:
-            return self._calc_overlap_pg_tr(walker_up, walker_dn, wave_data)
+        elif self.projector == "ext":
+            return self._calc_overlap_ext(walker_up, walker_dn, wave_data)
+        elif self.projector == "ext_tr" and self.nelec[0] == self.nelec[1]:
+            return self._calc_overlap_ext_tr(walker_up, walker_dn, wave_data)
+        elif self.projector == "ext_s2":
+            return self._calc_overlap_ext_s2(walker_up, walker_dn, wave_data)
         else:
             return self._calc_overlap_unrestricted(walker_up, walker_dn, wave_data)
 
@@ -105,6 +135,7 @@ class wave_function(ABC):
             detAout = jnp.block([[A, B], [C, D]])
             return detAout
 
+        # Shape (nbeta, 2*norb, nocc).
         S2walkers = vmap(applyRotMat, (None, None, 0))(walker_up, walker_dn, RotMatrix)
         ovlp = vmap(self._calc_overlap_generalized, (0, None))(S2walkers, wave_data)
         totalOvlp = jnp.sum(ovlp * wigner)
@@ -117,37 +148,74 @@ class wave_function(ABC):
         overlap_2 = self._calc_overlap_unrestricted(walker_dn, walker_up, wave_data)
         return overlap_1 + overlap_2
 
-    def _calc_overlap_pg(
+    def _calc_overlap_ext(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
-        pgs = wave_data["point_groups"] # dict.
-        overlap = self._calc_overlap_unrestricted(walker_up, walker_dn, wave_data)
+        projs = wave_data["chained_projectors"] # dict.
+        overlap = 0.
         
-        # TODO: Only first order operators for now.
-        for pg in pgs:
-            for symm_op in pgs[pg]:
-                walker_up_i = symm_op @ walker_up
-                walker_dn_i = symm_op @ walker_dn
-                overlap += self._calc_overlap_unrestricted(walker_up_i, walker_dn_i, wave_data)
+        for key in projs:
+            op = projs[key]
+            walker_up_proj = op @ walker_up
+            walker_dn_proj = op @ walker_dn
+            overlap += self._calc_overlap_unrestricted(walker_up_proj, walker_dn_proj, wave_data)
 
         return overlap
 
-    def _calc_overlap_pg_tr(
+    def _calc_overlap_ext_tr(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
-        pgs = wave_data["point_groups"] # dict.
-        overlap = self._calc_overlap_unrestricted(walker_up, walker_dn, wave_data)
-        overlap += self._calc_overlap_unrestricted(walker_dn, walker_up, wave_data)
+        projs = wave_data["chained_projectors"] # dict.
+        overlap = 0.
         
-        # Only first order operators for now.
-        for pg in pgs:
-            for symm_op in pgs[pg]:
-                walker_up_i = symm_op @ walker_up
-                walker_dn_i = symm_op @ walker_dn
-                overlap += self._calc_overlap_unrestricted(walker_up_i, walker_dn_i, wave_data)
-                overlap += self._calc_overlap_unrestricted(walker_dn_i, walker_up_i, wave_data)
+        for key in projs:
+            op = projs[key]
+            walker_up_proj = op @ walker_up
+            walker_dn_proj = op @ walker_dn
+            overlap += self._calc_overlap_unrestricted(walker_up_proj, walker_dn_proj, wave_data)
+            overlap += self._calc_overlap_unrestricted(walker_dn_proj, walker_up_proj, wave_data)
 
         return overlap
+
+    def _calc_overlap_ext_s2(
+        self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
+    ) -> jax.Array:
+        # assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
+        _, _, wigner, beta_vals = wave_data["wigner"]
+
+        RotMatrix = vmap(
+            lambda beta: jnp.array(
+                [
+                    [jnp.cos(beta / 2), jnp.sin(beta / 2)],
+                    [-jnp.sin(beta / 2), jnp.cos(beta / 2)],
+                ]
+            )
+        )(beta_vals)
+
+        def applyRotMat(detA, detB, mat):
+            A, B = detA * mat[0, 0], detB * mat[0, 1]
+            C, D = detA * mat[1, 0], detB * mat[1, 1]
+
+            detAout = jnp.block([[A, B], [C, D]])
+            return detAout
+
+        # Shape (nbeta, 2*norb, nocc).
+        S2walkers = vmap(applyRotMat, (None, None, 0))(walker_up, walker_dn, RotMatrix)
+        ovlp = 0.
+
+        # External projectors..
+        projs = wave_data["chained_projectors"] # dict.
+
+        for key in projs:
+            op = projs[key]
+            op_ghf = sp.linalg.block_diag(op, op) # Reshape into GHF form.
+            S2walker_proj = op_ghf @ S2walkers # Shape (nbeta, 2*norb, nocc)
+            ovlp_proj = vmap(self._calc_overlap_generalized, (0, None))(
+                S2walkers_proj, wave_data
+            )
+            ovlp += jnp.sum(ovlp_proj * wigner)
+
+        return ovlp
 
     @calc_overlap.register
     def _(self, walkers: RHFWalkers, wave_data: dict) -> jax.Array:
@@ -288,84 +356,16 @@ class wave_function(ABC):
             return self._calc_energy_s2(walker_up, walker_dn, ham_data, wave_data)
         elif self.projector == "tr" and self.nelec[0] == self.nelec[1]:
             return self._calc_energy_tr(walker_up, walker_dn, ham_data, wave_data)
-        elif self.projector == "pg":
-            return self._calc_energy_pg(walker_up, walker_dn, ham_data, wave_data)
-        elif self.projector == "pg_tr" and self.nelec[0] == self.nelec[1]:
-            return self._calc_energy_pg_tr(walker_up, walker_dn, ham_data, wave_data)
+        elif self.projector == "ext":
+            return self._calc_energy_ext(walker_up, walker_dn, ham_data, wave_data)
+        elif self.projector == "ext_tr" and self.nelec[0] == self.nelec[1]:
+            return self._calc_energy_ext_tr(walker_up, walker_dn, ham_data, wave_data)
+        elif self.projector == "ext_s2":
+            return self._calc_energy_ext_s2(walker_up, walker_dn, ham_data, wave_data)
         else:
             return self._calc_energy_unrestricted(
                 walker_up, walker_dn, ham_data, wave_data
             )
-
-    def _calc_energy_pg(
-        self,
-        walker_up: jax.Array,
-        walker_dn: jax.Array,
-        ham_data: dict,
-        wave_data: dict,
-    ) -> jax.Array:
-        pgs = wave_data["point_groups"] # dict.
-        energy_0 = self._calc_energy_unrestricted(walker_up, walker_dn, ham_data, wave_data)
-        overlap_0 = self._calc_overlap_unrestricted(walker_up, walker_dn, wave_data)
-        num = energy_0 * overlap_0
-        denom = overlap_0
-        
-        # Only first order operators for now.
-        for pg in pgs:
-            for symm_op in pgs[pg]:
-                walker_up_i = symm_op @ walker_up
-                walker_dn_i = symm_op @ walker_dn
-                energy_i = self._calc_energy_unrestricted(
-                    walker_up_i, walker_dn_i, ham_data, wave_data
-                )
-                overlap_i = self._calc_overlap_unrestricted(
-                    walker_up_i, walker_dn_i, wave_data
-                )
-                num += energy_i * overlap_i
-                denom += overlap_i
-
-        return num / denom
-
-    def _calc_energy_pg_tr(
-        self,
-        walker_up: jax.Array,
-        walker_dn: jax.Array,
-        ham_data: dict,
-        wave_data: dict,
-    ) -> jax.Array:
-        pgs = wave_data["point_groups"] # dict.
-        energy_00 = self._calc_energy_unrestricted(walker_up, walker_dn, ham_data, wave_data)
-        overlap_00 = self._calc_overlap_unrestricted(walker_up, walker_dn, wave_data)
-        
-        # TRS.
-        energy_01 = self._calc_energy_unrestricted(walker_dn, walker_up, ham_data, wave_data)
-        overlap_01 = self._calc_overlap_unrestricted(walker_dn, walker_up, wave_data)
-        num = energy_00 * overlap_00 + energy_01 * overlap_01
-        denom = overlap_00 + overlap_01
-        
-        # Only first order operators for now.
-        for pg in pgs:
-            for symm_op in pgs[pg]:
-                walker_up_i = symm_op @ walker_up
-                walker_dn_i = symm_op @ walker_dn
-                energy_i0 = self._calc_energy_unrestricted(
-                    walker_up_i, walker_dn_i, ham_data, wave_data
-                )
-                overlap_i0 = self._calc_overlap_unrestricted(
-                    walker_up_i, walker_dn_i, wave_data
-                )
-
-                # TRS.
-                energy_i1 = self._calc_energy_unrestricted(
-                    walker_dn_i, walker_up_i, ham_data, wave_data
-                )
-                overlap_i1 = self._calc_overlap_unrestricted(
-                    walker_dn_i, walker_up_i, wave_data
-                )
-                num += energy_i0 * overlap_i0 + energy_i1 * overlap_i1
-                denom += overlap_i0 + overlap_i1
-
-        return num / denom
 
     def _calc_energy_tr(
         self,
@@ -392,7 +392,7 @@ class wave_function(ABC):
         wave_data: dict,
     ) -> jax.Array:
         # assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
-        S, Sz, wigner, beta_vals = wave_data["wigner"]
+        _, _, wigner, beta_vals = wave_data["wigner"]
 
         RotMatrix = vmap(
             lambda beta: jnp.array(
@@ -417,6 +417,118 @@ class wave_function(ABC):
         )
         totalOvlp = jnp.sum(ovlp * wigner)
         return jnp.sum(Eloc * ovlp * wigner) / totalOvlp
+
+    def _calc_energy_ext(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        ham_data: dict,
+        wave_data: dict,
+    ) -> jax.Array:
+        projs = wave_data["chained_projectors"] # dict.
+        num = 0.
+        denom = 0.
+        
+        for key in projs:
+            op = projs[key]
+            walker_up_proj = op @ walker_up
+            walker_dn_proj = op @ walker_dn
+            energy_proj = self._calc_energy_unrestricted(
+                walker_up_proj, walker_dn_proj, ham_data, wave_data
+            )
+            overlap_proj = self._calc_overlap_unrestricted(
+                walker_up_proj, walker_dn_proj, wave_data
+            )
+            num += energy_proj * overlap_proj
+            denom += overlap_proj
+
+        return num / denom
+
+    def _calc_energy_ext_tr(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        ham_data: dict,
+        wave_data: dict,
+    ) -> jax.Array:
+        projs = wave_data["chained_projectors"] # dict.
+        num = 0.
+        denom = 0.
+        
+        for key in projs:
+            op = projs[key]
+            walker_up_proj = op @ walker_up
+            walker_dn_proj = op @ walker_dn
+            energy_proj_0 = self._calc_energy_unrestricted(
+                walker_up_proj, walker_dn_proj, ham_data, wave_data
+            )
+            overlap_proj_0 = self._calc_overlap_unrestricted(
+                walker_up_proj, walker_dn_proj, wave_data
+            )
+
+            # TRS.
+            energy_proj_1 = self._calc_energy_unrestricted(
+                walker_dn_proj, walker_up_proj, ham_data, wave_data
+            )
+            overlap_proj_1 = self._calc_overlap_unrestricted(
+                walker_dn_proj, walker_up_proj, wave_data
+            )
+            num += energy_proj_0*overlap_proj_0 + energy_proj_1*overlap_proj_1
+            denom += overlap_proj_0 + overlap_proj_1
+
+        return num / denom
+
+    def _calc_energy_proj_s2(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        ham_data: dict,
+        wave_data: dict,
+    ) -> jax.Array:
+        # assume s = Sz = walkers[0].shape[1] - walkers[1].shape[1]
+        _, _, wigner, beta_vals = wave_data["wigner"]
+
+        RotMatrix = vmap(
+            lambda beta: jnp.array(
+                [
+                    [jnp.cos(beta / 2), jnp.sin(beta / 2)],
+                    [-jnp.sin(beta / 2), jnp.cos(beta / 2)],
+                ]
+            )
+        )(beta_vals)
+
+        def applyRotMat(detA, detB, mat):
+            A, B = detA * mat[0, 0], detB * mat[0, 1]
+            C, D = detA * mat[1, 0], detB * mat[1, 1]
+
+            detAout = jnp.block([[A, B], [C, D]])
+            return detAout
+
+        # Shape (nbeta, 2*norb, nocc).
+        S2walkers = vmap(applyRotMat, (None, None, 0))(walker_up, walker_dn, RotMatrix)
+        num = 0.
+        denom = 0.
+        
+        # External projectors.
+        projs = wave_data["chained_projectors"] # dict.
+
+        for key in projs:
+            op = projs[key]
+
+            # Reshape into GHF form.
+            op_ghf = sp.linalg.block_diag(op, op)
+            S2walker_proj = op_ghf @ S2walkers # Shape (nbeta, 2*norb, nocc)
+
+            ovlp_proj = vmap(self._calc_overlap_generalized, (0, None))(
+                S2walkers_proj, wave_data
+            )
+            Eloc_proj = vmap(self._calc_energy_generalized, (0, None, None))(
+                S2walkers_proj, ham_data, wave_data
+            )
+            num += jnp.sum(Eloc_proj * ovlp_proj * wigner)
+            denom += jnp.sum(ovlp_proj * wigner)
+
+        return num / denom
 
     @calc_energy.register
     def _(self, walkers: RHFWalkers, ham_data: dict, wave_data: dict) -> jax.Array:
