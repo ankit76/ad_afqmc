@@ -208,8 +208,8 @@ class wave_function(ABC):
 
         for key in projs:
             op = projs[key]
-            op_ghf = sp.linalg.block_diag(op, op) # Reshape into GHF form.
-            S2walker_proj = op_ghf @ S2walkers # Shape (nbeta, 2*norb, nocc)
+            op_ghf = jsp.linalg.block_diag(op, op) # Reshape into GHF form.
+            S2walkers_proj = op_ghf @ S2walkers # Shape (nbeta, 2*norb, nocc)
             ovlp_proj = vmap(self._calc_overlap_generalized, (0, None))(
                 S2walkers_proj, wave_data
             )
@@ -478,7 +478,7 @@ class wave_function(ABC):
 
         return num / denom
 
-    def _calc_energy_proj_s2(
+    def _calc_energy_ext_s2(
         self,
         walker_up: jax.Array,
         walker_dn: jax.Array,
@@ -516,8 +516,8 @@ class wave_function(ABC):
             op = projs[key]
 
             # Reshape into GHF form.
-            op_ghf = sp.linalg.block_diag(op, op)
-            S2walker_proj = op_ghf @ S2walkers # Shape (nbeta, 2*norb, nocc)
+            op_ghf = jsp.linalg.block_diag(op, op)
+            S2walkers_proj = op_ghf @ S2walkers # Shape (nbeta, 2*norb, nocc)
 
             ovlp_proj = vmap(self._calc_overlap_generalized, (0, None))(
                 S2walkers_proj, wave_data

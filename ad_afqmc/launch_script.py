@@ -313,7 +313,7 @@ def set_trial(
                 ]
             )
 
-    if options.get("symmetry_projector", None) == "s2":
+    if "s2" in options.get("symmetry_projector", None):
         S = options["target_spin"] / 2.0
         Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
         ngrid = options.get("s2_projector_ngrid", 8)
