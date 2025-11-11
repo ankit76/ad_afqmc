@@ -313,15 +313,16 @@ def set_trial(
                 ]
             )
 
-    if "s2" in options.get("symmetry_projector", None):
-        S = options["target_spin"] / 2.0
-        Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
-        ngrid = options.get("s2_projector_ngrid", 8)
-        beta_vals = np.linspace(0, np.pi, ngrid, endpoint=False)
-        wigner = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
-            S, Sz, Sz, beta_vals
-        )
-        wave_data["wigner"] = (S, Sz, wigner * jnp.sin(beta_vals), beta_vals)
+    if options.get("symmetry_projector", None) is not None:
+        if "s2" in options["symmetry_projector"]:
+            S = options["target_spin"] / 2.0
+            Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
+            ngrid = options.get("s2_projector_ngrid", 8)
+            beta_vals = np.linspace(0, np.pi, ngrid, endpoint=False)
+            wigner = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+                S, Sz, Sz, beta_vals
+            )
+            wave_data["wigner"] = (S, Sz, wigner * jnp.sin(beta_vals), beta_vals)
 
     # Set up trial wavefunction based on specified type
     if options_trial == "rhf":
