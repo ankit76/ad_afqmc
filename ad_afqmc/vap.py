@@ -551,10 +551,10 @@ def optimize(
     nocc = sum(nelec)
     m = 0.5 * (na - nb)
 
-    print(f"\n# maxiter: {ngrid}")
+    print(f"\n# maxiter: {maxiter}")
     print(f"# projector: {projector}")
     print(f"# quadrature ngrid: {ngrid}")
-    print(f"# external projectors: {list(ext_ops.keys())}")
+    if ext_ops is not None: print(f"# external projectors: {list(ext_ops.keys())}")
 
     if "s2" in projector:
         assert na == nb, "\n# S^2 projection only implemented for singlet states."
