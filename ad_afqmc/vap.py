@@ -454,7 +454,7 @@ def amsgrad(
         Result object with optimization outcome
     """
     print(
-        f"\n# step = {learning_rate}, beta1 = {beta1}, beta2 = {beta2}, epsilon = {epsilon}"
+        f"# step = {learning_rate}, beta1 = {beta1}, beta2 = {beta2}, epsilon = {epsilon}"
     )
     x = np.asarray(x0).flatten()
     if jac is None:
@@ -541,7 +541,7 @@ def optimize(
     ngrid=10,
     maxiter=100,
     step=0.01,
-    project_s2=False,
+    projector="s2",
     ext_ops=None,
     ext_chars=None,
 ):
@@ -551,17 +551,22 @@ def optimize(
     nocc = sum(nelec)
     m = 0.5 * (na - nb)
 
-    if project_s2:
+    print(f"\n# maxiter: {ngrid}")
+    print(f"# projector: {projector}")
+    print(f"# quadrature ngrid: {ngrid}")
+    print(f"# external projectors: {list(ext_ops.keys())}")
+
+    if "s2" in projector:
         assert na == nb, "\n# S^2 projection only implemented for singlet states."
 
-        if ext_ops is not None:
+        if ("ext" in projector) and (ext_ops is not None):
             energy_init = get_ext_s2_singlet_projected_energy_jax(
                 psi,
                 h1,
                 chol,
                 enuc,
-                ext_ops,
-                ext_chars,
+                list(ext_ops.values())[0], # TODO: Only works for 1 group now!
+                list(ext_chars.values())[0],
                 ngrid_a=ngrid,
                 ngrid_b=ngrid,
                 ngrid_g=ngrid,
@@ -581,15 +586,15 @@ def optimize(
     def objective_function(x):
         psi = x.reshape(2*norb, nocc)
 
-        if project_s2:
-            if ext_ops is not None:
+        if "s2" in projector:
+            if ("ext" in projector) and (ext_ops is not None):
                 return get_ext_s2_singlet_projected_energy_jax(
                     psi,
                     h1,
                     chol,
                     enuc,
-                    ext_ops,
-                    ext_chars,
+                    list(ext_ops.values())[0], # TODO: Only works for 1 group now!
+                    list(ext_chars.values())[0],
                     ngrid_a=ngrid,
                     ngrid_b=ngrid,
                     ngrid_g=ngrid,
