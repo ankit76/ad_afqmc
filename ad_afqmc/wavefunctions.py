@@ -177,6 +177,7 @@ class wave_function(ABC):
 
         return overlap
 
+    #@partial(jit, static_argnums=0)
     def _calc_overlap_ext_s2(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
@@ -478,6 +479,7 @@ class wave_function(ABC):
 
         return num / denom
 
+    #@partial(jit, static_argnums=0)
     def _calc_energy_ext_s2(
         self,
         walker_up: jax.Array,

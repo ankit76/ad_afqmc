@@ -91,14 +91,14 @@ def apply_s2_singlet_projector_jax(input_ket, ngrid_a=8, ngrid_b=8, ngrid_g=8):
     Wigner small-d matrix = 1.
     """
     def rot_elements(alpha, beta, gamma):
-        aa = jnp.exp(-(alpha + gamma)/2.) * jnp.cos(beta/2.)
-        bb = jnp.exp((alpha + gamma)/2.) * jnp.cos(beta/2.)
-        ab = -jnp.exp(-(alpha - gamma)/2.) * jnp.sin(beta/2.)
-        ba = jnp.exp((alpha - gamma)/2.) * jnp.sin(beta/2.)
+        aa = jnp.exp(-1.j * (alpha + gamma)/2.) * jnp.cos(beta/2.)
+        bb = jnp.exp(1.j * (alpha + gamma)/2.) * jnp.cos(beta/2.)
+        ab = -jnp.exp(-1.j * (alpha - gamma)/2.) * jnp.sin(beta/2.)
+        ba = jnp.exp(1.j * (alpha - gamma)/2.) * jnp.sin(beta/2.)
         return aa, ab, ba, bb
 
     norb = input_ket.shape[0] // 2
-    
+
     # Uniform grid over alpha, beta, gamma.
     da = 2. * jnp.pi / ngrid_a
     dg = 2. * jnp.pi / ngrid_g
@@ -111,7 +111,7 @@ def apply_s2_singlet_projector_jax(input_ket, ngrid_a=8, ngrid_b=8, ngrid_g=8):
     betas = 0.5 * (beta_edges[:-1] + beta_edges[1:])
 
     # Build the full tensor grid and flatten
-    A, B, G = jnp.meshgrid(ngrid_a, ngrid_b, ngrid_g, indexing="ij")
+    A, B, G = jnp.meshgrid(alphas, betas, gammas, indexing="ij")
     A = A.reshape(-1)
     B = B.reshape(-1)
     G = G.reshape(-1)
@@ -384,7 +384,7 @@ def gradient_descent(psi, nelec, h1, chol, enuc, ngrid=10, maxiter=100, step=0.0
 
     def objective_function(x):
         psi = x.reshape(2 * norb, nocc)
-        return get_projected_energy(psi, m, h1, chol, enuc, ngrid)
+        return get_sz_projected_energy(psi, m, h1, chol, enuc, ngrid)
 
     def gradient(x, *args):
         return np.array(grad(objective_function)(x, *args), dtype=np.float64)
@@ -396,7 +396,7 @@ def gradient_descent(psi, nelec, h1, chol, enuc, ngrid=10, maxiter=100, step=0.0
         x -= step * grads
 
     psi = x.reshape(2 * norb, nocc)
-    energy = get_projected_energy(psi, m, h1, chol, enuc, ngrid)
+    energy = get_sz_projected_energy(psi, m, h1, chol, enuc, ngrid)
     return energy, psi
 
 
@@ -454,7 +454,7 @@ def amsgrad(
         Result object with optimization outcome
     """
     print(
-        f"step = {learning_rate}, beta1 = {beta1}, beta2 = {beta2}, epsilon = {epsilon}"
+        f"\n# step = {learning_rate}, beta1 = {beta1}, beta2 = {beta2}, epsilon = {epsilon}"
     )
     x = np.asarray(x0).flatten()
     if jac is None:
@@ -503,9 +503,9 @@ def amsgrad(
         # Calculate new function value
         fx_new = fun(x_new, *args)
         nfev += 1
-
+    
         print(
-            f"Iteration {iteration + 1}: Energy = {fx_new}, Grad norm = {np.linalg.norm(grad)}"
+            f"# Iteration {iteration + 1}: Energy = {fx_new:.9e}, Grad norm = {np.linalg.norm(grad):.9e}"
         )
 
         # Check for convergence
@@ -573,7 +573,7 @@ def optimize(
             )
 
     else:
-        energy_init = get_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
+        energy_init = get_s2_singlet_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
 
     print(f"\n# Initial projected energy = {energy_init}")
 
@@ -601,7 +601,7 @@ def optimize(
                 )
 
         else:
-            return get_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
+            return get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
 
     @jit
     def gradient(x, *args):
@@ -627,7 +627,9 @@ def optimize(
             "disp": True,
         },
     )
-
+    
+    if res.success: print(f'\n# {res.message}')
+    else: print(f'\n# Unable to converge optimization')
     energy = res.fun
     psi = res.x.reshape(2*norb, nocc)
     return energy, psi
