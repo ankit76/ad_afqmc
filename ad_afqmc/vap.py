@@ -577,8 +577,8 @@ def optimize(
                 psi, h1, chol, enuc, ngrid_a=ngrid, ngrid_b=ngrid, ngrid_g=ngrid
             )
 
-    else:
-        energy_init = get_s2_singlet_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
+    elif "sz" in projector:
+        energy_init = get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
 
     print(f"\n# Initial projected energy = {energy_init}")
 
@@ -605,7 +605,7 @@ def optimize(
                     psi, h1, chol, enuc, ngrid_a=ngrid, ngrid_b=ngrid, ngrid_g=ngrid
                 )
 
-        else:
+        elif "sz" in projector:
             return get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
 
     @jit
