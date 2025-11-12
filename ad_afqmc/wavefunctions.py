@@ -599,40 +599,45 @@ class wave_function(ABC):
         natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
 
         if walker_type == "restricted":
-            if self.nelec[0] == self.nelec[1]:
-                det_overlap = np.linalg.det(
-                    natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
-                )
-                if (
-                    np.abs(det_overlap) > 1e-5
-                ):  # probably should scale this threshold with number of electrons
-                    return RHFWalkers(jnp.array([natorbs_up + 0.0j] * n_walkers))
-                else:
-                    overlaps = np.array(
-                        [
-                            natorbs_up[:, i].T @ natorbs_dn[:, i]
-                            for i in range(self.nelec[0])
-                        ]
-                    )
-                    new_vecs = natorbs_up[:, : self.nelec[0]] + np.einsum(
-                        "ij,j->ij", natorbs_dn[:, : self.nelec[1]], np.sign(overlaps)
-                    )
-                    new_vecs = np.linalg.qr(new_vecs)[0]
-                    det_overlap = np.linalg.det(
-                        new_vecs.T @ natorbs_up[:, : self.nelec[0]]
-                    ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
-                    if np.abs(det_overlap) > 1e-5:
-                        return RHFWalkers(jnp.array([new_vecs + 0.0j] * n_walkers))
-                    else:
-                        raise ValueError(
-                            "Cannot find a set of RHF orbitals with good trial overlap."
-                        )
-            else:
-                # bring the dn orbital projection onto up space to the front
-                dn_proj = natorbs_up.T.conj() @ natorbs_dn
-                proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
-                orbs = natorbs_up @ proj_orbs
-                return RHFWalkers(jnp.array([orbs + 0.0j] * n_walkers))
+            rdm1_avg = rdm1[0] + rdm1[1]
+            natorbs = jnp.linalg.eigh(rdm1_avg)[1][:, ::-1]
+            return RHFWalkers(
+                jnp.array([natorbs[:, : self.nelec[0]] + 0.0j] * n_walkers)
+            )
+            # if self.nelec[0] == self.nelec[1]:
+            #     det_overlap = np.linalg.det(
+            #         natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
+            #     )
+            #     if (
+            #         np.abs(det_overlap) > 1e-5
+            #     ):  # probably should scale this threshold with number of electrons
+            #         return RHFWalkers(jnp.array([natorbs_up + 0.0j] * n_walkers))
+            #     else:
+            #         overlaps = np.array(
+            #             [
+            #                 natorbs_up[:, i].T @ natorbs_dn[:, i]
+            #                 for i in range(self.nelec[0])
+            #             ]
+            #         )
+            #         new_vecs = natorbs_up[:, : self.nelec[0]] + np.einsum(
+            #             "ij,j->ij", natorbs_dn[:, : self.nelec[1]], np.sign(overlaps)
+            #         )
+            #         new_vecs = np.linalg.qr(new_vecs)[0]
+            #         det_overlap = np.linalg.det(
+            #             new_vecs.T @ natorbs_up[:, : self.nelec[0]]
+            #         ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
+            #         if np.abs(det_overlap) > 1e-5:
+            #             return RHFWalkers(jnp.array([new_vecs + 0.0j] * n_walkers))
+            #         else:
+            #             raise ValueError(
+            #                 "Cannot find a set of RHF orbitals with good trial overlap."
+            #             )
+            # else:
+            #     # bring the dn orbital projection onto up space to the front
+            #     dn_proj = natorbs_up.T.conj() @ natorbs_dn
+            #     proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
+            #     orbs = natorbs_up @ proj_orbs
+            #     return RHFWalkers(jnp.array([orbs + 0.0j] * n_walkers))
         elif walker_type == "unrestricted":
             return UHFWalkers(
                 [
