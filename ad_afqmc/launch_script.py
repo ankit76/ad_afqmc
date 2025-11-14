@@ -317,13 +317,19 @@ def set_trial(
         if "s2_full" in options["symmetry_projector"]:
             S = options["target_spin"] / 2.0
             Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
-            ngrid = options.get("s2_projector_ngrid", 8)
-            alphas = np.linspace(0, 2*np.pi, ngrid, endpoint=False)
-            betas = np.linspace(0, np.pi, ngrid, endpoint=False)
-            w_alphas = jnp.exp(1.j * Sz * alphas)
+            nalpha = options.get("nalpha", 8)
+            nbeta = options.get("nbeta", 8)
+            print(nalpha, nbeta)
+            alphas = np.linspace(0, 2*np.pi, nalpha, endpoint=False)
+            betas = np.linspace(0, np.pi, nbeta, endpoint=False)
+
+            edges = jnp.linspace(0., jnp.pi, nbeta+1)
+            betas = 0.5 * (edges[:-1] + edges[1:])
+
+            w_alphas = jnp.exp(1.j * Sz * alphas) / nalpha
             w_betas = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
                 S, Sz, Sz, betas
-            ) * jnp.sin(betas)
+            ).conj() * jnp.sin(betas) * (2*S+1)/2. * jnp.pi/nbeta
             A, B = jnp.meshgrid(alphas, betas, indexing="ij")
             w_A, w_B = jnp.meshgrid(w_alphas, w_betas, indexing="ij")
             A = A.reshape(-1)
@@ -332,6 +338,8 @@ def set_trial(
             w_B = w_B.reshape(-1)
             angles = jnp.stack([A, B], axis=-1)
             ws = w_A * w_B
+            wave_data["alphas"] = (S, Sz, w_alphas, alphas)
+            wave_data["betas"] = (S, Sz, w_betas, betas)
             wave_data["angles"] = (S, Sz, ws, angles)
 
         elif "s2" in options["symmetry_projector"]:

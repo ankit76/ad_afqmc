@@ -162,10 +162,10 @@ class wave_function(ABC):
             alpha, beta = angle
             RotMatrix = jnp.array(
                 [
-                    [ jnp.exp(1.j*alpha/2.) * jnp.cos(beta/2), 
-                      jnp.exp(1.j*alpha/2.) * jnp.sin(beta / 2)],
-                    [-jnp.exp(-1.j*alpha/2.) * jnp.sin(beta / 2), 
-                      jnp.exp(-1.j*alpha/2.) * jnp.cos(beta / 2)],
+                    [ jnp.exp(1.j*alpha/2.) * jnp.cos(beta/2.), 
+                      jnp.exp(1.j*alpha/2.) * jnp.sin(beta/2.)],
+                    [-jnp.exp(-1.j*alpha/2.) * jnp.sin(beta/2.), 
+                      jnp.exp(-1.j*alpha/2.) * jnp.cos(beta/2.)],
                 ]
             )
 

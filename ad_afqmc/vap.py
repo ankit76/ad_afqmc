@@ -310,6 +310,53 @@ def get_s2_singlet_projected_energy_jax(
     return num.real / denom.real
 
 
+def get_ext_sz_projected_energy_jax(
+        psi, h1, chol, enuc, m, ext_ops, ext_chars=None, ngrid=8
+    ):
+    """
+    Assumes spinless external projectors.
+    """
+    def _apply_ext_rotation(input_ket, U):
+        """U acts in orbital space on both spin blocks."""
+        norb = input_ket.shape[0] // 2
+        ket_a = U @ input_ket[:norb]
+        ket_b = U @ input_ket[norb:]
+        return jnp.vstack([ket_a, ket_b])
+
+    if ext_chars is None: ext_chars = [1.] * len(ext_ops)
+    norb = h1[0].shape[0]
+    
+    # Apply spin rotations that commute with the spinless external projectors.
+    base_kets, coeffs = apply_sz_projector_jax(psi, m, ngrid)
+    psiTconj = psi.T.conj()
+    rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
+
+    def get_overlap(ket):
+        ovlp_mat = psiTconj @ ket
+        return jsp.linalg.det(ovlp_mat)
+
+    def get_energy(ket):
+        return get_energy_jax(psi, ket, h1, rotchol, enuc)
+
+    def apply_ext_rotation(Ug, char_g):
+        # Apply external rotations Ug to each spin-rotated ket.
+        # Shape (base_kets.shape).
+        kets_g = jax.vmap(lambda ket: _apply_ext_rotation(ket, Ug))(base_kets)
+        overlaps = jax.vmap(get_overlap)(kets_g)
+        energies = jax.vmap(get_energy)(kets_g)
+        char_g_conj = jnp.conj(jnp.array(char_g))
+        num = char_g_conj * jnp.sum(coeffs * overlaps * energies)
+        denom = char_g_conj * jnp.sum(coeffs * overlaps)
+        return num, denom
+    
+    # [[U1_num, U1_denom], [U2_num, U2_denom], ...] 
+    num_denom_arr = jnp.array(
+        [apply_ext_rotation(Ug, char_g) for Ug, char_g in zip(ext_ops, ext_chars)]
+    )
+    num, denom = jnp.sum(num_denom_arr, axis=0) / len(ext_ops)
+    return num.real / denom.real
+
+
 def get_ext_s2_singlet_projected_energy_jax(
         psi, h1, chol, enuc, ext_ops, ext_chars=None, ngrid_a=8, ngrid_b=8, ngrid_g=8
     ):
@@ -385,8 +432,6 @@ def gradient_descent(psi, nelec, h1, chol, enuc, ngrid=10, maxiter=100, step=0.0
     psi = x.reshape(2 * norb, nocc)
     energy = get_sz_projected_energy(psi, m, h1, chol, enuc, ngrid)
     return energy, psi
-
-
 
 
 def amsgrad(
@@ -565,7 +610,20 @@ def optimize(
             )
 
     elif "sz" in projector:
-        energy_init = get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
+        if ("ext" in projector) and (ext_ops is not None):
+            energy_init = get_ext_sz_projected_energy_jax(
+                psi,
+                h1,
+                chol,
+                enuc,
+                m,
+                list(ext_ops.values())[0], # TODO: Only works for 1 group now!
+                list(ext_chars.values())[0],
+                ngrid=ngrid,
+            )
+
+        else:
+            energy_init = get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
 
     print(f"\n# Initial projected energy = {energy_init}")
 
@@ -593,7 +651,19 @@ def optimize(
                 )
 
         elif "sz" in projector:
-            return get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
+            if ("ext" in projector) and (ext_ops is not None):
+                return get_ext_sz_projected_energy_jax(
+                    psi,
+                    h1,
+                    chol,
+                    enuc,
+                    m,
+                    list(ext_ops.values())[0], # TODO: Only works for 1 group now!
+                    list(ext_chars.values())[0],
+                    ngrid=ngrid,
+                )
+            else:
+                return get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
 
     @jit
     def gradient(x, *args):
