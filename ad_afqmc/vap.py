@@ -43,7 +43,7 @@ def get_wigner_d(s, m, k, beta):
 # -----------------------------------------------------------------------------
 # Projectors.
 # -----------------------------------------------------------------------------
-def apply_sz_projector(input_ket, m, ngrid):
+def apply_sz_projector(input_ket, s, sz, ngrid):
     norb = input_ket.shape[0] // 2
     nocc = input_ket.shape[1]
     kets = np.zeros((ngrid, 2*norb, nocc), dtype=np.complex128)
@@ -54,7 +54,7 @@ def apply_sz_projector(input_ket, m, ngrid):
         gamma = 2 * np.pi * ig / ngrid
 
         # Coefficients.
-        coeffs[ig] = np.exp(1.j * m * gamma)
+        coeffs[ig] = np.exp(1.j * m * gamma) * (2*s+1)/2. * np.pi/ngrid
         ket_a = np.exp(-1.j * gamma/2.) * input_ket[:norb]
         ket_b = np.exp(1.j * gamma/2.) * input_ket[norb:]
         kets[ig] = np.vstack([ket_a, ket_b])
@@ -62,13 +62,13 @@ def apply_sz_projector(input_ket, m, ngrid):
     coeffs /= ngrid  # For numerical integration.
     return kets, coeffs
 
-@partial(jit, static_argnums=(1, 2))
-def apply_sz_projector_jax(input_ket, m, ngrid):
+@partial(jit, static_argnums=(1, 2, 3))
+def apply_sz_projector_jax(input_ket, s, sz, ngrid):
     norb = input_ket.shape[0] // 2
 
     # Pre-compute all the gammas and exponentials.
     gammas = jnp.linspace(0., 2*jnp.pi, ngrid, endpoint=False)
-    coeffs = jnp.exp(1.j * m * gammas) / ngrid
+    coeffs = jnp.exp(1.j * sz * gammas) * (2*s+1)/2. * jnp.pi/ngrid
 
     def rot_gamma(gamma):
         ket_a = jnp.exp(-1.j * gamma/2.) * input_ket[:norb]
@@ -220,12 +220,12 @@ def get_energy_jax(bra, ket, h1, rotchol, enuc):
     return energy
 
 
-def get_sz_projected_energy(psi, h1, chol, enuc, m, ngrid):
+def get_sz_projected_energy(psi, h1, chol, enuc, s, sz, ngrid):
     norb = h1[0].shape[0]
     nchol = chol.shape[0]
     nocc = psi.shape[1]
 
-    kets, coeffs = apply_sz_projector(psi, m, ngrid)
+    kets, coeffs = apply_sz_projector(psi, s, sz, ngrid)
     # kets, coeffs = get_real_wavefunction(kets, coeffs)
     psiTconj = psi.T.conj()
     rotchol = np.zeros((2, nchol, nocc, norb), dtype=np.complex128)
@@ -265,10 +265,10 @@ def build_rotchol(psiTconj, chol):
     return rotchol
 
 
-@partial(jit, static_argnums=(4, 5))
-def get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid):
+@partial(jit, static_argnums=(4, 5, 6))
+def get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, ngrid):
     norb = h1[0].shape[0]
-    kets, coeffs = apply_sz_projector_jax(psi, m, ngrid)
+    kets, coeffs = apply_sz_projector_jax(psi, s, sz, ngrid)
     psiTconj = psi.T.conj()
     rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
 
@@ -311,7 +311,7 @@ def get_s2_singlet_projected_energy_jax(
 
 
 def get_ext_sz_projected_energy_jax(
-        psi, h1, chol, enuc, m, ext_ops, ext_chars=None, ngrid=8
+        psi, h1, chol, enuc, s, sz, ext_ops, ext_chars=None, ngrid=8
     ):
     """
     Assumes spinless external projectors.
@@ -327,7 +327,7 @@ def get_ext_sz_projected_energy_jax(
     norb = h1[0].shape[0]
     
     # Apply spin rotations that commute with the spinless external projectors.
-    base_kets, coeffs = apply_sz_projector_jax(psi, m, ngrid)
+    base_kets, coeffs = apply_sz_projector_jax(psi, s, sz, ngrid)
     psiTconj = psi.T.conj()
     rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
 
@@ -411,14 +411,15 @@ def gradient_descent(psi, nelec, h1, chol, enuc, ngrid=10, maxiter=100, step=0.0
     norb = h1[0].shape[0]
     na, nb = nelec
     nocc = sum(nelec)
-    m = 0.5 * (na - nb)
+    s = 0
+    sz = 0.5 * (na - nb)
 
-    energy_init = get_sz_projected_energy(psi, m, h1, chol, enuc, ngrid)
+    energy_init = get_sz_projected_energy(psi, s, sz, h1, chol, enuc, ngrid)
     print(f"\n# Initial projected energy = {energy_init}")
 
     def objective_function(x):
         psi = x.reshape(2 * norb, nocc)
-        return get_sz_projected_energy(psi, m, h1, chol, enuc, ngrid)
+        return get_sz_projected_energy(psi, s, sz, h1, chol, enuc, ngrid)
 
     def gradient(x, *args):
         return np.array(grad(objective_function)(x, *args), dtype=np.float64)
@@ -430,7 +431,7 @@ def gradient_descent(psi, nelec, h1, chol, enuc, ngrid=10, maxiter=100, step=0.0
         x -= step * grads
 
     psi = x.reshape(2 * norb, nocc)
-    energy = get_sz_projected_energy(psi, m, h1, chol, enuc, ngrid)
+    energy = get_sz_projected_energy(psi, s, sz, h1, chol, enuc, ngrid)
     return energy, psi
 
 
@@ -581,7 +582,8 @@ def optimize(
     nchol = chol.shape[0]
     na, nb = nelec
     nocc = sum(nelec)
-    m = 0.5 * (na - nb)
+    s = 0.
+    sz = 0.5 * (na - nb)
 
     print(f"\n# maxiter: {maxiter}")
     print(f"# projector: {projector}")
@@ -616,14 +618,15 @@ def optimize(
                 h1,
                 chol,
                 enuc,
-                m,
+                s,
+                sz,
                 list(ext_ops.values())[0], # TODO: Only works for 1 group now!
                 list(ext_chars.values())[0],
                 ngrid=ngrid,
             )
 
         else:
-            energy_init = get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
+            energy_init = get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, ngrid)
 
     print(f"\n# Initial projected energy = {energy_init}")
 
@@ -657,13 +660,14 @@ def optimize(
                     h1,
                     chol,
                     enuc,
-                    m,
+                    s,
+                    sz,
                     list(ext_ops.values())[0], # TODO: Only works for 1 group now!
                     list(ext_chars.values())[0],
                     ngrid=ngrid,
                 )
             else:
-                return get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid)
+                return get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, ngrid)
 
     @jit
     def gradient(x, *args):
