@@ -314,15 +314,35 @@ def set_trial(
             )
 
     if options.get("symmetry_projector", None) is not None:
-        if "s2" in options["symmetry_projector"]:
+        if "s2_full" in options["symmetry_projector"]:
             S = options["target_spin"] / 2.0
             Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
             ngrid = options.get("s2_projector_ngrid", 8)
-            beta_vals = np.linspace(0, np.pi, ngrid, endpoint=False)
-            wigner = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
-                S, Sz, Sz, beta_vals
-            )
-            wave_data["wigner"] = (S, Sz, wigner * jnp.sin(beta_vals), beta_vals)
+            alphas = np.linspace(0, 2*np.pi, ngrid, endpoint=False)
+            betas = np.linspace(0, np.pi, ngrid, endpoint=False)
+            w_alphas = jnp.exp(1.j * Sz * alphas)
+            w_betas = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+                S, Sz, Sz, betas
+            ) * jnp.sin(betas)
+            A, B = jnp.meshgrid(alphas, betas, indexing="ij")
+            w_A, w_B = jnp.meshgrid(w_alphas, w_betas, indexing="ij")
+            A = A.reshape(-1)
+            B = B.reshape(-1)
+            w_A = w_A.reshape(-1)
+            w_B = w_B.reshape(-1)
+            angles = jnp.stack([A, B], axis=-1)
+            ws = w_A * w_B
+            wave_data["angles"] = (S, Sz, ws, angles)
+
+        elif "s2" in options["symmetry_projector"]:
+            S = options["target_spin"] / 2.0
+            Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
+            ngrid = options.get("s2_projector_ngrid", 8)
+            betas = np.linspace(0, np.pi, ngrid, endpoint=False)
+            w_betas = jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+                S, Sz, Sz, betas
+            ) * jnp.sin(betas)
+            wave_data["betas"] = (S, Sz, w_betas, betas)
 
     # Set up trial wavefunction based on specified type
     if options_trial == "rhf":

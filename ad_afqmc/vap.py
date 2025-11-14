@@ -46,7 +46,7 @@ def get_wigner_d(s, m, k, beta):
 def apply_sz_projector(input_ket, m, ngrid):
     norb = input_ket.shape[0] // 2
     nocc = input_ket.shape[1]
-    kets = np.zeros((ngrid, 2 * norb, nocc), dtype=np.complex128)
+    kets = np.zeros((ngrid, 2*norb, nocc), dtype=np.complex128)
     coeffs = np.zeros(ngrid, dtype=np.complex128)
 
     # Integrate gamma \in [0, 2pi) by quadrature.
@@ -54,14 +54,10 @@ def apply_sz_projector(input_ket, m, ngrid):
         gamma = 2 * np.pi * ig / ngrid
 
         # Coefficients.
-        coeffs[ig] = np.exp(1.0j * gamma * m)
-
-        # Rotation matrix about the z-axis. Only need to consider the diagonal.
-        rot_diag = np.ones(2 * norb, dtype=np.complex128)
-        rot_diag[:norb] *= np.exp(-1.0j * gamma / 2.0)  # Acting on spin up.
-        rot_diag[norb:] *= np.exp(1.0j * gamma / 2.0)  # Acting on spin down.
-        rot_mat = np.diag(rot_diag)
-        kets[ig] = rot_mat @ input_ket
+        coeffs[ig] = np.exp(1.j * m * gamma)
+        ket_a = np.exp(-1.j * gamma/2.) * input_ket[:norb]
+        ket_b = np.exp(1.j * gamma/2.) * input_ket[norb:]
+        kets[ig] = np.vstack([ket_a, ket_b])
 
     coeffs /= ngrid  # For numerical integration.
     return kets, coeffs
@@ -71,44 +67,36 @@ def apply_sz_projector_jax(input_ket, m, ngrid):
     norb = input_ket.shape[0] // 2
 
     # Pre-compute all the gammas and exponentials.
-    dg = 2. * jnp.pi / ngrid
-    gammas = jnp.arange(ngrid) * dg
-    exp_gamma = jnp.exp(1.j * gammas / 2.)
-    exp_mgamma = exp_gamma.conj()
+    gammas = jnp.linspace(0., 2*jnp.pi, ngrid, endpoint=False)
     coeffs = jnp.exp(1.j * m * gammas) / ngrid
 
-    def rot_gamma(ig):
-        rot_diag = jnp.concatenate(
-            [jnp.ones(norb) * exp_mgamma[ig], jnp.ones(norb) * exp_gamma[ig]]
-        )
-        return input_ket * rot_diag[:, None], coeffs[ig]
+    def rot_gamma(gamma):
+        ket_a = jnp.exp(-1.j * gamma/2.) * input_ket[:norb]
+        ket_b = jnp.exp(1.j * gamma/2.) * input_ket[norb:]
+        return jnp.vstack([ket_a, ket_b])
 
-    return jax.vmap(rot_gamma)(jnp.arange(ngrid))
-
+    return jax.vmap(rot_gamma)(gammas), coeffs
 
 def apply_s2_singlet_projector_jax(input_ket, ngrid_a=8, ngrid_b=8, ngrid_g=8):
     """
     Wigner small-d matrix = 1.
     """
-    def rot_elements(alpha, beta, gamma):
-        aa = jnp.exp(-1.j * (alpha + gamma)/2.) * jnp.cos(beta/2.)
-        bb = jnp.exp(1.j * (alpha + gamma)/2.) * jnp.cos(beta/2.)
-        ab = -jnp.exp(-1.j * (alpha - gamma)/2.) * jnp.sin(beta/2.)
-        ba = jnp.exp(1.j * (alpha - gamma)/2.) * jnp.sin(beta/2.)
-        return aa, ab, ba, bb
-
     norb = input_ket.shape[0] // 2
 
     # Uniform grid over alpha, beta, gamma.
-    da = 2. * jnp.pi / ngrid_a
-    dg = 2. * jnp.pi / ngrid_g
-    alphas = jnp.arange(ngrid_a) * da
-    gammas = jnp.arange(ngrid_g) * dg
+    #da = 2. * jnp.pi / ngrid_a
+    #dg = 2. * jnp.pi / ngrid_g
+    #alphas = jnp.arange(ngrid_a) * da
+    #gammas = jnp.arange(ngrid_g) * dg
 
     # Midpoint rule in beta avoids endpoints; include sin(beta) Jacobian explicitly.
-    db = jnp.pi / ngrid_b
-    beta_edges = jnp.linspace(0.0, jnp.pi, ngrid_b+1)
-    betas = 0.5 * (beta_edges[:-1] + beta_edges[1:])
+    #db = jnp.pi / ngrid_b
+    #beta_edges = jnp.linspace(0.0, jnp.pi, ngrid_b+1)
+    #betas = 0.5 * (beta_edges[:-1] + beta_edges[1:])
+
+    alphas, da = jnp.linspace(0., 2*jnp.pi, ngrid_a, endpoint=False, retstep=True)
+    betas, db = jnp.linspace(0., jnp.pi, ngrid_b, endpoint=False, retstep=True)
+    gammas, dg = jnp.linspace(0., 2*jnp.pi, ngrid_g, endpoint=False, retstep=True)
 
     # Build the full tensor grid and flatten
     A, B, G = jnp.meshgrid(alphas, betas, gammas, indexing="ij")
@@ -116,20 +104,22 @@ def apply_s2_singlet_projector_jax(input_ket, ngrid_a=8, ngrid_b=8, ngrid_g=8):
     B = B.reshape(-1)
     G = G.reshape(-1)
 
-    prefac = 1./(8*jnp.pi**2) * da * db * dg
-
     def rotate(solid_angle):
         alpha, beta, gamma = solid_angle
-        aa, ab, ba, bb = rot_elements(alpha, beta, gamma)
+        aa = jnp.exp(-1.j * (alpha + gamma)/2.) * jnp.cos(beta/2.)
+        bb = jnp.exp(1.j * (alpha + gamma)/2.) * jnp.cos(beta/2.)
+        ab = -jnp.exp(-1.j * (alpha - gamma)/2.) * jnp.sin(beta/2.)
+        ba = jnp.exp(1.j * (alpha - gamma)/2.) * jnp.sin(beta/2.)
+
         ket_a = aa * input_ket[:norb] + ab * input_ket[norb:]
         ket_b = ba * input_ket[:norb] + bb * input_ket[norb:]
         rot_ket = jnp.vstack([ket_a, ket_b])
-        rot_coeff = prefac * jnp.sin(beta)
+        rot_coeff = jnp.sin(beta)
         return rot_ket, rot_coeff
 
-    kets, coeffs = jax.vmap(rotate)(jnp.stack([A, B, G], axis=1))
-    return kets, coeffs
-
+    prefac = 1./(8*jnp.pi**2) * da * db * dg
+    kets, coeffs = jax.vmap(rotate)(jnp.stack([A, B, G], axis=-1))
+    return kets, prefac * coeffs
 
 def get_real_wavefunction(kets, coeffs):
     ngrid, norbx2, nocc = kets.shape
@@ -140,7 +130,6 @@ def get_real_wavefunction(kets, coeffs):
     real_coeffs[:ngrid] = coeffs.copy() / np.sqrt(2.0)
     real_coeffs[ngrid:] = np.conj(coeffs) / np.sqrt(2.0)
     return real_kets, real_coeffs
-
 
 # -----------------------------------------------------------------------------
 # Energies.
@@ -279,7 +268,6 @@ def build_rotchol(psiTconj, chol):
 @partial(jit, static_argnums=(4, 5))
 def get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid):
     norb = h1[0].shape[0]
-
     kets, coeffs = apply_sz_projector_jax(psi, m, ngrid)
     psiTconj = psi.T.conj()
     rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
@@ -293,7 +281,6 @@ def get_sz_projected_energy_jax(psi, h1, chol, enuc, m, ngrid):
 
     overlaps = jax.vmap(get_overlap)(kets)
     energies = jax.vmap(get_energy)(kets)
-
     num = jnp.sum(coeffs * overlaps * energies)
     denom = jnp.sum(coeffs * overlaps)
     return num.real / denom.real
