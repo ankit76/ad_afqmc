@@ -131,7 +131,7 @@ def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None, tmpdir=
         sampler,
         observable,
         options,
-    ) = launch_script.setup_afqmc(options, options["tmpdir"])
+    ) = launch_script.setup_afqmc_fp(options, options["tmpdir"])
 
     if (
         options["symmetry_projector"] == "s2"

@@ -36,7 +36,7 @@ def check_1(mf, mycc):
         sampler,
         observable,
         options,
-    ) = launch_script.setup_afqmc(options, options["tmpdir"])
+    ) = launch_script.setup_afqmc_fp(options, options["tmpdir"])
     
     ham_data = ham.build_measurement_intermediates(ham_data, trial_bra, wave_data_bra)
     ham_data = ham.build_propagation_intermediates(

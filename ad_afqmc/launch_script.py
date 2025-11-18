@@ -697,6 +697,62 @@ def setup_afqmc(
     trial, wave_data = set_trial(
         options, options["trial"], mo_coeff, norb, nelec_sp, directory
     )
+    prop = set_prop(options)
+    sampler = set_sampler(options)
+
+    print(f"# norb: {norb}")
+    print(f"# nelec: {nelec_sp}")
+    print("#")
+    for op in options:
+        if options[op] is not None:
+            print(f"# {op}: {options[op]}")
+    print("#")
+
+    return (
+        ham_data,
+        ham,
+        prop,
+        trial,
+        wave_data,
+        sampler,
+        observable,
+        options,
+    )
+
+
+def setup_afqmc_fp(
+    options: Optional[Dict] = None, tmp_dir: Optional[str] = None
+) -> Tuple:
+    """Prepare all components for a free projection AFQMC calculation.
+
+    Args:
+        options: Dictionary of calculation options (optional)
+        tmp_dir: Directory for input/output files (optional)
+
+    Returns:
+        Tuple containing all necessary components for AFQMC free projection calculation:
+            ham_data: Dictionary of Hamiltonian data
+            ham: Hamiltonian object
+            prop: Propagator object
+            trial: Trial wavefunction object
+            wave_data: Dictionary of wavefunction data
+            trial_ket: Trial wavefunction object for ket
+            wave_data_ket: Dictionary of wavefunction data for ket
+            sampler: Sampler object
+            observable: Observable operator
+            options: Dictionary of calculation options
+    """
+    directory = tmp_dir if tmp_dir is not None else tmpdir
+
+    h0, h1, chol, norb, nelec_sp = read_fcidump(directory)
+    options = read_options(options, directory)
+    observable = read_observable(norb, options, directory)
+    ham, ham_data = set_ham(norb, h0, h1, chol, options["ene0"])
+    ham_data = apply_symmetry_mask(ham_data, options)
+    mo_coeff = load_mo_coefficients(directory)
+    trial, wave_data = set_trial(
+        options, options["trial"], mo_coeff, norb, nelec_sp, directory
+    )
     trial_ket, wave_data_ket = set_trial(
         options,
         options.get("trial_ket", options["trial"]),
@@ -754,8 +810,8 @@ def run_afqmc_calculation(
     directory = tmp_dir if tmp_dir is not None else tmpdir
 
     # Prepare all components
-    ham_data, ham, prop, trial, wave_data, _, _, sampler, observable, options = (
-        setup_afqmc(options=custom_options, tmp_dir=directory)
+    ham_data, ham, prop, trial, wave_data, sampler, observable, options = setup_afqmc(
+        options=custom_options, tmp_dir=directory
     )
 
     assert trial is not None, "Trial wavefunction is None. Cannot run AFQMC."

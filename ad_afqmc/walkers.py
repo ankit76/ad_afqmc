@@ -219,9 +219,6 @@ class UHFWalkers(walker_batch):
 
         def scanned_fun(carry, walker_field_chunk):
             walker_chunk_up, walker_chunk_dn, field_chunk = walker_field_chunk
-            # print(f"walker_chunk_up.shape: {walker_chunk_up.shape}")
-            # print(f"walker_chunk_dn.shape: {walker_chunk_dn.shape}")
-            # print(f"field_chunk.shape: {field_chunk.shape}")
             result_chunk = vmap(prop_fn, in_axes=(0, 0, 0, *[None] * len(args)))(
                 walker_chunk_up, walker_chunk_dn, field_chunk, *args, **kwargs
             )

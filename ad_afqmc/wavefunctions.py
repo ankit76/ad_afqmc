@@ -620,7 +620,6 @@ class sum_state(wave_function):
         return hash(tuple(self.__dict__.values()))
 
 
-# we assume afqmc is performed in the rhf orbital basis
 @dataclass
 class rhf(wave_function):
     """Class for the restricted Hartree-Fock wave function.
@@ -3094,8 +3093,8 @@ class UCISD(wave_function_auto):
         ) # put walker_dn in the basis of alpha reference
 
         Atrial, Btrial = (
-            wave_data["mo_coeff"][0][:,:noccA],
-            wave_data["mo_coeff"][1][:,:noccB],
+            wave_data["mo_coeff"][0][:, :noccA],
+            wave_data["mo_coeff"][1][:, :noccB],
         )
         bra = jnp.block([[Atrial, 0*Btrial],[0*Atrial, Btrial]])
         o0 = jnp.linalg.det(bra.T.conj() @ walker)
@@ -3104,12 +3103,12 @@ class UCISD(wave_function_auto):
 
         gf = (walker_ @ jnp.linalg.inv(bra.T.conj() @ walker_) @ bra.T.conj()).T
         gfA, gfB = (
-            gf[:self.nelec[0],:self.norb],
-            gf[self.norb:self.norb+self.nelec[1],self.norb:],
+            gf[: self.nelec[0], : self.norb],
+            gf[self.norb : self.norb + self.nelec[1], self.norb :],
         )
         gfAB, gfBA = (
-            gf[:self.nelec[0],self.norb:],
-            gf[self.norb:self.norb+self.nelec[1],:self.norb],
+            gf[: self.nelec[0], self.norb :],
+            gf[self.norb : self.norb + self.nelec[1], : self.norb],
         )
 
         o1 = jnp.einsum("ia,ia", ci1A, gfA[:, noccA:]) \

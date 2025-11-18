@@ -88,7 +88,7 @@ ghf = Obj()
 ghf.options = options
 ghf.options["trial"] = "ghf_complex"
 ghf.options["walker_type"] = "generalized"
-ghf.ham_data, ghf.ham, ghf.prop, ghf.trial, ghf.wave_data, _, _, ghf.sampler, ghf.observable, ghf.options = launch_script.setup_afqmc(
+ghf.ham_data, ghf.ham, ghf.prop, ghf.trial, ghf.wave_data, ghf.sampler, ghf.observable, ghf.options = launch_script.setup_afqmc(
     options=ghf.options, tmp_dir=tmp_ghf
 )
 ghf.ham_data = ghf.trial._build_measurement_intermediates(ghf.ham_data, ghf.wave_data)
@@ -99,7 +99,7 @@ uhf = Obj()
 uhf.options = options
 uhf.options["trial"] = "uhf"
 uhf.options["walker_type"] = "unrestricted"
-uhf.ham_data, uhf.ham, uhf.prop, uhf.trial, uhf.wave_data, _, _, uhf.sampler, uhf.observable, uhf.options = launch_script.setup_afqmc(
+uhf.ham_data, uhf.ham, uhf.prop, uhf.trial, uhf.wave_data, uhf.sampler, uhf.observable, uhf.options = launch_script.setup_afqmc(
     options=uhf.options, tmp_dir=tmp_uhf
 )
 uhf.ham_data = uhf.trial._build_measurement_intermediates(uhf.ham_data, uhf.wave_data)
@@ -110,7 +110,7 @@ gcisd = Obj()
 gcisd.options = options
 gcisd.options["trial"] = "gcisd_complex"
 gcisd.options["walker_type"] = "generalized"
-gcisd.ham_data, gcisd.ham, gcisd.prop, gcisd.trial, gcisd.wave_data, _, _, gcisd.sampler, gcisd.observable, gcisd.options = launch_script.setup_afqmc(
+gcisd.ham_data, gcisd.ham, gcisd.prop, gcisd.trial, gcisd.wave_data, gcisd.sampler, gcisd.observable, gcisd.options = launch_script.setup_afqmc(
     options=gcisd.options, tmp_dir=tmp_ghf
 )
 
@@ -120,7 +120,7 @@ ucisd = Obj()
 ucisd.options = options
 ucisd.options["trial"] = "ucisd"
 ucisd.options["walker_type"] = "unrestricted"
-ucisd.ham_data, ucisd.ham, ucisd.prop, ucisd.trial, ucisd.wave_data, _, _, ucisd.sampler, ucisd.observable, ucisd.options = launch_script.setup_afqmc(
+ucisd.ham_data, ucisd.ham, ucisd.prop, ucisd.trial, ucisd.wave_data, ucisd.sampler, ucisd.observable, ucisd.options = launch_script.setup_afqmc(
     options=ucisd.options, tmp_dir=tmp_uhf
 )
 ucisd.ham_data = ucisd.trial._build_measurement_intermediates(ucisd.ham_data, ucisd.wave_data)
