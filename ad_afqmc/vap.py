@@ -54,12 +54,12 @@ def apply_sz_projector(input_ket, s, sz, ngrid):
         gamma = 2 * np.pi * ig / ngrid
 
         # Coefficients.
-        coeffs[ig] = np.exp(1.j * m * gamma) * (2*s+1)/2. * np.pi/ngrid
+        coeffs[ig] = np.exp(1.j * sz * gamma)
         ket_a = np.exp(-1.j * gamma/2.) * input_ket[:norb]
         ket_b = np.exp(1.j * gamma/2.) * input_ket[norb:]
         kets[ig] = np.vstack([ket_a, ket_b])
 
-    coeffs /= ngrid  # For numerical integration.
+    coeffs *= (2*s+1)/2. * np.pi/ngrid
     return kets, coeffs
 
 @partial(jit, static_argnums=(1, 2, 3))
@@ -77,26 +77,26 @@ def apply_sz_projector_jax(input_ket, s, sz, ngrid):
 
     return jax.vmap(rot_gamma)(gammas), coeffs
 
-def apply_s2_singlet_projector_jax(input_ket, ngrid_a=8, ngrid_b=8, ngrid_g=8):
+def apply_s2_singlet_projector_jax(input_ket, nalpha=8, nbeta=8, ngamma=8):
     """
     Wigner small-d matrix = 1.
     """
     norb = input_ket.shape[0] // 2
 
     # Uniform grid over alpha, beta, gamma.
-    #da = 2. * jnp.pi / ngrid_a
-    #dg = 2. * jnp.pi / ngrid_g
-    #alphas = jnp.arange(ngrid_a) * da
-    #gammas = jnp.arange(ngrid_g) * dg
+    #da = 2. * jnp.pi / nalpha
+    #dg = 2. * jnp.pi / ngamma
+    #alphas = jnp.arange(nalpha) * da
+    #gammas = jnp.arange(ngamma) * dg
 
     # Midpoint rule in beta avoids endpoints; include sin(beta) Jacobian explicitly.
-    #db = jnp.pi / ngrid_b
-    #beta_edges = jnp.linspace(0.0, jnp.pi, ngrid_b+1)
-    #betas = 0.5 * (beta_edges[:-1] + beta_edges[1:])
+    db = jnp.pi / nbeta
+    beta_edges = jnp.linspace(0.0, jnp.pi, nbeta+1)
+    betas = 0.5 * (beta_edges[:-1] + beta_edges[1:])
 
-    alphas, da = jnp.linspace(0., 2*jnp.pi, ngrid_a, endpoint=False, retstep=True)
-    betas, db = jnp.linspace(0., jnp.pi, ngrid_b, endpoint=False, retstep=True)
-    gammas, dg = jnp.linspace(0., 2*jnp.pi, ngrid_g, endpoint=False, retstep=True)
+    alphas, da = jnp.linspace(0., 2*jnp.pi, nalpha, endpoint=False, retstep=True)
+    #betas, db = jnp.linspace(0., jnp.pi, nbeta, endpoint=False, retstep=True)
+    gammas, dg = jnp.linspace(0., 2*jnp.pi, ngamma, endpoint=False, retstep=True)
 
     # Build the full tensor grid and flatten
     A, B, G = jnp.meshgrid(alphas, betas, gammas, indexing="ij")
@@ -173,7 +173,6 @@ def get_energy(bra, ket, h1, rotchol, enuc):
     energy += ej + ek
     return energy
 
-
 @jit
 def get_energy_jax(bra, ket, h1, rotchol, enuc):
     """
@@ -219,7 +218,6 @@ def get_energy_jax(bra, ket, h1, rotchol, enuc):
     energy += ej + ek
     return energy
 
-
 def get_sz_projected_energy(psi, h1, chol, enuc, s, sz, ngrid):
     norb = h1[0].shape[0]
     nchol = chol.shape[0]
@@ -247,7 +245,6 @@ def get_sz_projected_energy(psi, h1, chol, enuc, s, sz, ngrid):
     enum = enum.real
     ovlp = ovlp.real
     return enum / ovlp
-
 
 @jit
 def build_rotchol(psiTconj, chol):
@@ -285,13 +282,12 @@ def get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, ngrid):
     denom = jnp.sum(coeffs * overlaps)
     return num.real / denom.real
 
-
 def get_s2_singlet_projected_energy_jax(
-        psi, h1, chol, enuc, ngrid_a=8, ngrid_b=8, ngrid_g=8
+        psi, h1, chol, enuc, nalpha=8, nbeta=8, ngamma=8
     ):
     norb = h1[0].shape[0]
 
-    kets, coeffs = apply_s2_singlet_projector_jax(psi, ngrid_a, ngrid_b, ngrid_g)
+    kets, coeffs = apply_s2_singlet_projector_jax(psi, nalpha, nbeta, ngamma)
     psiTconj = psi.T.conj()
     rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
 
@@ -308,7 +304,6 @@ def get_s2_singlet_projected_energy_jax(
     num = jnp.sum(coeffs * overlaps * energies)
     denom = jnp.sum(coeffs * overlaps)
     return num.real / denom.real
-
 
 def get_ext_sz_projected_energy_jax(
         psi, h1, chol, enuc, s, sz, ext_ops, ext_chars=None, ngrid=8
@@ -356,9 +351,8 @@ def get_ext_sz_projected_energy_jax(
     num, denom = jnp.sum(num_denom_arr, axis=0) / len(ext_ops)
     return num.real / denom.real
 
-
 def get_ext_s2_singlet_projected_energy_jax(
-        psi, h1, chol, enuc, ext_ops, ext_chars=None, ngrid_a=8, ngrid_b=8, ngrid_g=8
+        psi, h1, chol, enuc, ext_ops, ext_chars=None, nalpha=8, nbeta=8, ngamma=8
     ):
     """
     Assumes spinless external projectors.
@@ -374,7 +368,7 @@ def get_ext_s2_singlet_projected_energy_jax(
     norb = h1[0].shape[0]
     
     # Apply spin rotations that commute with the spinless external projectors.
-    base_kets, coeffs = apply_s2_singlet_projector_jax(psi, ngrid_a, ngrid_b, ngrid_g)
+    base_kets, coeffs = apply_s2_singlet_projector_jax(psi, nalpha, nbeta, ngamma)
     psiTconj = psi.T.conj()
     rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
 
@@ -402,7 +396,6 @@ def get_ext_s2_singlet_projected_energy_jax(
     )
     num, denom = jnp.sum(num_denom_arr, axis=0) / len(ext_ops)
     return num.real / denom.real
-
 
 # -----------------------------------------------------------------------------
 # Optimization.
@@ -564,14 +557,15 @@ def amsgrad(
         status=0,
     )
 
-
 def optimize(
     psi,
     nelec,
     h1,
     chol,
     enuc,
-    ngrid=10,
+    nalpha=8,
+    nbeta=8,
+    ngamma=8,
     maxiter=100,
     step=0.01,
     projector="s2",
@@ -587,7 +581,7 @@ def optimize(
 
     print(f"\n# maxiter: {maxiter}")
     print(f"# projector: {projector}")
-    print(f"# quadrature ngrid: {ngrid}")
+    print(f"# quadrature nalpha, nbeta, ngamma: {nalpha, nbeta, ngamma}")
     if ext_ops is not None: print(f"# external projectors: {list(ext_ops.keys())}")
 
     if "s2" in projector:
@@ -601,14 +595,14 @@ def optimize(
                 enuc,
                 list(ext_ops.values())[0], # TODO: Only works for 1 group now!
                 list(ext_chars.values())[0],
-                ngrid_a=ngrid,
-                ngrid_b=ngrid,
-                ngrid_g=ngrid,
+                nalpha=nalpha,
+                nbeta=nbeta,
+                ngamma=ngamma,
             )
 
         else:
             energy_init = get_s2_singlet_projected_energy_jax(
-                psi, h1, chol, enuc, ngrid_a=ngrid, ngrid_b=ngrid, ngrid_g=ngrid
+                psi, h1, chol, enuc, nalpha=ngamma, nbeta=nbeta, ngamma=ngamma
             )
 
     elif "sz" in projector:
@@ -622,11 +616,11 @@ def optimize(
                 sz,
                 list(ext_ops.values())[0], # TODO: Only works for 1 group now!
                 list(ext_chars.values())[0],
-                ngrid=ngrid,
+                ngrid=nbeta,
             )
 
         else:
-            energy_init = get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, ngrid)
+            energy_init = get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, nbeta)
 
     print(f"\n# Initial projected energy = {energy_init}")
 
@@ -643,14 +637,14 @@ def optimize(
                     enuc,
                     list(ext_ops.values())[0], # TODO: Only works for 1 group now!
                     list(ext_chars.values())[0],
-                    ngrid_a=ngrid,
-                    ngrid_b=ngrid,
-                    ngrid_g=ngrid,
+                    nalpha=nalpha,
+                    nbeta=nbeta,
+                    ngamma=ngamma,
                 )
 
             else:
                 return get_s2_singlet_projected_energy_jax(
-                    psi, h1, chol, enuc, ngrid_a=ngrid, ngrid_b=ngrid, ngrid_g=ngrid
+                    psi, h1, chol, enuc, nalpha=nalpha, nbeta=nbeta, ngamma=ngamma
                 )
 
         elif "sz" in projector:
@@ -664,10 +658,10 @@ def optimize(
                     sz,
                     list(ext_ops.values())[0], # TODO: Only works for 1 group now!
                     list(ext_chars.values())[0],
-                    ngrid=ngrid,
+                    ngrid=nbeta,
                 )
             else:
-                return get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, ngrid)
+                return get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, nbeta)
 
     @jit
     def gradient(x, *args):
