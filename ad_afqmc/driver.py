@@ -1538,10 +1538,6 @@ def fp_afqmc(
         e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
         prop_data["e_estimate"] = e_estimate
 
-        # Just to print
-        energy_samples = jnp.real(
-                trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
-        )
         e_trial = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
         ov = trial_bra.calc_overlap(prop_data["walkers"], wave_data_bra)
         sign = np.sum(ov) / np.sum(np.abs(ov))
@@ -1579,8 +1575,7 @@ def fp_afqmc(
         avg_weight += weights
         avg_energy += weights * (energy_samples - avg_energy) / avg_weight
 
-
-        # Requieres to revert the changes done to propagate_free and block_scan_free
+        # Requires to revert the changes done to propagate_free and block_scan_free
         # to return a list of n_blocks * n_walkers walkers.
         #if options["save_walkers"] == True:
         #    if n > 0:
