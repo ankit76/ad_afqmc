@@ -1,9 +1,12 @@
 import jax
 import jax.numpy as jnp
+from jax import config
 import numpy as np
 from pyscf import gto, scf
 from ad_afqmc import afqmc, launch_script, pyscf_interface, wavefunctions
 import pickle
+
+config.update("jax_enable_x64", True)
 
 def check_1(mf, mycc):
     af = afqmc.AFQMC(mf, mycc)
