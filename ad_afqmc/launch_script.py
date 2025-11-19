@@ -319,7 +319,6 @@ def set_trial(
             Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
             nalpha = options.get("nalpha", 8)
             nbeta = options.get("nbeta", 8)
-            print(nalpha, nbeta)
             alphas = np.linspace(0, 2*np.pi, nalpha, endpoint=False)
             #betas = np.linspace(0, np.pi, nbeta, endpoint=False)
            
