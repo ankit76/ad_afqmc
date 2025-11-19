@@ -1,185 +1,93 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import grad, jit
-
 import numpy as np
-import scipy as sp
-from scipy.optimize import minimize, OptimizeResult
-from functools import partial
+import optax
+from jax import jit
 
 
-def get_wigner_d(s, m, k, beta):
-    """
-    Wigner small d-matrix.
-    """
-    nmin = int(max(0, k - m))
-    nmax = int(min(s + k, s - m))
-    fac = np.sqrt(
-        sp.special.factorial(s + k)
-        * sp.special.factorial(s - k)
-        * sp.special.factorial(s + m)
-        * sp.special.factorial(s - m)
-    )
-    cumsum = 0.0
+def apply_sz_projector(
+    input_ket: jnp.ndarray, m: float, n_grid: int
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return sz projected determinants and coefficients for a single ket."""
+    norb = input_ket.shape[0] // 2
 
-    for n in range(nmin, nmax + 1):
-        denom = (
-            sp.special.factorial(s + k - n)
-            * sp.special.factorial(s - n - m)
-            * sp.special.factorial(n - k + m)
-            * sp.special.factorial(n)
+    gammas = 2.0 * jnp.pi * jnp.arange(n_grid) / n_grid
+    exp_factors = jnp.exp(1.0j * gammas / 2.0)
+    exp_neg_factors = jnp.exp(-1.0j * gammas / 2.0)
+    m_factors = jnp.exp(-1.0j * gammas * m) / n_grid
+
+    def projector_for_gamma(ig):
+        rot_diag = jnp.concatenate(
+            [jnp.ones(norb) * exp_factors[ig], jnp.ones(norb) * exp_neg_factors[ig]]
         )
+        return input_ket * rot_diag[:, None], m_factors[ig]
 
-        sign = (-1.0) ** (n - k + m)
-        cos = (np.cos(beta / 2.0)) ** (2 * s - 2 * n + k - m)
-        sin = (np.sin(beta / 2.0)) ** (2 * n - k + m)
-        num = sign * cos * sin
-        cumsum += num / denom
-
-    return fac * cumsum
+    return jax.vmap(projector_for_gamma, in_axes=0, out_axes=(0, 0))(jnp.arange(n_grid))
 
 
-# -----------------------------------------------------------------------------
-# Projectors.
-# -----------------------------------------------------------------------------
-def apply_sz_projector(input_ket, s, sz, ngrid):
-    norb = input_ket.shape[0] // 2
-    nocc = input_ket.shape[1]
-    kets = np.zeros((ngrid, 2*norb, nocc), dtype=np.complex128)
-    coeffs = np.zeros(ngrid, dtype=np.complex128)
-
-    # Integrate gamma \in [0, 2pi) by quadrature.
-    for ig in range(ngrid):
-        gamma = 2 * np.pi * ig / ngrid
-
-        # Coefficients.
-        coeffs[ig] = np.exp(1.j * sz * gamma)
-        ket_a = np.exp(-1.j * gamma/2.) * input_ket[:norb]
-        ket_b = np.exp(1.j * gamma/2.) * input_ket[norb:]
-        kets[ig] = np.vstack([ket_a, ket_b])
-
-    coeffs *= (2*s+1)/2. * np.pi/ngrid
-    return kets, coeffs
-
-@partial(jit, static_argnums=(1, 2, 3))
-def apply_sz_projector_jax(input_ket, s, sz, ngrid):
-    norb = input_ket.shape[0] // 2
-
-    # Pre-compute all the gammas and exponentials.
-    gammas = jnp.linspace(0., 2*jnp.pi, ngrid, endpoint=False)
-    coeffs = jnp.exp(1.j * sz * gammas) * (2*s+1)/2. * jnp.pi/ngrid
-
-    def rot_gamma(gamma):
-        ket_a = jnp.exp(-1.j * gamma/2.) * input_ket[:norb]
-        ket_b = jnp.exp(1.j * gamma/2.) * input_ket[norb:]
-        return jnp.vstack([ket_a, ket_b])
-
-    return jax.vmap(rot_gamma)(gammas), coeffs
-
-def apply_s2_singlet_projector_jax(input_ket, nalpha=8, nbeta=8, ngamma=8):
+def build_rotchol(psi_t_conj: jnp.ndarray, chol: jnp.ndarray) -> jnp.ndarray:
     """
-    Wigner small-d matrix = 1.
+    Precompute the Cholesky-rotated matrices used for two-body energy evaluation.
+
+    Args:
+        psi_t_conj: Trial determinant conjugate transpose, shape (n_occ, 2 * n_orb).
+        chol: Cholesky tensors, shape (n_chol, n_orb, n_orb).
+
+    Returns:
+        rotchol: Array with shape (2, n_chol, n_occ, n_orb) containing alpha/beta blocks.
     """
-    norb = input_ket.shape[0] // 2
+    _, norb, _ = chol.shape
 
-    # Uniform grid over alpha, beta, gamma.
-    #da = 2. * jnp.pi / nalpha
-    #dg = 2. * jnp.pi / ngamma
-    #alphas = jnp.arange(nalpha) * da
-    #gammas = jnp.arange(ngamma) * dg
+    psi_alpha = psi_t_conj[:, :norb]
+    psi_beta = psi_t_conj[:, norb:]
 
-    # Midpoint rule in beta avoids endpoints; include sin(beta) Jacobian explicitly.
-    db = jnp.pi / nbeta
-    beta_edges = jnp.linspace(0.0, jnp.pi, nbeta+1)
-    betas = 0.5 * (beta_edges[:-1] + beta_edges[1:])
+    rot_alpha = jnp.einsum("ij,njk->nik", psi_alpha, chol)
+    rot_beta = jnp.einsum("ij,njk->nik", psi_beta, chol)
 
-    alphas, da = jnp.linspace(0., 2*jnp.pi, nalpha, endpoint=False, retstep=True)
-    #betas, db = jnp.linspace(0., jnp.pi, nbeta, endpoint=False, retstep=True)
-    gammas, dg = jnp.linspace(0., 2*jnp.pi, ngamma, endpoint=False, retstep=True)
+    rotchol = jnp.stack([rot_alpha, rot_beta], axis=0)
+    return rotchol
 
-    # Build the full tensor grid and flatten
-    A, B, G = jnp.meshgrid(alphas, betas, gammas, indexing="ij")
-    A = A.reshape(-1)
-    B = B.reshape(-1)
-    G = G.reshape(-1)
 
-    def rotate(solid_angle):
-        alpha, beta, gamma = solid_angle
-        aa = jnp.exp(-1.j * (alpha + gamma)/2.) * jnp.cos(beta/2.)
-        bb = jnp.exp(1.j * (alpha + gamma)/2.) * jnp.cos(beta/2.)
-        ab = -jnp.exp(-1.j * (alpha - gamma)/2.) * jnp.sin(beta/2.)
-        ba = jnp.exp(1.j * (alpha - gamma)/2.) * jnp.sin(beta/2.)
+def _evaluate_linear_expansion_energy(
+    psi: jnp.ndarray, kets: jnp.ndarray, coeffs: jnp.ndarray, ham: hamiltonian
+) -> jnp.ndarray:
+    """Compute projected energy for a linear combination of determinants."""
+    context = ham.prepare(psi)
+    psi_t_conj = psi.T.conj()
 
-        ket_a = aa * input_ket[:norb] + ab * input_ket[norb:]
-        ket_b = ba * input_ket[:norb] + bb * input_ket[norb:]
-        rot_ket = jnp.vstack([ket_a, ket_b])
-        rot_coeff = jnp.sin(beta)
-        return rot_ket, rot_coeff
+    def compute_overlap(ket):
+        ovlp_mat = psi_t_conj @ ket
+        return jsp.linalg.det(ovlp_mat)
 
-    prefac = 1./(8*jnp.pi**2) * da * db * dg
-    kets, coeffs = jax.vmap(rotate)(jnp.stack([A, B, G], axis=-1))
-    return kets, prefac * coeffs
+    def compute_energy(ket):
+        return ham.mixed_energy(psi, ket, context)
 
-def get_real_wavefunction(kets, coeffs):
-    ngrid, norbx2, nocc = kets.shape
-    real_kets = np.zeros((2 * ngrid, norbx2, nocc), dtype=np.complex128)
-    real_coeffs = np.zeros(2 * ngrid, dtype=np.complex128)
-    real_kets[:ngrid] = kets.copy()
-    real_kets[ngrid:] = np.conj(kets)
-    real_coeffs[:ngrid] = coeffs.copy() / np.sqrt(2.0)
-    real_coeffs[ngrid:] = np.conj(coeffs) / np.sqrt(2.0)
-    return real_kets, real_coeffs
+    overlaps = jax.vmap(compute_overlap)(kets)
+    energies = jax.vmap(compute_energy)(kets)
 
-# -----------------------------------------------------------------------------
-# Energies.
-# -----------------------------------------------------------------------------
-def get_energy(bra, ket, h1, rotchol, enuc):
-    """
-    Hamiltonian matrix element < GHF | H | GHF > / < GHF | GHF >.
-    """
+    weighted_terms = coeffs * overlaps * energies
+    enum = jnp.sum(weighted_terms)
+    ovlp = jnp.sum(coeffs * overlaps)
+
+    return (enum / ovlp).real
+
+
+def get_energy_chol(
+    bra: jnp.ndarray,
+    ket: jnp.ndarray,
+    h1: jnp.ndarray,
+    rotchol: jnp.ndarray,
+    enuc: float,
+) -> jnp.ndarray:
+    """Return the mixed estimator <bra|H|ket>/<bra|ket> for a pair of determinants."""
     norb = h1[0].shape[0]
-    nchol = rotchol[0].shape[0]
-    nocc = bra.shape[1]
-
-    # Calculate Green's function.
-    Ghalf = ket @ np.linalg.inv(bra.T.conj() @ ket)
-    Ghalfa = Ghalf[:norb]
-    Ghalfb = Ghalf[norb:]
-    G = Ghalf @ bra.T.conj()
-
-    # Core energy.
-    energy = enuc
-
-    # One-body energy,
-    e1 = np.trace(h1[0] @ G[:norb, :norb]) + np.trace(h1[1] @ G[norb:, norb:])
-    energy += e1
-
-    # Two-body energy.
-    ej, ek = 0.0, 0.0
-    W = np.zeros((2, nocc, nocc), dtype=np.complex128)
-
-    for i in range(nchol):
-        W[0] = rotchol[0, i] @ Ghalfa
-        W[1] = rotchol[1, i] @ Ghalfb
-        ej += 0.5 * (np.trace(W[0]) + np.trace(W[1])) ** 2
-        ek -= 0.5 * (
-            np.sum(W[0] * W[0].T)
-            + np.sum(W[0] * W[1].T)
-            + np.sum(W[1] * W[0].T)
-            + np.sum(W[1] * W[1].T)
-        )
-
-    energy += ej + ek
-    return energy
-
-@jit
-def get_energy_jax(bra, ket, h1, rotchol, enuc):
-    """
-    Hamiltonian matrix element < GHF | H | GHF > / < GHF | GHF >.
-    """
-    norb = h1[0].shape[0]
-    nchol = rotchol[0].shape[0]
+    n_chol = rotchol[0].shape[0]
     nocc = bra.shape[1]
 
     # Calculate Green's function.
@@ -210,513 +118,513 @@ def get_energy_jax(bra, ket, h1, rotchol, enuc):
         )
         return ej, ek
 
-    # Initial values.
     init = (0.0 + 0.0j, 0.0 + 0.0j)
 
-    # Run the loop from i = 0 to i = nchol.
-    ej, ek = jax.lax.fori_loop(0, nchol, scan_fun, init)
+    ej, ek = jax.lax.fori_loop(0, n_chol, scan_fun, init)
     energy += ej + ek
     return energy
 
-def get_sz_projected_energy(psi, h1, chol, enuc, s, sz, ngrid):
+
+def _mixed_green(bra: jnp.ndarray, ket: jnp.ndarray) -> jnp.ndarray:
+    return (ket @ jnp.linalg.inv(bra.T.conj() @ ket) @ bra.T.conj()).T
+
+
+def get_energy_hubbard(
+    bra: jnp.ndarray,
+    ket: jnp.ndarray,
+    h1: jnp.ndarray,
+    u: float,
+    enuc: float = 0.0,
+) -> jnp.ndarray:
+    """Return the mixed estimator <bra|H|ket>/<bra|ket> for a pair of determinants."""
     norb = h1[0].shape[0]
-    nchol = chol.shape[0]
-    nocc = psi.shape[1]
-
-    kets, coeffs = apply_sz_projector(psi, s, sz, ngrid)
-    # kets, coeffs = get_real_wavefunction(kets, coeffs)
-    psiTconj = psi.T.conj()
-    rotchol = np.zeros((2, nchol, nocc, norb), dtype=np.complex128)
-
-    # TODO: parallelize.
-    for i in range(nchol):
-        rotchol[0, i] = psiTconj[:nocc, :norb] @ chol[i].reshape((norb, norb))
-        rotchol[1, i] = psiTconj[:nocc, norb:] @ chol[i].reshape((norb, norb))
-
-    enum, ovlp = 0.0, 0.0
-
-    for i in range(kets.shape[0]):
-        enum_i = get_energy(psi, kets[i], h1, rotchol, enuc)
-        ovlp_mat = psiTconj @ kets[i]
-        ovlp_i = sp.linalg.det(ovlp_mat)
-        enum += coeffs[i] * enum_i * ovlp_i
-        ovlp += coeffs[i] * ovlp_i
-
-    enum = enum.real
-    ovlp = ovlp.real
-    return enum / ovlp
-
-@jit
-def build_rotchol(psiTconj, chol):
-    """
-    psiTconj: shape (nocc, 2*norb)
-    chol: shape (nchol, norb, norb)
-    Returns: rotchol shape (2, nchol, nocc, norb)
-    """
-    _, norb, _ = chol.shape
-    psi_alpha = psiTconj[:, :norb]
-    psi_beta = psiTconj[:, norb:]
-    rot_alpha = jnp.einsum("ij,njk->nik", psi_alpha, chol)
-    rot_beta = jnp.einsum("ij,njk->nik", psi_beta, chol)
-    rotchol = jnp.stack([rot_alpha, rot_beta], axis=0)
-    return rotchol
-
-
-@partial(jit, static_argnums=(4, 5, 6))
-def get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, ngrid):
-    norb = h1[0].shape[0]
-    kets, coeffs = apply_sz_projector_jax(psi, s, sz, ngrid)
-    psiTconj = psi.T.conj()
-    rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
-
-    def get_overlap(ket):
-        ovlp_mat = psiTconj @ ket
-        return jsp.linalg.det(ovlp_mat)
-
-    def get_energy(ket):
-        return get_energy_jax(psi, ket, h1, rotchol, enuc)
-
-    overlaps = jax.vmap(get_overlap)(kets)
-    energies = jax.vmap(get_energy)(kets)
-    num = jnp.sum(coeffs * overlaps * energies)
-    denom = jnp.sum(coeffs * overlaps)
-    return num.real / denom.real
-
-def get_s2_singlet_projected_energy_jax(
-        psi, h1, chol, enuc, nalpha=8, nbeta=8, ngamma=8
-    ):
-    norb = h1[0].shape[0]
-
-    kets, coeffs = apply_s2_singlet_projector_jax(psi, nalpha, nbeta, ngamma)
-    psiTconj = psi.T.conj()
-    rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
-
-    def get_overlap(ket):
-        ovlp_mat = psiTconj @ ket
-        return jsp.linalg.det(ovlp_mat)
-
-    def get_energy(ket):
-        return get_energy_jax(psi, ket, h1, rotchol, enuc)
-
-    overlaps = jax.vmap(get_overlap)(kets)
-    energies = jax.vmap(get_energy)(kets)
-
-    num = jnp.sum(coeffs * overlaps * energies)
-    denom = jnp.sum(coeffs * overlaps)
-    return num.real / denom.real
-
-def get_ext_sz_projected_energy_jax(
-        psi, h1, chol, enuc, s, sz, ext_ops, ext_chars=None, ngrid=8
-    ):
-    """
-    Assumes spinless external projectors.
-    """
-    def _apply_ext_rotation(input_ket, U):
-        """U acts in orbital space on both spin blocks."""
-        norb = input_ket.shape[0] // 2
-        ket_a = U @ input_ket[:norb]
-        ket_b = U @ input_ket[norb:]
-        return jnp.vstack([ket_a, ket_b])
-
-    if ext_chars is None: ext_chars = [1.] * len(ext_ops)
-    norb = h1[0].shape[0]
-    
-    # Apply spin rotations that commute with the spinless external projectors.
-    base_kets, coeffs = apply_sz_projector_jax(psi, s, sz, ngrid)
-    psiTconj = psi.T.conj()
-    rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
-
-    def get_overlap(ket):
-        ovlp_mat = psiTconj @ ket
-        return jsp.linalg.det(ovlp_mat)
-        #return jsp.linalg.slogdet(ovlp_mat)
-
-    def get_energy(ket):
-        return get_energy_jax(psi, ket, h1, rotchol, enuc)
-
-    def apply_ext_rotation(Ug, char_g):
-        # Apply external rotations Ug to each spin-rotated ket.
-        # Shape (base_kets.shape).
-        kets_g = jax.vmap(lambda ket: _apply_ext_rotation(ket, Ug))(base_kets)
-        overlaps = jax.vmap(get_overlap)(kets_g)
-        energies = jax.vmap(get_energy)(kets_g)
-        char_g_conj = jnp.conj(jnp.array(char_g))
-        num = char_g_conj * jnp.sum(coeffs * overlaps * energies)
-        denom = char_g_conj * jnp.sum(coeffs * overlaps)
-        
-        #signs, log_overlaps = jax.vmap(get_overlap)(kets_g)
-        #num = char_g_conj * jnp.sum(
-        #        signs * jnp.exp(jnp.log(coeffs) + log_overlaps + jnp.log(energies))
-        #    )
-
-        #denom = char_g_conj * jnp.sum(
-        #        signs * jnp.exp(jnp.log(coeffs) + log_overlaps)
-        #    )
-        
-        return num, denom
-    
-    # [[U1_num, U1_denom], [U2_num, U2_denom], ...] 
-    num_denom_arr = jnp.array(
-        [apply_ext_rotation(Ug, char_g) for Ug, char_g in zip(ext_ops, ext_chars)]
+    green = _mixed_green(bra, ket)
+    energy_1 = jnp.sum(green[:norb, :norb] * h1[0]) + jnp.sum(
+        green[norb:, norb:] * h1[1]
     )
-    num, denom = jnp.sum(num_denom_arr, axis=0) / len(ext_ops)
-    return num.real / denom.real
-
-def get_ext_s2_singlet_projected_energy_jax(
-        psi, h1, chol, enuc, ext_ops, ext_chars=None, nalpha=8, nbeta=8, ngamma=8
-    ):
-    """
-    Assumes spinless external projectors.
-    """
-    def _apply_ext_rotation(input_ket, U):
-        """U acts in orbital space on both spin blocks."""
-        norb = input_ket.shape[0] // 2
-        ket_a = U @ input_ket[:norb]
-        ket_b = U @ input_ket[norb:]
-        return jnp.vstack([ket_a, ket_b])
-
-    if ext_chars is None: ext_chars = [1.] * len(ext_ops)
-    norb = h1[0].shape[0]
-    
-    # Apply spin rotations that commute with the spinless external projectors.
-    base_kets, coeffs = apply_s2_singlet_projector_jax(psi, nalpha, nbeta, ngamma)
-    psiTconj = psi.T.conj()
-    rotchol = build_rotchol(psiTconj, chol.reshape((-1, norb, norb)))
-
-    def get_overlap(ket):
-        ovlp_mat = psiTconj @ ket
-        return jsp.linalg.det(ovlp_mat)
-        #return jsp.linalg.slogdet(ovlp_mat)
-
-    def get_energy(ket):
-        return get_energy_jax(psi, ket, h1, rotchol, enuc)
-
-    def apply_ext_rotation(Ug, char_g):
-        # Apply external rotations Ug to each spin-rotated ket.
-        # Shape (base_kets.shape).
-        kets_g = jax.vmap(lambda ket: _apply_ext_rotation(ket, Ug))(base_kets)
-        overlaps = jax.vmap(get_overlap)(kets_g)
-        energies = jax.vmap(get_energy)(kets_g)
-        char_g_conj = jnp.conj(jnp.array(char_g))
-        num = char_g_conj * jnp.sum(coeffs * overlaps * energies)
-        denom = char_g_conj * jnp.sum(coeffs * overlaps)
-        
-        #signs, log_overlaps = jax.vmap(get_overlap)(kets_g)
-        #num = char_g_conj * jnp.sum(
-        #        signs * jnp.exp(jnp.log(coeffs) + log_overlaps + jnp.log(energies))
-        #    )
-
-        #denom = char_g_conj * jnp.sum(
-        #        signs * jnp.exp(jnp.log(coeffs) + log_overlaps)
-        #    )
-        
-        return num, denom
-    
-    # [[U1_num, U1_denom], [U2_num, U2_denom], ...] 
-    num_denom_arr = jnp.array(
-        [apply_ext_rotation(Ug, char_g) for Ug, char_g in zip(ext_ops, ext_chars)]
+    energy_2 = u * (
+        jnp.sum(green[:norb, :norb].diagonal() * green[norb:, norb:].diagonal())
+        - jnp.sum(green[:norb, norb:].diagonal() * green[norb:, :norb].diagonal())
     )
-    num, denom = jnp.sum(num_denom_arr, axis=0) / len(ext_ops)
-
-    #jax.debug.print('num = {x}', x=num)
-    #jax.debug.print('denom = {x}', x=denom)
-
-    return num.real / denom.real
-
-# -----------------------------------------------------------------------------
-# Optimization.
-# -----------------------------------------------------------------------------
-def gradient_descent(psi, nelec, h1, chol, enuc, ngrid=10, maxiter=100, step=0.01):
-    norb = h1[0].shape[0]
-    na, nb = nelec
-    nocc = sum(nelec)
-    s = 0
-    sz = 0.5 * (na - nb)
-
-    energy_init = get_sz_projected_energy(psi, s, sz, h1, chol, enuc, ngrid)
-    print(f"\n# Initial projected energy = {energy_init}")
-
-    def objective_function(x):
-        psi = x.reshape(2 * norb, nocc)
-        #psi, _ = jnp.linalg.qr(psi) # Orthonormalize.
-        return get_sz_projected_energy(psi, s, sz, h1, chol, enuc, ngrid)
-
-    def gradient(x, *args):
-        return np.array(grad(objective_function)(x, *args), dtype=np.float64)
-
-    x = psi.flatten()
-
-    for i in range(maxiter):
-        grads = gradient(x)
-        x -= step * grads
-
-    psi = x.reshape(2 * norb, nocc)
-    energy = get_sz_projected_energy(psi, s, sz, h1, chol, enuc, ngrid)
-    return energy, psi
+    return energy_1 + energy_2 + enuc
 
 
-def amsgrad(
-    fun,
-    x0,
-    args=(),
-    jac=None,
-    callback=None,
-    learning_rate=0.01,
-    beta1=0.9,
-    beta2=0.99,
-    epsilon=1e-8,
-    maxiter=1000,
-    tol=1e-5,
-    hess=None,
-    hessp=None,
-    bounds=None,
-    constraints=(),
-    **options,
-):
+class hamiltonian:
+    """Abstract Hamiltonian interface."""
+
+    def prepare(self, bra: jnp.ndarray) -> dict:
+        """Precompute any data derived from the bra determinant."""
+        return {}
+
+    def mixed_energy(
+        self, bra: jnp.ndarray, ket: jnp.ndarray, context: dict | None = None
+    ) -> jnp.ndarray:
+        """Return <bra|H|ket>/<bra|ket> using optional cached context."""
+        raise NotImplementedError
+
+
+@dataclass
+class cholesky_hamiltonian(hamiltonian):
+    """Hamiltonian defined by one-body integrals, Cholesky vectors, and core energy."""
+
+    h1: jnp.ndarray
+    chol: jnp.ndarray
+    enuc: float
+
+    def prepare(self, bra: jnp.ndarray) -> dict:
+        norb = self.h1[0].shape[0]
+        psi_t_conj = bra.T.conj()
+        chol = self.chol.reshape((-1, norb, norb))
+        rotchol = build_rotchol(psi_t_conj, chol)
+        return {"rotchol": rotchol}
+
+    def mixed_energy(
+        self, bra: jnp.ndarray, ket: jnp.ndarray, context: dict | None = None
+    ) -> jnp.ndarray:
+        assert context is not None, "cholesky_hamiltonian requires cached context."
+        return get_energy_chol(bra, ket, self.h1, context["rotchol"], self.enuc)
+
+
+@dataclass
+class hubbard_hamiltonian(hamiltonian):
+    """Hubbard Hamiltonian with on-site interaction U."""
+
+    h1: jnp.ndarray
+    u: float
+    enuc: float = 0.0
+
+    def mixed_energy(
+        self, bra: jnp.ndarray, ket: jnp.ndarray, context: dict | None = None
+    ) -> jnp.ndarray:
+        return get_energy_hubbard(bra, ket, self.h1, self.u, self.enuc)
+
+
+def _spin_rot_elements(
+    alpha: float, beta: float, gamma: float
+) -> tuple[jnp.ndarray, ...]:
     """
-    AMSGrad optimizer implementation for scipy.optimize.minimize.
+    Spin-1/2 rotation (z-y-z Euler angles):
+    U = e^{-i alpha sigma_z/2} e^{-i beta sigma_y/2} e^{-i gamma sigma_z/2}
+      = [[e^{-i(alpha+gamma)/2} cos(beta/2),   -e^{-i(alpha-gamma)/2} sin(beta/2)],
+         [e^{ i(alpha-gamma)/2} sin(beta/2),    e^{ i(alpha+gamma)/2} cos(beta/2)]]
+    Returns the four scalar elements u11, u12, u21, u22.
+    """
+    half = 0.5
+    cb = jnp.cos(beta * half)
+    sb = jnp.sin(beta * half)
+    e_p = jnp.exp(-0.5j * (alpha + gamma))
+    e_m = jnp.exp(-0.5j * (alpha - gamma))
+    u11 = e_p * cb
+    u12 = -e_m * sb
+    u21 = jnp.conj(e_m) * sb
+    u22 = jnp.conj(e_p) * cb
+    return u11, u12, u21, u22
 
-    Parameters:
-    -----------
-    fun : callable
-        Objective function to be minimized: f(x, *args) -> float
-    x0 : ndarray
-        Initial guess
-    args : tuple, optional
-        Extra arguments passed to objective function
-    jac : callable, optional
-        Gradient of objective function: jac(x, *args) -> array_like
-    callback : callable, optional
-        Called after each iteration: callback(xk) -> None
-    learning_rate : float, optional
-        Learning rate (default: 0.001)
-    beta1 : float, optional
-        Exponential decay rate for first moment (default: 0.9)
-    beta2 : float, optional
-        Exponential decay rate for second moment (default: 0.999)
-    epsilon : float, optional
-        Small constant for numerical stability (default: 1e-8)
-    maxiter : int, optional
-        Maximum number of iterations (default: 1000)
-    tol : float, optional
-        Tolerance for convergence (default: 1e-5)
+
+def apply_s0_projector(
+    input_ket: jnp.ndarray, n_alpha: int = 8, n_beta: int = 8, n_gamma: int = 8
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    SU(2) projection specialized to S=0 on a general (noncollinear) GHF state.
+
+    Args:
+      input_ket : jax.Array, shape (2*norb, nocc)   (GHF columns are occupied spinors)
+      n_alpha, n_beta, n_gamma : Euler angle quadrature counts
 
     Returns:
-    --------
-    OptimizeResult
-        Result object with optimization outcome
+      kets   : (Ngrid, 2*norb, nocc) rotated kets R(omega)|phi⟩
+      coeffs : (Ngrid,) complex weights including (1/8pi^2) * sin beta * volume element
     """
-    print(
-        f"# step = {learning_rate}, beta1 = {beta1}, beta2 = {beta2}, epsilon = {epsilon}"
-    )
-    x = np.asarray(x0).flatten()
-    if jac is None:
-        from scipy.optimize import approx_fprime
-        jac = lambda x, *args: approx_fprime(x, fun, epsilon, *args)
+    norb = input_ket.shape[0] // 2
 
-    # Initialize moment vectors
-    m = np.zeros_like(x)  # First moment
-    v = np.zeros_like(x)  # Second moment
-    v_hat = np.zeros_like(x)  # Maximum of past squared gradients
+    # uniform alpha, gamma in [0, 2pi), midpoint beta in (0, pi) with sin beta weight
+    dalpha = 2.0 * jnp.pi / n_alpha
+    dgamma = 2.0 * jnp.pi / n_gamma
+    alpha = jnp.arange(n_alpha) * dalpha
+    gamma = jnp.arange(n_gamma) * dgamma
+    beta_edges = jnp.linspace(0.0, jnp.pi, n_beta + 1)
+    beta = 0.5 * (beta_edges[:-1] + beta_edges[1:])
+    dbeta = jnp.pi / n_beta
 
-    # Initialize optimization variables
-    t = 0
-    fx = fun(x, *args)
-    nfev = 1
-    ngev = 0
+    A, B, G = jnp.meshgrid(alpha, beta, gamma, indexing="ij")
+    A = A.reshape(-1)
+    B = B.reshape(-1)
+    G = G.reshape(-1)
 
-    for iteration in range(maxiter):
-        t += 1
+    prefac = (1.0 / (8.0 * jnp.pi**2)) * dalpha * dbeta * dgamma
 
-        # Compute gradient
-        grad = jnp.array(jac(x, *args))
-        ngev += 1
+    def rotate_one(angles):
+        a, b, g = angles
+        u11, u12, u21, u22 = _spin_rot_elements(a, b, g)
+        alpha_block = u11 * input_ket[:norb, :] + u12 * input_ket[norb:, :]
+        beta_block = u21 * input_ket[:norb, :] + u22 * input_ket[norb:, :]
+        ket_rot = jnp.vstack([alpha_block, beta_block])
+        weight = prefac * jnp.sin(b)
+        return ket_rot, weight
 
-        # Update biased first moment estimate
-        m = beta1 * m + (1 - beta1) * grad
+    kets, coeffs = jax.vmap(rotate_one)(jnp.stack([A, B, G], axis=1))
+    return kets, coeffs
 
-        # Update biased second raw moment estimate
-        v = beta2 * v + (1 - beta2) * np.square(grad)
 
-        # Update maximum of past squared gradients
-        v_hat = np.maximum(v_hat, v)
+def _apply_pg_to_ket(ket: jnp.ndarray, U: jnp.ndarray) -> jnp.ndarray:
+    """U acts in orbital space on both spin blocks."""
+    norb = ket.shape[0] // 2
+    up = U @ ket[:norb, :]
+    dn = U @ ket[norb:, :]
+    return jnp.vstack([up, dn])
 
-        # Compute bias-corrected first moment estimate
-        # m_hat = m / (1 - beta1**t)
-        m_hat = m
 
-        # Compute bias-corrected second raw moment estimate
-        # v_hat_corrected = v_hat / (1 - beta2**t)
-        v_hat_corrected = v_hat
+class projector:
+    """Abstract projector that maps a batch of determinants to a new linear combination."""
 
-        # Update parameters
-        step = learning_rate * m_hat / (np.sqrt(v_hat_corrected) + epsilon)
-        x_new = x - step
+    def apply(
+        self, kets: jnp.ndarray, coeffs: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        raise NotImplementedError
 
-        # Calculate new function value
-        fx_new = fun(x_new, *args)
-        nfev += 1
-    
-        print(
-            f"# Iteration {iteration + 1}: Energy = {fx_new:.9e}, Grad norm = {np.linalg.norm(grad):.9e}"
-        )
 
-        # Check for convergence
-        if np.all(np.abs(step) < tol):
-            break
+@dataclass
+class sz_projector(projector):
+    """Project onto fixed Sz using discrete rotations."""
 
-        # Update current position
-        x = x_new
-        fx = fx_new
+    m: float = 0.0
+    n_grid: int = 8
 
-        if callback is not None:
-            callback(x)
+    def apply(
+        self, kets: jnp.ndarray, coeffs: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        def rotate_single(ket: jnp.ndarray):
+            return apply_sz_projector(ket, self.m, self.n_grid)
 
-    return OptimizeResult(
-        x=x,
-        success=True,
-        nit=iteration + 1,
-        nfev=nfev,
-        ngev=ngev,
-        fun=fx,
-        jac=grad,
-        message="Optimization terminated successfully.",
-        status=0,
-    )
+        rot_kets, rot_coeffs = jax.vmap(rotate_single, in_axes=0)(kets)
+        batch, nterms, norb2, nocc = rot_kets.shape
+        new_kets = rot_kets.reshape(batch * nterms, norb2, nocc)
+        new_coeffs = (coeffs[:, None] * rot_coeffs).reshape(batch * nterms)
+        return new_kets, new_coeffs
+
+
+@dataclass
+class singlet_projector(projector):
+    """Project onto total spin S=0 using SU(2) quadrature."""
+
+    n_alpha: int = 8
+    n_beta: int = 8
+    n_gamma: int = 8
+
+    def apply(
+        self, kets: jnp.ndarray, coeffs: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        def rotate_single(ket):
+            return apply_s0_projector(
+                ket, n_alpha=self.n_alpha, n_beta=self.n_beta, n_gamma=self.n_gamma
+            )
+
+        rot_kets, rot_coeffs = jax.vmap(rotate_single, in_axes=0)(kets)
+        batch, nterms, norb2, nocc = rot_kets.shape
+        new_kets = rot_kets.reshape(batch * nterms, norb2, nocc)
+        new_coeffs = (coeffs[:, None] * rot_coeffs).reshape(batch * nterms)
+        return new_kets, new_coeffs
+
+
+@dataclass
+class point_group_projector(projector):
+    """Project onto a point-group irrep defined by orbital operators."""
+
+    pg_ops: list
+    pg_chars: list | None = None
+
+    def __post_init__(self):
+        if self.pg_chars is None:
+            chars = jnp.ones(len(self.pg_ops), dtype=jnp.complex128)
+        else:
+            chars = jnp.asarray(self.pg_chars, dtype=jnp.complex128)
+
+        self.pg_ops = [jnp.asarray(U) for U in self.pg_ops]
+        self._chars = chars
+        self._norm = 1.0 / len(self.pg_ops)
+
+    def apply(
+        self, kets: jnp.ndarray, coeffs: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        rotated = []
+        for U in self.pg_ops:
+            rotated.append(jax.vmap(lambda ket: _apply_pg_to_ket(ket, U))(kets))
+
+        rotated = jnp.stack(rotated, axis=0)  # (ngroup, batch, 2*norb, nocc)
+        new_kets = rotated.reshape(-1, *kets.shape[1:])
+
+        weight_factors = (jnp.conj(self._chars) * self._norm)[:, None]
+        new_coeffs = (weight_factors * coeffs[None, :]).reshape(-1)
+        return new_kets, new_coeffs
+
+
+def _apply_projector_sequence(
+    psi: jnp.ndarray, projectors: tuple[projector, ...]
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Apply projectors sequentially to generate a linear combination of Slater determinants.
+
+    Returns:
+        Tuple of (kets, coeffs) describing the expanded state.
+    """
+    kets = psi[jnp.newaxis, ...]
+    if jnp.issubdtype(psi.dtype, jnp.complexfloating):
+        coeff_dtype = psi.dtype
+    else:
+        coeff_dtype = jnp.complex128
+    coeffs = jnp.array([1.0 + 0.0j], dtype=coeff_dtype)
+
+    for projector in projectors:
+        kets, coeffs = projector.apply(kets, coeffs)
+
+    return kets, coeffs
+
+
+def _evaluate_projected_energy(
+    psi: jnp.ndarray, ham: hamiltonian, projectors: tuple[projector, ...]
+) -> jnp.ndarray:
+    """Evaluate the projected energy after applying a sequence of projectors."""
+    kets, coeffs = _apply_projector_sequence(psi, projectors)
+    return _evaluate_linear_expansion_energy(psi, kets, coeffs, ham)
+
+
+def calculate_projected_energy(
+    psi: jnp.ndarray,
+    ham: hamiltonian,
+    projectors: tuple[projector, ...],
+) -> jnp.ndarray:
+    """
+    Calculate the projected energy of a GHF determinant under optional symmetry projections.
+
+    Args:
+        psi: GHF determinant.
+        ham: Hamiltonian object implementing the mixed-energy interface.
+        projectors: Sequence of projector objects applied to |psi>.
+
+    Returns:
+        Projected energy as a scalar jax.Array.
+    """
+
+    @jax.jit
+    def energy_function():
+        return _evaluate_projected_energy(psi, ham, projectors)
+
+    return energy_function()
+
 
 def optimize(
-    psi,
-    nelec,
-    h1,
-    chol,
-    enuc,
-    nalpha=8,
-    nbeta=8,
-    ngamma=8,
-    maxiter=100,
-    step=0.01,
-    projector="s2",
-    ext_ops=None,
-    ext_chars=None,
-):
-    norb = h1[0].shape[0]
-    nchol = chol.shape[0]
-    na, nb = nelec
-    nocc = sum(nelec)
-    s = 0.
-    sz = 0.5 * (na - nb)
+    psi: jnp.ndarray,
+    ham: hamiltonian,
+    projectors: tuple[projector, ...],
+    maxiter: int = 100,
+    step: float = 0.01,
+) -> tuple[float, np.ndarray]:
+    """
+    Variationally optimize a GHF determinant under optional symmetry projections.
 
-    print(f"\n# maxiter: {maxiter}")
-    print(f"# projector: {projector}")
-    print(f"# quadrature nalpha, nbeta, ngamma: {nalpha, nbeta, ngamma}")
-    if ext_ops is not None: print(f"# external projectors: {list(ext_ops.keys())}")
+    Args:
+        psi: Initial GHF determinant.
+        ham: Hamiltonian object implementing the mixed-energy interface.
+        projectors: Sequence of projector objects applied to |psi>.
+        maxiter: Number of Optax steps for Optax.
+        step: AMSGrad learning rate.
+    """
+    psi_var = jnp.asarray(psi)
+    psi_dtype = psi_var.dtype
 
-    if "s2" in projector:
-        assert na == nb, "\n# S^2 projection only implemented for singlet states."
+    def objective_function(current_psi: jnp.ndarray) -> jnp.ndarray:
+        energy = _evaluate_projected_energy(current_psi, ham, projectors)
+        return jnp.real(energy)
 
-        if ("ext" in projector) and (ext_ops is not None):
-            energy_init = get_ext_s2_singlet_projected_energy_jax(
-                psi,
-                h1,
-                chol,
-                enuc,
-                list(ext_ops.values())[0], # TODO: Only works for 1 group now!
-                list(ext_chars.values())[0],
-                nalpha=nalpha,
-                nbeta=nbeta,
-                ngamma=ngamma,
-            )
+    objective_function = jit(objective_function)
+    value_and_grad = jit(jax.value_and_grad(objective_function))
+    optimizer = optax.amsgrad(step, b2=0.99)
+    opt_state = optimizer.init(psi_var)
 
-        else:
-            energy_init = get_s2_singlet_projected_energy_jax(
-                psi, h1, chol, enuc, nalpha=ngamma, nbeta=nbeta, ngamma=ngamma
-            )
+    energy = float(np.array(objective_function(psi_var)))
+    print(f"\n# Initial projected energy = {energy}")
+    print("Starting optimization with Optax AMSGrad...")
 
-    elif "sz" in projector:
-        if ("ext" in projector) and (ext_ops is not None):
-            energy_init = get_ext_sz_projected_energy_jax(
-                psi,
-                h1,
-                chol,
-                enuc,
-                s,
-                sz,
-                list(ext_ops.values())[0], # TODO: Only works for 1 group now!
-                list(ext_chars.values())[0],
-                ngrid=nbeta,
-            )
+    for iteration in range(maxiter):
+        energy_val, grads = value_and_grad(psi_var)
+        grads_real = jnp.real(grads)
+        grad_norm = float(np.array(jnp.linalg.norm(jnp.ravel(grads_real))))
+        grads_typed = grads_real.astype(psi_dtype)
+        updates, opt_state = optimizer.update(grads_typed, opt_state, psi_var)
+        psi_var = optax.apply_updates(psi_var, updates)
+        energy = energy_val
+        print(
+            f"Iteration {iteration + 1}: Energy = {float(np.array(energy_val))}, "
+            f"Grad norm = {grad_norm}"
+        )
 
-        else:
-            energy_init = get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, nbeta)
+    return float(np.array(energy)), np.array(psi_var)
 
-    print(f"\n# Initial projected energy = {energy_init}")
 
-    @jit
-    def objective_function(x):
-        psi = x.reshape(2*norb, nocc)
+def _evaluate_projected_property(
+    psi: jnp.ndarray,
+    projectors: tuple[projector, ...],
+    property_fn: callable,
+) -> jnp.ndarray:
+    """
+    Generic evaluation of projected observables using weighted sums over
+    projector-generated determinants.
+    """
+    kets, coeffs = _apply_projector_sequence(psi, projectors)
 
-        if "s2" in projector:
-            if ("ext" in projector) and (ext_ops is not None):
-                return get_ext_s2_singlet_projected_energy_jax(
-                    psi,
-                    h1,
-                    chol,
-                    enuc,
-                    list(ext_ops.values())[0], # TODO: Only works for 1 group now!
-                    list(ext_chars.values())[0],
-                    nalpha=nalpha,
-                    nbeta=nbeta,
-                    ngamma=ngamma,
-                )
+    def calc_overlap(bra, ket):
+        return jnp.linalg.det(bra.T.conj() @ ket)
 
-            else:
-                return get_s2_singlet_projected_energy_jax(
-                    psi, h1, chol, enuc, nalpha=nalpha, nbeta=nbeta, ngamma=ngamma
-                )
-
-        elif "sz" in projector:
-            if ("ext" in projector) and (ext_ops is not None):
-                return get_ext_sz_projected_energy_jax(
-                    psi,
-                    h1,
-                    chol,
-                    enuc,
-                    s,
-                    sz,
-                    list(ext_ops.values())[0], # TODO: Only works for 1 group now!
-                    list(ext_chars.values())[0],
-                    ngrid=nbeta,
-                )
-            else:
-                return get_sz_projected_energy_jax(psi, h1, chol, enuc, s, sz, nbeta)
-
-    @jit
-    def gradient(x, *args):
-        return (grad(objective_function)(x, *args)).real
-
-    print("\n# Starting optimization...")
-    x = psi.flatten()
-    res = minimize(
-        objective_function,
-        x,
-        jac=gradient,
-        tol=1e-10,
-        method=amsgrad,
-        # method="BFGS",
-        options={
-            # "maxls": 20,
-            # "gtol": 1e-10,
-            # "eps": 1e-10,
-            "maxiter": maxiter,
-            # "ftol": 1.0e-10,
-            # "maxcor": 1000,
-            # "maxfun": 15000,
-            "disp": True,
-        },
+    overlaps = jax.vmap(lambda ket: jax.vmap(lambda bra: calc_overlap(bra, ket))(kets))(
+        kets
     )
-    
-    if res.success: print(f'\n# {res.message}')
-    else: print(f'\n# Unable to converge optimization')
-    energy = res.fun
-    psi = res.x.reshape(2*norb, nocc)
-    return energy, psi
+    values = jax.vmap(lambda ket: jax.vmap(lambda bra: property_fn(bra, ket))(kets))(
+        kets
+    )
+    weights = coeffs.conj()[:, None] * coeffs[None, :] * overlaps
+    value_num = jnp.tensordot(weights, values, axes=([0, 1], [0, 1]))
+    value_denom = jnp.sum(weights)
+    return (value_num / value_denom).real
+
+
+def calculate_projected_1rdm(
+    psi: jnp.ndarray,
+    projectors: tuple[projector, ...],
+) -> np.ndarray:
+    """
+    Calculate the projected one-body reduced density matrix (1RDM)
+    of a GHF determinant under optional symmetry projections.
+
+    Args:
+        psi: GHF determinant.
+        projectors: Sequence of projector objects applied to |psi>.
+
+    Returns:
+        Projected 1RDM as a numpy ndarray.
+    """
+
+    @jax.jit
+    def rdm1_function(psi_var: jnp.ndarray) -> jnp.ndarray:
+        return _evaluate_projected_property(psi_var, projectors, _mixed_green)
+
+    rdm1 = rdm1_function(psi)
+    return np.array(rdm1)
+
+
+def calculate_projected_density_correlations(
+    psi: jnp.ndarray,
+    projectors: tuple[projector, ...],
+) -> np.ndarray:
+    """
+    Calculate the projected density-density correlation matrix
+    of a GHF determinant under optional symmetry projections.
+
+    Args:
+        psi: GHF determinant.
+        projectors: Sequence of projector objects applied to |psi>.
+
+    Returns:
+        Projected density-density correlation matrix as a numpy ndarray.
+    """
+
+    @jax.jit
+    def density_corr_function(psi_var: jnp.ndarray) -> jnp.ndarray:
+        def calc_density_corr(bra, ket):
+            green = _mixed_green(bra, ket)
+            green_diag = jnp.diagonal(green)
+            density_corr = (
+                green_diag[:, None] * green_diag[None, :]
+                - green * green.T
+                + jnp.diag(green_diag)
+            )
+            return density_corr
+
+        return _evaluate_projected_property(psi_var, projectors, calc_density_corr)
+
+    density_corr = density_corr_function(psi)
+    return np.array(density_corr)
+
+
+def _SzSz_from_G(G):
+    n = G.shape[0] // 2
+    Guu = G[:n, :n]
+    Gdd = G[n:, n:]
+    Gud = G[:n, n:]
+    Gdu = G[n:, :n]
+
+    def nn_same(Gblk):
+        occ = jnp.diag(Gblk)
+        return occ[:, None] * occ[None, :] - Gblk * Gblk.T + jnp.diag(occ)
+
+    Euu = nn_same(Guu)
+    Edd = nn_same(Gdd)
+    Eud = jnp.diag(Guu)[:, None] * jnp.diag(Gdd)[None, :] - Gud * Gdu.T
+    Edu = jnp.diag(Gdd)[:, None] * jnp.diag(Guu)[None, :] - Gdu * Gud.T
+
+    SzSz = 0.25 * (Euu + Edd - Eud - Edu)
+    return SzSz
+
+
+def _SpSm_from_G(G):
+    n = G.shape[0] // 2
+    Guu = G[:n, :n]
+    Gdd = G[n:, n:]
+    Gud = G[:n, n:]
+    Gdu = G[n:, :n]
+    coh = jnp.outer(jnp.diag(Gud), jnp.diag(Gdu))
+    diag = jnp.diag(jnp.diag(Guu))
+    exch = Guu * Gdd.T
+    return coh + diag - exch
+
+
+def _SmSp_from_G(G):
+    n = G.shape[0] // 2
+    Guu = G[:n, :n]
+    Gdd = G[n:, n:]
+    Gud = G[:n, n:]
+    Gdu = G[n:, :n]
+    coh = jnp.outer(jnp.diag(Gdu), jnp.diag(Gud))
+    diag = jnp.diag(jnp.diag(Gdd))
+    exch = Gdd * Guu.T
+    return coh + diag - exch
+
+
+def _SdotS_from_G(G):
+    return _SzSz_from_G(G) + 0.5 * (_SpSm_from_G(G) + _SmSp_from_G(G))
+
+
+def calculate_projected_sz_correlations(psi, projectors):
+    @jax.jit
+    def evaluate():
+        def prop_fn(bra, ket):
+            return _SzSz_from_G(_mixed_green(bra, ket))
+
+        return _evaluate_projected_property(psi, projectors, prop_fn)
+
+    corr = evaluate()
+    return np.array(corr)
+
+
+def calculate_projected_s_correlations(psi, projectors):
+    @jax.jit
+    def evaluate():
+        def prop_fn(bra, ket):
+            return _SdotS_from_G(_mixed_green(bra, ket))
+
+        return _evaluate_projected_property(psi, projectors, prop_fn)
+
+    corr = evaluate()
+    return np.array(corr)
+
+
+def calculate_projected_s2(psi, projectors):
+    @jax.jit
+    def evaluate():
+        def prop_fn(bra, ket):
+            G = _mixed_green(bra, ket)
+            return jnp.sum(_SdotS_from_G(G))
+
+        return _evaluate_projected_property(psi, projectors, prop_fn)
+
+    s2 = evaluate()
+    return float(s2)
