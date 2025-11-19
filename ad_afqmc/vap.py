@@ -329,6 +329,7 @@ def get_ext_sz_projected_energy_jax(
     def get_overlap(ket):
         ovlp_mat = psiTconj @ ket
         return jsp.linalg.det(ovlp_mat)
+        #return jsp.linalg.slogdet(ovlp_mat)
 
     def get_energy(ket):
         return get_energy_jax(psi, ket, h1, rotchol, enuc)
@@ -342,6 +343,16 @@ def get_ext_sz_projected_energy_jax(
         char_g_conj = jnp.conj(jnp.array(char_g))
         num = char_g_conj * jnp.sum(coeffs * overlaps * energies)
         denom = char_g_conj * jnp.sum(coeffs * overlaps)
+        
+        #signs, log_overlaps = jax.vmap(get_overlap)(kets_g)
+        #num = char_g_conj * jnp.sum(
+        #        signs * jnp.exp(jnp.log(coeffs) + log_overlaps + jnp.log(energies))
+        #    )
+
+        #denom = char_g_conj * jnp.sum(
+        #        signs * jnp.exp(jnp.log(coeffs) + log_overlaps)
+        #    )
+        
         return num, denom
     
     # [[U1_num, U1_denom], [U2_num, U2_denom], ...] 
@@ -375,6 +386,7 @@ def get_ext_s2_singlet_projected_energy_jax(
     def get_overlap(ket):
         ovlp_mat = psiTconj @ ket
         return jsp.linalg.det(ovlp_mat)
+        #return jsp.linalg.slogdet(ovlp_mat)
 
     def get_energy(ket):
         return get_energy_jax(psi, ket, h1, rotchol, enuc)
@@ -388,6 +400,16 @@ def get_ext_s2_singlet_projected_energy_jax(
         char_g_conj = jnp.conj(jnp.array(char_g))
         num = char_g_conj * jnp.sum(coeffs * overlaps * energies)
         denom = char_g_conj * jnp.sum(coeffs * overlaps)
+        
+        #signs, log_overlaps = jax.vmap(get_overlap)(kets_g)
+        #num = char_g_conj * jnp.sum(
+        #        signs * jnp.exp(jnp.log(coeffs) + log_overlaps + jnp.log(energies))
+        #    )
+
+        #denom = char_g_conj * jnp.sum(
+        #        signs * jnp.exp(jnp.log(coeffs) + log_overlaps)
+        #    )
+        
         return num, denom
     
     # [[U1_num, U1_denom], [U2_num, U2_denom], ...] 
@@ -395,6 +417,10 @@ def get_ext_s2_singlet_projected_energy_jax(
         [apply_ext_rotation(Ug, char_g) for Ug, char_g in zip(ext_ops, ext_chars)]
     )
     num, denom = jnp.sum(num_denom_arr, axis=0) / len(ext_ops)
+
+    #jax.debug.print('num = {x}', x=num)
+    #jax.debug.print('denom = {x}', x=denom)
+
     return num.real / denom.real
 
 # -----------------------------------------------------------------------------
@@ -412,6 +438,7 @@ def gradient_descent(psi, nelec, h1, chol, enuc, ngrid=10, maxiter=100, step=0.0
 
     def objective_function(x):
         psi = x.reshape(2 * norb, nocc)
+        #psi, _ = jnp.linalg.qr(psi) # Orthonormalize.
         return get_sz_projected_energy(psi, s, sz, h1, chol, enuc, ngrid)
 
     def gradient(x, *args):
