@@ -462,7 +462,7 @@ class propagator_cpmc(propagator_afqmc):
         prop_data["walkers"].data[1] = prop_data["walkers"].data[1].real
         prop_data["overlaps"] = prop_data["overlaps"].real
         try:
-            prop_data["greens"] = trial.calc_full_green_vmap(
+            prop_data["greens"] = trial.calc_green_full(
                 prop_data["walkers"].data, wave_data
             )
         except:
@@ -509,7 +509,7 @@ class propagator_cpmc(propagator_afqmc):
             prop_data["weights"] < 1.0e-8, 0.0, prop_data["weights"]
         )
         prop_data["overlaps"] = overlaps_new
-        prop_data["greens"] = trial.calc_full_green_vmap(
+        prop_data["greens"] = trial.calc_green_full(
             prop_data["walkers"].data, wave_data
         )
         return prop_data
@@ -546,7 +546,7 @@ class propagator_cpmc(propagator_afqmc):
         # iterate over sites
         def scanned_fun(carry, x):
             # field 1
-            ratio_0 = trial.calc_overlap_ratio_vmap(
+            ratio_0 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, x], [1, x]]),
                 prop_data["hs_constant"][0] - 1,
@@ -555,7 +555,7 @@ class propagator_cpmc(propagator_afqmc):
             carry["node_crossings"] += jnp.sum(jnp.array(ratio_0) == 0.0)
 
             # field 2
-            ratio_1 = trial.calc_overlap_ratio_vmap(
+            ratio_1 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, x], [1, x]]),
                 prop_data["hs_constant"][1] - 1,
@@ -587,7 +587,7 @@ class propagator_cpmc(propagator_afqmc):
             carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
-            carry["greens"] = trial.update_greens_function_vmap(
+            carry["greens"] = trial.update_green(
                 carry["greens"],
                 ratios,
                 jnp.array([[0, x], [1, x]]),
@@ -670,7 +670,9 @@ class propagator_cpmc_slow(propagator_cpmc):
                 carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap(
-                UHFWalkers([new_walkers_0_up, new_walkers_0_dn]), wave_data
+                UHFWalkers(
+                    [jnp.array(new_walkers_0_up), jnp.array(new_walkers_0_dn)]
+                ), wave_data
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.array(jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0))
@@ -684,7 +686,9 @@ class propagator_cpmc_slow(propagator_cpmc):
                 carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap(
-                UHFWalkers([new_walkers_1_up, new_walkers_1_dn]), wave_data
+                UHFWalkers(
+                    [jnp.array(new_walkers_1_up), jnp.array(new_walkers_1_dn)]
+                ), wave_data
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
@@ -875,7 +879,7 @@ class propagator_cpmc_nn(propagator_cpmc):
         prop_data = super().init_prop_data(
             trial, wave_data, ham_data, seed, init_walkers
         )
-        prop_data["greens"] = trial.calc_full_green_vmap(
+        prop_data["greens"] = trial.calc_green_full(
             prop_data["walkers"].data, wave_data
         )
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))
@@ -926,7 +930,7 @@ class propagator_cpmc_nn(propagator_cpmc):
         # iterate over sites
         def scanned_fun(carry, x):
             # field 1
-            ratio_0 = trial.calc_overlap_ratio_vmap(
+            ratio_0 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, x], [1, x]]),
                 prop_data["hs_constant_onsite"][0] - 1,
@@ -934,7 +938,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
-            ratio_1 = trial.calc_overlap_ratio_vmap(
+            ratio_1 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, x], [1, x]]),
                 prop_data["hs_constant_onsite"][1] - 1,
@@ -965,7 +969,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
-            carry["greens"] = trial.update_greens_function_vmap(
+            carry["greens"] = trial.update_green(
                 carry["greens"],
                 ratios,
                 jnp.array([[0, x], [1, x]]),
@@ -988,7 +992,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             site_j = jnp.array(self.neighbors)[x][1]
             # up up
             # field 1
-            ratio_0 = trial.calc_overlap_ratio_vmap(
+            ratio_0 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, site_i], [0, site_j]]),
                 prop_data["hs_constant_nn"][0] - 1,
@@ -996,7 +1000,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
-            ratio_1 = trial.calc_overlap_ratio_vmap(
+            ratio_1 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, site_i], [0, site_j]]),
                 prop_data["hs_constant_nn"][1] - 1,
@@ -1030,7 +1034,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             carry["walkers"].data = [new_walkers_up, carry["walkers"].data[1]]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
-            carry["greens"] = trial.update_greens_function_vmap(
+            carry["greens"] = trial.update_green(
                 carry["greens"],
                 ratios,
                 jnp.array([[0, site_i], [0, site_j]]),
@@ -1040,7 +1044,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             carry["weights"] *= norm
 
             # up dn
-            ratio_0 = trial.calc_overlap_ratio_vmap(
+            ratio_0 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, site_i], [1, site_j]]),
                 prop_data["hs_constant_nn"][0] - 1,
@@ -1048,7 +1052,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
-            ratio_1 = trial.calc_overlap_ratio_vmap(
+            ratio_1 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[0, site_i], [1, site_j]]),
                 prop_data["hs_constant_nn"][1] - 1,
@@ -1085,7 +1089,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
-            carry["greens"] = trial.update_greens_function_vmap(
+            carry["greens"] = trial.update_green(
                 carry["greens"],
                 ratios,
                 jnp.array([[0, site_i], [1, site_j]]),
@@ -1095,7 +1099,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             carry["weights"] *= norm
 
             # dn up
-            ratio_0 = trial.calc_overlap_ratio_vmap(
+            ratio_0 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[1, site_i], [0, site_j]]),
                 prop_data["hs_constant_nn"][0] - 1,
@@ -1103,7 +1107,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
-            ratio_1 = trial.calc_overlap_ratio_vmap(
+            ratio_1 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[1, site_i], [0, site_j]]),
                 prop_data["hs_constant_nn"][1] - 1,
@@ -1140,7 +1144,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             carry["walkers"].data = [new_walkers_up, new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
-            carry["greens"] = trial.update_greens_function_vmap(
+            carry["greens"] = trial.update_green(
                 carry["greens"],
                 ratios,
                 jnp.array([[1, site_i], [0, site_j]]),
@@ -1151,7 +1155,7 @@ class propagator_cpmc_nn(propagator_cpmc):
 
             # dn dn
             # field 1
-            ratio_0 = trial.calc_overlap_ratio_vmap(
+            ratio_0 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[1, site_i], [1, site_j]]),
                 prop_data["hs_constant_nn"][0] - 1,
@@ -1159,7 +1163,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             ratio_0 = jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0)
 
             # field 2
-            ratio_1 = trial.calc_overlap_ratio_vmap(
+            ratio_1 = trial.calc_overlap_ratio(
                 carry["greens"],
                 jnp.array([[1, site_i], [1, site_j]]),
                 prop_data["hs_constant_nn"][1] - 1,
@@ -1193,7 +1197,7 @@ class propagator_cpmc_nn(propagator_cpmc):
             carry["walkers"].data = [carry["walkers"].data[0], new_walkers_dn]
             ratios = jnp.where(mask, ratio_0, ratio_1)
             update_constants = constants - 1
-            carry["greens"] = trial.update_greens_function_vmap(
+            carry["greens"] = trial.update_green(
                 carry["greens"],
                 ratios,
                 jnp.array([[1, site_i], [1, site_j]]),
@@ -1239,7 +1243,7 @@ class propagator_cpmc_nn_slow(propagator_cpmc):
         prop_data = super().init_prop_data(
             trial, wave_data, ham_data, seed, init_walkers
         )
-        prop_data["greens"] = trial.calc_full_green_vmap(
+        prop_data["greens"] = trial.calc_green_full(
             prop_data["walkers"].data, wave_data
         )
         gamma = jnp.arccosh(jnp.exp(self.dt * ham_data["u"] / 2))
