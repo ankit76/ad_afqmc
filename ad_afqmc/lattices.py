@@ -196,6 +196,7 @@ class two_dimensional_grid(lattice):
     n_sites: int = 0
     hop_signs: Sequence = (-1.0, -1.0, 1.0, 1.0)
     coord_num: int = 4
+    boundary: str = "pbc"
 
     def __post_init__(self):
         self.shape = (self.l_y, self.l_x)
@@ -342,10 +343,16 @@ class two_dimensional_grid(lattice):
 
     @partial(jit, static_argnums=(0,))
     def get_nearest_neighbors(self, pos):
-        right = (pos[0], (pos[1] + 1) % self.l_x)
-        down = ((pos[0] + 1) % self.l_y, pos[1])
-        left = (pos[0], (pos[1] - 1) % self.l_x)
-        up = ((pos[0] - 1) % self.l_y, pos[1])
+        if self.boundary == "pbc":
+            right = (pos[0], (pos[1] + 1) % self.l_x)
+            down = ((pos[0] + 1) % self.l_y, pos[1])
+            left = (pos[0], (pos[1] - 1) % self.l_x)
+            up = ((pos[0] - 1) % self.l_y, pos[1])
+        else:  # obc
+            right = (pos[0], pos[1] + 1)
+            down = (pos[0] + 1, pos[1])
+            left = (pos[0], pos[1] - 1)
+            up = (pos[0] - 1, pos[1])
         return jnp.array([right, down, left, up])
 
     # used in the ssh model
@@ -452,11 +459,10 @@ class triangular_grid(lattice):
     sites: Sequence = ()
     n_sites: int = 0
     coord_num: int = 6
-    open_x: bool = False
-    open_x_y: bool = False
+    boundary: str = "pbc"
 
     def __post_init__(self):
-        self.shape = (self.l_y, self.l_x)
+        self.shape = (self.l_x, self.l_y)
         self.n_sites = self.l_x * self.l_y
         self.sites = tuple(
             [(i // self.l_y, i % self.l_y) for i in range(self.l_x * self.l_y)]
@@ -472,7 +478,8 @@ class triangular_grid(lattice):
         """
         theta = np.pi / 3.0
         lattice_vecs = np.array([[np.cos(theta), 1.0], [np.sin(theta), 0.0]])
-        if self.open_x:
+
+        if (self.boundary == "xc") or (self.boundary == "oxc"):
             L2, L1 = lattice_vecs.T
             L3 = L2 - L1
             Ly = [L2, L3]
@@ -483,6 +490,19 @@ class triangular_grid(lattice):
 
             coords += pos[1] * L1
 
+        elif self.boundary == "yc":
+            theta = np.pi / 6.0
+            lattice_vecs = np.array([[0.0, np.cos(theta)], [1.0, np.sin(theta)]])
+            L1, L2 = lattice_vecs.T
+            L3 = L2 - L1
+            Lx = [L3, L2]
+            coords = np.zeros(2)
+
+            for i in range(1, pos[1] + 1):
+                coords += Lx[(i - 1) % 2]
+
+            coords += pos[0] * L1
+
         else:  # PBC and OBC.
             coords = pos @ lattice_vecs.T
 
@@ -490,37 +510,57 @@ class triangular_grid(lattice):
 
     # @partial(jit, static_argnums=(0,))
     def get_nearest_neighbors(self, pos):
-        if self.open_x:
-            n1 = (pos[0], (pos[1] + 1))
-            n3 = (pos[0], (pos[1] - 1))
+        if self.boundary == "xc":
+            n1 = (pos[0], pos[1] + 1)
+            n3 = (pos[0], pos[1] - 1)
             if pos[0] % 2 == 1:
-                n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1))
-                n6 = ((pos[0] - 1) % self.l_x, (pos[1] + 1))
+                n5 = ((pos[0] + 1) % self.l_x, pos[1] + 1)
+                n6 = ((pos[0] - 1) % self.l_x, pos[1] + 1)
             else:
-                n5 = ((pos[0] + 1) % self.l_x, (pos[1] - 1))
-                n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1))
+                n5 = ((pos[0] + 1) % self.l_x, pos[1] - 1)
+                n6 = ((pos[0] - 1) % self.l_x, pos[1] - 1)
             n2 = ((pos[0] + 1) % self.l_x, pos[1])
             n4 = ((pos[0] - 1) % self.l_x, pos[1])
-        elif self.open_x_y:
-            n1 = (pos[0], (pos[1] + 1))
-            n3 = (pos[0], (pos[1] - 1))
+
+        elif self.boundary == "oxc":  # open-XC.
+            n1 = (pos[0], pos[1] + 1)
+            n3 = (pos[0], pos[1] - 1)
             if pos[0] % 2 == 1:
-                n5 = ((pos[0] + 1), (pos[1] + 1))
-                n6 = ((pos[0] - 1), (pos[1] + 1))
+                n5 = (pos[0] + 1, pos[1] + 1)
+                n6 = (pos[0] - 1, pos[1] + 1)
             else:
-                n5 = ((pos[0] + 1), (pos[1] - 1))
-                n6 = ((pos[0] - 1), (pos[1] - 1))
-            # n5 = ((pos[0] + 1), (pos[1] + 1))
-            # n6 = ((pos[0] - 1), (pos[1] - 1))
-            n2 = ((pos[0] + 1), pos[1])
-            n4 = ((pos[0] - 1), pos[1])
-        else:
+                n5 = (pos[0] + 1, pos[1] - 1)
+                n6 = (pos[0] - 1, pos[1] - 1)
+            n2 = (pos[0] + 1, pos[1])
+            n4 = (pos[0] - 1, pos[1])
+
+        elif self.boundary == "yc":
+            n1 = (pos[0], pos[1] + 1)
+            n3 = (pos[0], pos[1] - 1)
+            if pos[1] % 2 == 1:
+                n5 = ((pos[0] - 1) % self.l_x, pos[1] + 1)
+                n6 = ((pos[0] - 1) % self.l_x, pos[1] - 1)
+            else:
+                n5 = ((pos[0] + 1) % self.l_x, pos[1] + 1)
+                n6 = ((pos[0] + 1) % self.l_x, pos[1] - 1)
+            n2 = ((pos[0] + 1) % self.l_x, pos[1])
+            n4 = ((pos[0] - 1) % self.l_x, pos[1])
+
+        elif self.boundary == "pbc":
             n1 = (pos[0], (pos[1] + 1) % self.l_y)
             n3 = (pos[0], (pos[1] - 1) % self.l_y)
             n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
             n6 = ((pos[0] - 1) % self.l_x, (pos[1] - 1) % self.l_y)
             n2 = ((pos[0] + 1) % self.l_x, pos[1])
             n4 = ((pos[0] - 1) % self.l_x, pos[1])
+
+        elif self.boundary == "obc":
+            n1 = (pos[0], pos[1] + 1)
+            n3 = (pos[0], pos[1] - 1)
+            n5 = (pos[0] + 1, pos[1] - 1)
+            n6 = (pos[0] - 1, pos[1] + 1)
+            n2 = (pos[0] + 1, pos[1])
+            n4 = (pos[0] - 1, pos[1])
 
         return jnp.array([n1, n2, n3, n4, n5, n6])
 
@@ -539,6 +579,52 @@ class triangular_grid(lattice):
                         h[i, j] = 1
                         h[j, i] = 1
         return h
+
+    def get_neel_guess_xc(self):
+        sites_0 = []
+        sites_1 = []
+        sites_2 = []
+        for site in self.sites:
+            x, y = site
+            site_n = self.get_site_num(site)
+            if x % 2 == 0:
+                if y % 3 == 0:
+                    sites_0.append(site_n)
+                elif y % 3 == 1:
+                    sites_1.append(site_n)
+                else:
+                    sites_2.append(site_n)
+            else:
+                if y % 3 == 0:
+                    sites_2.append(site_n)
+                elif y % 3 == 1:
+                    sites_0.append(site_n)
+                else:
+                    sites_1.append(site_n)
+        spinor_0 = np.array([1, 0])
+        spinor_0_dm = np.outer(spinor_0, spinor_0)
+        theta = 2 * np.pi / 3
+        spinor_1 = np.array([np.cos(theta / 2), np.sin(theta / 2)])
+        spinor_1_dm = np.outer(spinor_1, spinor_1)
+        spinor_2 = np.array([np.cos(theta / 2), -np.sin(theta / 2)])
+        spinor_2_dm = np.outer(spinor_2, spinor_2)
+        dm_init = np.zeros((2 * self.n_sites, 2 * self.n_sites))
+        for i in sites_0:
+            dm_init[i, i] = spinor_0_dm[0, 0]
+            dm_init[i + self.n_sites, i + self.n_sites] = spinor_0_dm[1, 1]
+            dm_init[i, i + self.n_sites] = spinor_0_dm[0, 1]
+            dm_init[i + self.n_sites, i] = spinor_0_dm[1, 0]
+        for i in sites_1:
+            dm_init[i, i] = spinor_1_dm[0, 0]
+            dm_init[i + self.n_sites, i + self.n_sites] = spinor_1_dm[1, 1]
+            dm_init[i, i + self.n_sites] = spinor_1_dm[0, 1]
+            dm_init[i + self.n_sites, i] = spinor_1_dm[1, 0]
+        for i in sites_2:
+            dm_init[i, i] = spinor_2_dm[0, 0]
+            dm_init[i + self.n_sites, i + self.n_sites] = spinor_2_dm[1, 1]
+            dm_init[i, i + self.n_sites] = spinor_2_dm[0, 1]
+            dm_init[i + self.n_sites, i] = spinor_2_dm[1, 0]
+        return dm_init
 
     def __hash__(self):
         return hash(
