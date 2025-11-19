@@ -196,7 +196,7 @@ class two_dimensional_grid(lattice):
     n_sites: Optional[int] = None
     hop_signs: Sequence = (-1.0, -1.0, 1.0, 1.0)
     coord_num: int = 4
-    bc: str = 'open_x'
+    bc: str = "pbc"
 
     def __post_init__(self):
         self.shape = (self.l_y, self.l_x)
@@ -348,11 +348,11 @@ class two_dimensional_grid(lattice):
         left = (pos[0], (pos[1] - 1) % self.l_x)
         up = ((pos[0] - 1) % self.l_y, pos[1])
 
-        if self.bc == 'open_x':
+        if self.bc == "open_x":
             right = (pos[0], pos[1] + 1)
             left = (pos[0], pos[1] - 1)
 
-        elif self.bc == 'obc':
+        elif self.bc == "obc":
             right = (pos[0], pos[1] + 1)
             down = (pos[0] + 1, pos[1])
             left = (pos[0], pos[1] - 1)
@@ -464,7 +464,7 @@ class triangular_grid(lattice):
     sites: Sequence = ()
     n_sites: int = 0
     coord_num: int = 6
-    boundary: str = 'pbc'
+    boundary: str = "pbc"
 
     def __post_init__(self):
         self.shape = (self.l_y, self.l_x)
@@ -475,49 +475,47 @@ class triangular_grid(lattice):
 
     def get_site_num(self, pos):
         return pos[1] + self.l_y * pos[0]
-    
+
     def get_site_coordinate(self, pos):
         """
         Returns the real space coordinate of the site specified by `pos`,
         assuming a primitive lattice vector of unit length.
         """
-        theta = np.pi / 3.
-        lattice_vecs = np.array([[np.cos(theta), 1.],
-                                 [np.sin(theta), 0.]])
+        theta = np.pi / 3.0
+        lattice_vecs = np.array([[np.cos(theta), 1.0], [np.sin(theta), 0.0]])
 
-        if (self.boundary == 'xc') or (self.boundary == 'oxc'):
+        if (self.boundary == "xc") or (self.boundary == "oxc"):
             L2, L1 = lattice_vecs.T
             L3 = L2 - L1
             Ly = [L2, L3]
             coords = np.zeros(2)
 
-            for i in range(1, pos[0]+1):
-                coords += Ly[(i-1) % 2]
+            for i in range(1, pos[0] + 1):
+                coords += Ly[(i - 1) % 2]
 
             coords += pos[1] * L1
 
-        elif self.boundary == 'yc':
-            theta = np.pi / 6.
-            lattice_vecs = np.array([[0., np.cos(theta)],
-                                     [1., np.sin(theta)]])
+        elif self.boundary == "yc":
+            theta = np.pi / 6.0
+            lattice_vecs = np.array([[0.0, np.cos(theta)], [1.0, np.sin(theta)]])
             L1, L2 = lattice_vecs.T
             L3 = L2 - L1
             Lx = [L3, L2]
             coords = np.zeros(2)
 
-            for i in range(1, pos[1]+1):
-                coords += Lx[(i-1) % 2]
+            for i in range(1, pos[1] + 1):
+                coords += Lx[(i - 1) % 2]
 
             coords += pos[0] * L1
 
-        else: # PBC and OBC.
+        else:  # PBC and OBC.
             coords = pos @ lattice_vecs.T
 
         return coords
 
     # @partial(jit, static_argnums=(0,))
     def get_nearest_neighbors(self, pos):
-        if self.boundary == 'xc':
+        if self.boundary == "xc":
             n1 = (pos[0], pos[1] + 1)
             n3 = (pos[0], pos[1] - 1)
             if pos[0] % 2 == 1:
@@ -529,7 +527,7 @@ class triangular_grid(lattice):
             n2 = ((pos[0] + 1) % self.l_x, pos[1])
             n4 = ((pos[0] - 1) % self.l_x, pos[1])
 
-        elif self.boundary == 'oxc': # open-XC.
+        elif self.boundary == "oxc":  # open-XC.
             n1 = (pos[0], pos[1] + 1)
             n3 = (pos[0], pos[1] - 1)
             if pos[0] % 2 == 1:
@@ -541,7 +539,7 @@ class triangular_grid(lattice):
             n2 = (pos[0] + 1, pos[1])
             n4 = (pos[0] - 1, pos[1])
 
-        elif self.boundary == 'yc':
+        elif self.boundary == "yc":
             n1 = (pos[0], pos[1] + 1)
             n3 = (pos[0], pos[1] - 1)
             if pos[1] % 2 == 1:
@@ -553,7 +551,7 @@ class triangular_grid(lattice):
             n2 = ((pos[0] + 1) % self.l_x, pos[1])
             n4 = ((pos[0] - 1) % self.l_x, pos[1])
 
-        elif self.boundary == 'pbc':
+        elif self.boundary == "pbc":
             n1 = (pos[0], (pos[1] + 1) % self.l_y)
             n3 = (pos[0], (pos[1] - 1) % self.l_y)
             n5 = ((pos[0] + 1) % self.l_x, (pos[1] + 1) % self.l_y)
@@ -561,7 +559,7 @@ class triangular_grid(lattice):
             n2 = ((pos[0] + 1) % self.l_x, pos[1])
             n4 = ((pos[0] - 1) % self.l_x, pos[1])
 
-        elif self.boundary == 'obc':
+        elif self.boundary == "obc":
             n1 = (pos[0], pos[1] + 1)
             n3 = (pos[0], pos[1] - 1)
             n5 = (pos[0] + 1, pos[1] - 1)
