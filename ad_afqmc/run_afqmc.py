@@ -3,13 +3,12 @@ import pickle
 import shlex
 import subprocess
 from functools import partial
-from typing import Optional, Union
+from typing import Optional
 
 import jax.numpy as jnp
 import numpy as np
-from jax import jit, value_and_grad, vmap
 
-from ad_afqmc import config, driver, launch_script, optimize_trial, wavefunctions
+from ad_afqmc import config, driver, optimize_trial, utils, wavefunctions
 
 print = partial(print, flush=True)
 
@@ -117,6 +116,52 @@ def run_afqmc(
     return ene_err[0], ene_err[1]
 
 
+def run_afqmc_ph(
+    pyscf_prep: Optional[dict] = None,
+    options: Optional[dict] = None,
+    mpi_prefix: Optional[str] = None,
+    nproc: Optional[int] = None,
+    tmpdir: Optional[str] = None,
+):
+    """
+    Run AFQMC calculation from pre-generated input files.
+
+    Parameters:
+        options : dict, optional
+            Options for AFQMC.
+        mpi_prefix : str, optional
+            MPI prefix, used to launch MPI processes.
+        nproc : int, optional
+            Number of processes, if using MPI.
+        tmpdir : str, optional
+            Temporary directory where the input files are stored.
+    """
+    config.setup_jax()
+    comm = config.setup_comm()
+    (
+        ham_data,
+        ham,
+        prop,
+        trial,
+        wave_data,
+        sampler,
+        observable,
+        options,
+    ) = utils.setup_afqmc_ph(pyscf_prep, options)
+    e_afqmc, err_afqmc = driver.afqmc(
+        ham_data,
+        ham,
+        prop,
+        trial,
+        wave_data,
+        sampler,
+        observable,
+        options,
+        comm,
+    )
+    return e_afqmc, err_afqmc
+
+
 def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None, tmpdir=None):
     config.setup_jax()
     comm = config.setup_comm()
@@ -131,7 +176,7 @@ def run_afqmc_fp(options=None, script=None, mpi_prefix=None, nproc=None, tmpdir=
         sampler,
         observable,
         options,
-    ) = launch_script.setup_afqmc_fp(options, options["tmpdir"])
+    ) = utils.setup_afqmc_fp(options, options["tmpdir"])
 
     if (
         options["symmetry_projector"] == "s2"
