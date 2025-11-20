@@ -314,7 +314,7 @@ def set_trial(
             )
 
     if options.get("symmetry_projector", None) is not None:
-        if "s2_full" in options["symmetry_projector"]:
+        if "s2_ghf" in options["symmetry_projector"]:
             S = options["target_spin"] / 2.0
             Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
             nalpha = options.get("nalpha", 8)

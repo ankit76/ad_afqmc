@@ -1,6 +1,7 @@
 import numpy as np
 
 def get_neel_sites(lattice):
+    # TODO: Only works for XC lattice.
     sites = lattice.sites
     neel_sites = {f'site_{i}': [] for i in range(3)}
 
@@ -15,9 +16,9 @@ def get_neel_sites(lattice):
     return neel_sites
 
 def get_ghf_neel_guess(lattice):
-    """
-    Only for half-filling. Places 1 electron per site with Neel spin order.
-    """
+    # TODO: 
+    #   Only works for XC lattice.
+    #   Only for half-filling. Places 1 electron per site with Neel spins.
     n_sites = lattice.n_sites
     neel_sites = get_neel_sites(lattice)
     init_psi = np.zeros((2*n_sites, n_sites))
