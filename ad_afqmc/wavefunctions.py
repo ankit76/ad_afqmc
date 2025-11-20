@@ -110,26 +110,6 @@ class wave_function(ABC):
             self._calc_overlap_unrestricted_handler, self.n_chunks, wave_data
         )
 
-    def _calc_overlap_restricted_handler(
-        self, walker: jax.Array, wave_data: dict
-    ) -> jax.Array:
-        if self.projector == "generic":
-            return self._calc_overlap_generic_symmetry_restricted(walker, wave_data)
-        else:
-            return self._calc_overlap_restricted(walker, wave_data)
-
-    def _calc_overlap_generic_symmetry_restricted(
-        self, walker: jax.Array, wave_data: dict
-    ) -> jax.Array:
-        group_elements = wave_data["group_elements"]
-        characters = wave_data["characters"]
-        transformed_walkers = jnp.einsum("gij,jp->gip", group_elements, walker)
-        overlaps = vmap(self._calc_overlap_restricted, (0, None))(
-            transformed_walkers, wave_data
-        )
-        total_overlap = jnp.sum(overlaps * characters)
-        return total_overlap
-
     def _calc_overlap_unrestricted_handler(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
     ) -> jax.Array:
@@ -290,7 +270,7 @@ class wave_function(ABC):
     @calc_overlap.register
     def _(self, walkers: GHFWalkers, wave_data: dict) -> jax.Array:
         return walkers.apply_chunked(
-            self._calc_overlap_generalized_handler, self.n_chunks, wave_data
+            self._calc_overlap_generalized, self.n_chunks, wave_data
         )
 
     def _calc_overlap_generalized_handler(
@@ -340,32 +320,6 @@ class wave_function(ABC):
             jax.Array: The force bias.
         """
         raise NotImplementedError("Walker type not supported")
-
-    def _calc_force_bias_restricted_handler(
-        self, walker: jax.Array, wave_data: dict
-    ) -> jax.Array:
-        if self.projector == "generic":
-            return self._calc_force_bias_generic_symmetry_restricted(walker, wave_data)
-        else:
-            return self._calc_force_bias_restricted(walker, wave_data)
-
-    def _calc_force_bias_generic_symmetry_restricted(
-        self, walker: jax.Array, wave_data: dict
-    ) -> jax.Array:
-        # this is not quite correct, choleskies dont commute with symmetry ops
-        group_elements = wave_data["group_elements"]
-        characters = wave_data["characters"]
-        transformed_walkers = jnp.einsum("gij,jp->gip", group_elements, walker)
-        overlaps = vmap(self._calc_force_bias_restricted, (0, None))(
-            transformed_walkers, wave_data
-        )
-        force_biases = vmap(self._calc_force_bias_restricted, (0, None))(
-            transformed_walkers, wave_data
-        )
-        total_force_bias = jnp.sum(
-            force_biases * characters[:, None], axis=0
-        ) / jnp.sum(overlaps * characters)
-        return total_force_bias
 
     @calc_force_bias.register
     def _(self, walkers: UHFWalkers, ham_data: dict, wave_data: dict) -> jax.Array:
@@ -435,16 +389,6 @@ class wave_function(ABC):
             self._calc_energy_unrestricted_handler, self.n_chunks, ham_data, wave_data
         )
 
-    def _calc_energy_restricted_handler(
-        self, walker: jax.Array, ham_data: dict, wave_data: dict
-    ) -> jax.Array:
-        if self.projector == "generic":
-            return self._calc_energy_generic_symmetry_restricted(
-                walker, ham_data, wave_data
-            )
-        else:
-            return self._calc_energy_restricted(walker, ham_data, wave_data)
-
     def _calc_energy_unrestricted_handler(
         self,
         walker_up: jax.Array,
@@ -469,21 +413,6 @@ class wave_function(ABC):
                 walker_up, walker_dn, ham_data, wave_data
             )
 
-    def _calc_energy_generic_symmetry_restricted(
-        self, walker: jax.Array, ham_data: dict, wave_data: dict
-    ) -> jax.Array:
-        group_elements = wave_data["group_elements"]
-        characters = wave_data["characters"]
-        transformed_walkers = jnp.einsum("gij,jp->gip", group_elements, walker)
-        overlaps = vmap(self._calc_overlap_restricted, (0, None))(
-            transformed_walkers, wave_data
-        )
-        energies = vmap(self._calc_energy_restricted, (0, None, None))(
-            transformed_walkers, ham_data, wave_data
-        )
-        total_energy = jnp.sum(energies * characters) / jnp.sum(overlaps * characters)
-        return total_energy
-
     def _calc_energy_tr(
         self,
         walker_up: jax.Array,
@@ -500,29 +429,6 @@ class wave_function(ABC):
         overlap_1 = self._calc_overlap_unrestricted(walker_up, walker_dn, wave_data)
         overlap_2 = self._calc_overlap_unrestricted(walker_dn, walker_up, wave_data)
         return (energy_1 * overlap_1 + energy_2 * overlap_2) / (overlap_1 + overlap_2)
-
-    def _calc_energy_generic(
-        self,
-        walker_up: jax.Array,
-        walker_dn: jax.Array,
-        ham_data: dict,
-        wave_data: dict,
-    ) -> jax.Array:
-        energies = vmap(
-            lambda pg_mat: self._calc_energy_s2_singlet_full(
-                pg_mat @ walker_up, pg_mat @ walker_dn, ham_data, wave_data
-            )
-        )(wave_data["pg_ops"])
-        overlaps = (
-            vmap(
-                lambda pg_mat: self._calc_overlap_s2_singlet_full(
-                    pg_mat @ walker_up, pg_mat @ walker_dn, wave_data
-                )
-            )(wave_data["pg_ops"])
-            * wave_data["pg_chars"]
-        )
-        total_energy = jnp.sum(energies * overlaps) / jnp.sum(overlaps)
-        return total_energy
 
     def _calc_energy_s2(
         self,
@@ -783,40 +689,6 @@ class wave_function(ABC):
             return RHFWalkers(
                 jnp.array([natorbs[:, : self.nelec[0]] + 0.0j] * n_walkers)
             )
-            # if self.nelec[0] == self.nelec[1]:
-            #     det_overlap = np.linalg.det(
-            #         natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
-            #     )
-            #     if (
-            #         np.abs(det_overlap) > 1e-5
-            #     ):  # probably should scale this threshold with number of electrons
-            #         return RHFWalkers(jnp.array([natorbs_up + 0.0j] * n_walkers))
-            #     else:
-            #         overlaps = np.array(
-            #             [
-            #                 natorbs_up[:, i].T @ natorbs_dn[:, i]
-            #                 for i in range(self.nelec[0])
-            #             ]
-            #         )
-            #         new_vecs = natorbs_up[:, : self.nelec[0]] + np.einsum(
-            #             "ij,j->ij", natorbs_dn[:, : self.nelec[1]], np.sign(overlaps)
-            #         )
-            #         new_vecs = np.linalg.qr(new_vecs)[0]
-            #         det_overlap = np.linalg.det(
-            #             new_vecs.T @ natorbs_up[:, : self.nelec[0]]
-            #         ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
-            #         if np.abs(det_overlap) > 1e-5:
-            #             return RHFWalkers(jnp.array([new_vecs + 0.0j] * n_walkers))
-            #         else:
-            #             raise ValueError(
-            #                 "Cannot find a set of RHF orbitals with good trial overlap."
-            #             )
-            # else:
-            #     # bring the dn orbital projection onto up space to the front
-            #     dn_proj = natorbs_up.T.conj() @ natorbs_dn
-            #     proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
-            #     orbs = natorbs_up @ proj_orbs
-            #     return RHFWalkers(jnp.array([orbs + 0.0j] * n_walkers))
         elif walker_type == "unrestricted":
             return UHFWalkers(
                 [
@@ -1031,6 +903,85 @@ class wave_function_cpmc(wave_function):
     ) -> jax.Array:
         """Update Green's function for each single walker."""
         raise NotImplementedError("Update Green's function  not defined")
+
+    @singledispatchmethod
+    def calc_density_corr(self, walkers, wave_data: dict) -> jax.Array:
+        """Calculate < psi_T | n_i n_j | walker > / < psi_T | walker > for a batch of walkers where i and j are spin orbitals.
+
+        Currently only used with GHF trial in CPMC. The projectors have to be applied
+        to the trial unlike energy.
+
+        Args:
+            walkers : list or jax.Array
+                The batched walkers.
+            wave_data : dict
+                The trial wave function data.
+
+        Returns:
+            jax.Array: The density correlations.
+        """
+        raise NotImplementedError("Walker type not supported")
+
+    @calc_density_corr.register
+    def _(self, walkers: UHFWalkers, wave_data: dict) -> jax.Array:
+        return walkers.apply_chunked(
+            self._calc_density_corr_unrestricted_handler, self.n_chunks, wave_data
+        )
+
+    def _calc_density_corr_unrestricted_handler(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        wave_data: dict,
+    ) -> jax.Array:
+        if self.projector == "s2_ghf":
+            return self._calc_density_corr_s2_ghf(walker_up, walker_dn, wave_data)
+        elif self.projector == "ext":
+            return self._calc_density_corr_ext(walker_up, walker_dn, wave_data)
+        elif self.projector == "ext_s2_ghf":
+            return self._calc_density_corr_ext_s2_ghf(walker_up, walker_dn, wave_data)
+        else:
+            return self._calc_density_corr_unrestricted(walker_up, walker_dn, wave_data)
+
+    @partial(jit, static_argnums=0)
+    def _calc_density_corr_unrestricted(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        wave_data: dict,
+    ) -> jax.Array:
+        """Density correlation for a single walker."""
+        raise NotImplementedError("Density correlation not defined")
+
+    @partial(jit, static_argnums=0)
+    def _calc_density_corr_s2_ghf(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        wave_data: dict,
+    ) -> jax.Array:
+        """Density correlation for a single walker with s2 projector."""
+        raise NotImplementedError("Density correlation not defined")
+
+    @partial(jit, static_argnums=0)
+    def _calc_density_corr_ext(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        wave_data: dict,
+    ) -> jax.Array:
+        """Density correlation for a single walker with ext projector."""
+        raise NotImplementedError("Density correlation not defined")
+
+    @partial(jit, static_argnums=0)
+    def _calc_density_corr_ext_s2_ghf(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        wave_data: dict,
+    ) -> jax.Array:
+        """Density correlation for a single walker with ext and s2 projector."""
+        raise NotImplementedError("Density correlation not defined")
 
 
 @dataclass
@@ -2231,6 +2182,50 @@ class ghf_cpmc(ghf, wave_function_cpmc):
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         return ham_data
+
+    @partial(jit, static_argnums=0)
+    def _calc_density_corr_unrestricted(
+        self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
+    ) -> jax.Array:
+        green = self._calc_green_full_unrestricted(walker_up, walker_dn, wave_data)
+        green_diag = jnp.diagonal(green)
+        density_corr = (
+            green_diag[:, None] * green_diag[None, :]
+            - green * green.T
+            + jnp.diag(green_diag)
+        )
+        return density_corr
+
+    @partial(jit, static_argnums=0)
+    def _calc_density_corr_s2_ghf(
+        self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
+    ) -> jax.Array:
+        rot_bras, rot_coeffs = wave_data["rot_bras"], wave_data["rot_coeffs"]
+
+        def _calc_density_corr(bra, ket):
+            green = (ket @ jnp.linalg.inv(bra.T.conj() @ ket) @ bra.T.conj()).T
+            green_diag = jnp.diagonal(green)
+            density_corr = (
+                green_diag[:, None] * green_diag[None, :]
+                - green * green.T
+                + jnp.diag(green_diag)
+            )
+            return density_corr
+
+        walker_ghf = jsp.linalg.block_diag(walker_up, walker_dn)
+        density_corrs = vmap(_calc_density_corr, in_axes=(0, None))(
+            rot_bras, walker_ghf
+        )
+
+        def calc_overlap(bra, ket):
+            return jnp.linalg.det(bra.T.conj() @ ket)
+
+        overlaps = vmap(calc_overlap, in_axes=(0, None))(rot_bras, walker_ghf)
+        weights = rot_coeffs.conj() * overlaps
+        density_corr = jnp.sum(
+            weights[:, None, None] * density_corrs, axis=0
+        ) / jnp.sum(weights)
+        return density_corr.real
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
