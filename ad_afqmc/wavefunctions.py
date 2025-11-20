@@ -2145,7 +2145,7 @@ class ghf_cpmc(ghf, wave_function_cpmc):
     @partial(jit, static_argnums=0)
     def _calc_overlap_ratio(
         self, green: jax.Array, update_indices: jax.Array, update_constants: jax.Array
-    ) -> float:
+    ) -> jax.Array:
         """
         Method for UHF/GHF walkers.
         """
@@ -2211,33 +2211,6 @@ class ghf_cpmc(ghf, wave_function_cpmc):
         self, walker: jax.Array, ham_data: dict, wave_data: dict
     ) -> jax.Array:
         green = self._calc_green_full_generalized(walker, wave_data)
-        u = ham_data["u"]
-        h1 = ham_data["h1"]
-        energy_1 = jnp.sum(green[: self.norb, : self.norb] * h1[0]) + jnp.sum(
-            green[self.norb :, self.norb :] * h1[1]
-        )
-        energy_2 = u * (
-            jnp.sum(
-                green[: self.norb, : self.norb].diagonal()
-                * green[self.norb :, self.norb :].diagonal()
-            )
-            - jnp.sum(
-                green[: self.norb, self.norb :].diagonal()
-                * green[self.norb :, : self.norb].diagonal()
-            )
-        )
-        return energy_1 + energy_2
-
-    @partial(jit, static_argnums=0)
-    def _calc_energy_generalized(self, walker, ham_data, wave_data):
-        green = (
-            walker
-            @ jnp.linalg.inv(
-                wave_data["mo_coeff"][:, : self.nelec[0] + self.nelec[1]].T.conj()
-                @ walker
-            )
-            @ wave_data["mo_coeff"][:, : self.nelec[0] + self.nelec[1]].T.conj()
-        ).T
         u = ham_data["u"]
         h1 = ham_data["h1"]
         energy_1 = jnp.sum(green[: self.norb, : self.norb] * h1[0]) + jnp.sum(
