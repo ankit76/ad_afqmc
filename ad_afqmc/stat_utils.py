@@ -17,6 +17,7 @@ def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=Fal
     blockSizes = np.array([1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 1000, 10000])
     prevError = 0.0
     plateauError = None
+    errors = []
     for i in blockSizes[blockSizes < nSamples / 2.0]:
         nBlocks = int(nSamples // i)
         blockedWeights = np.zeros(nBlocks)
@@ -34,6 +35,7 @@ def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=Fal
             / (v1 - v2 / v1)
             / (nBlocks - 1)
         ) ** 0.5
+        errors.append(error)
         if writeBlockedQ:
             np.savetxt(
                 f"samples_blocked_{i}.dat",
@@ -45,10 +47,20 @@ def blocking_analysis(weights, energies, neql=0, printQ=False, writeBlockedQ=Fal
             plateauError = max(error, prevError)
         prevError = error
 
-    if printQ:
-        if plateauError is not None:
-            print(f"# Stocahstic error estimate: {plateauError:.6e}\n#")
+    plateauWarning = False
+    if plateauError is None and len(errors) > 0:
+        plateauWarning = True
+        plateauError = 2 * errors[0]
 
+    if printQ:
+        print(f"# Stochastic error estimate: {plateauError:.6e}\n#")
+        if plateauWarning:
+            print(
+                "# Could not find a plateau in the blocking analysis, using 2 * unblocked error."
+            )
+            print(
+                "# Consider increasing n_blocks for a more reliable error estimate.\n#"
+            )
     return meanEnergy, plateauError
 
 

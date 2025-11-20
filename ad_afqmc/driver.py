@@ -69,9 +69,9 @@ def afqmc_energy(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    Seed = seed + rank
+    local_seed = seed + rank
     prop_data = propagator.init_prop_data(
-        trial, wave_data, ham_data, Seed, init_walkers
+        trial, wave_data, ham_data, local_seed, init_walkers
     )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
@@ -451,9 +451,9 @@ def afqmc_observable(
     ham_data = ham.build_propagation_intermediates(
         ham_data, propagator, trial, wave_data
     )
-    Seed = seed + rank
+    local_seed = seed + rank
     prop_data = propagator.init_prop_data(
-        trial, wave_data, ham_data, Seed, init_walkers
+        trial, wave_data, ham_data, local_seed, init_walkers
     )
     if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
         raise ValueError(
@@ -1126,7 +1126,7 @@ def _analyze_energy_results(
         )
 
         # Print formatted results
-        if e_err_afqmc is not None:
+        if e_err_afqmc is not None and e_err_afqmc > 0.0:
             sig_dec = int(abs(np.floor(np.log10(e_err_afqmc))))
             sig_err = np.around(
                 np.round(e_err_afqmc * 10**sig_dec) * 10 ** (-sig_dec), sig_dec
@@ -1235,7 +1235,7 @@ def _analyze_observable_results(
         )
 
         # Print formatted observable results
-        if obs_err_afqmc is not None:
+        if obs_err_afqmc is not None and obs_err_afqmc > 0.0:
             sig_dec = int(abs(np.floor(np.log10(obs_err_afqmc))))
             sig_err = np.around(
                 np.round(obs_err_afqmc * 10**sig_dec) * 10 ** (-sig_dec), sig_dec
