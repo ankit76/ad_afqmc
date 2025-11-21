@@ -670,9 +670,8 @@ class propagator_cpmc_slow(propagator_cpmc):
                 carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][0, 1])
             )
             overlaps_new_0 = trial.calc_overlap(
-                UHFWalkers(
-                    [jnp.array(new_walkers_0_up), jnp.array(new_walkers_0_dn)]
-                ), wave_data
+                UHFWalkers([jnp.array(new_walkers_0_up), jnp.array(new_walkers_0_dn)]),
+                wave_data,
             )
             ratio_0 = (overlaps_new_0 / carry["overlaps"]).real / 2.0
             ratio_0 = jnp.array(jnp.where(ratio_0 < 1.0e-8, 0.0, ratio_0))
@@ -686,9 +685,8 @@ class propagator_cpmc_slow(propagator_cpmc):
                 carry["walkers"].data[1].at[:, x, :].mul(prop_data["hs_constant"][1, 1])
             )
             overlaps_new_1 = trial.calc_overlap(
-                UHFWalkers(
-                    [jnp.array(new_walkers_1_up), jnp.array(new_walkers_1_dn)]
-                ), wave_data
+                UHFWalkers([jnp.array(new_walkers_1_up), jnp.array(new_walkers_1_dn)]),
+                wave_data,
             )
             ratio_1 = (overlaps_new_1 / carry["overlaps"]).real / 2.0
             ratio_1 = jnp.array(jnp.where(ratio_1 < 1.0e-8, 0.0, ratio_1))
@@ -1644,7 +1642,7 @@ class propagator_cpmc_continuous(propagator_cpmc):
         )
 
         # two body
-        green_diag = trial.calc_green_diagonal_vmap(prop_data["walkers"], wave_data)
+        green_diag = trial.calc_green_diagonal(prop_data["walkers"], wave_data)
         force_bias = (
             0.0 * ham_data["hs_constant"] * (green_diag[:, 0] - green_diag[:, 1])
         )
