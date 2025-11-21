@@ -585,6 +585,52 @@ class triangular_grid(lattice):
                         h[j, i] = 1
         return h
 
+    def get_neel_guess_xc(self):
+        sites_0 = []
+        sites_1 = []
+        sites_2 = []
+        for site in self.sites:
+            x, y = site
+            site_n = self.get_site_num(site)
+            if x % 2 == 0:
+                if y % 3 == 0:
+                    sites_0.append(site_n)
+                elif y % 3 == 1:
+                    sites_1.append(site_n)
+                else:
+                    sites_2.append(site_n)
+            else:
+                if y % 3 == 0:
+                    sites_2.append(site_n)
+                elif y % 3 == 1:
+                    sites_0.append(site_n)
+                else:
+                    sites_1.append(site_n)
+        spinor_0 = np.array([1, 0])
+        spinor_0_dm = np.outer(spinor_0, spinor_0)
+        theta = 2 * np.pi / 3
+        spinor_1 = np.array([np.cos(theta / 2), np.sin(theta / 2)])
+        spinor_1_dm = np.outer(spinor_1, spinor_1)
+        spinor_2 = np.array([np.cos(theta / 2), -np.sin(theta / 2)])
+        spinor_2_dm = np.outer(spinor_2, spinor_2)
+        dm_init = np.zeros((2 * self.n_sites, 2 * self.n_sites))
+        for i in sites_0:
+            dm_init[i, i] = spinor_0_dm[0, 0]
+            dm_init[i + self.n_sites, i + self.n_sites] = spinor_0_dm[1, 1]
+            dm_init[i, i + self.n_sites] = spinor_0_dm[0, 1]
+            dm_init[i + self.n_sites, i] = spinor_0_dm[1, 0]
+        for i in sites_1:
+            dm_init[i, i] = spinor_1_dm[0, 0]
+            dm_init[i + self.n_sites, i + self.n_sites] = spinor_1_dm[1, 1]
+            dm_init[i, i + self.n_sites] = spinor_1_dm[0, 1]
+            dm_init[i + self.n_sites, i] = spinor_1_dm[1, 0]
+        for i in sites_2:
+            dm_init[i, i] = spinor_2_dm[0, 0]
+            dm_init[i + self.n_sites, i + self.n_sites] = spinor_2_dm[1, 1]
+            dm_init[i, i + self.n_sites] = spinor_2_dm[0, 1]
+            dm_init[i + self.n_sites, i] = spinor_2_dm[1, 0]
+        return dm_init
+
     def __hash__(self):
         return hash(
             (
