@@ -150,6 +150,7 @@ def read_options(options: Optional[Dict] = None, tmp_dir: Optional[str] = None) 
         None,
         "rhf",
         "uhf",
+        "ghf",
         "noci",
         "cisd",
         "ucisd",
@@ -294,7 +295,7 @@ def set_trial(
         print(f"# Read RDM1 from disk")
     except:
         # Construct RDM1 from mo_coeff if file not found
-        if options_trial in ["ghf_complex", "gcisd_complex"]:
+        if options_trial in ["ghf", "ghf_complex", "gcisd_complex"]:
             wave_data["rdm1"] = jnp.array(
                 [
                     mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
@@ -312,33 +313,70 @@ def set_trial(
                 ]
             )
 
-    if options.get("symmetry_projector", None) == "s2":
-        from numpy.polynomial.legendre import leggauss
+    if options.get("symmetry_projector", None) is not None:
+        if "s2_ghf" in options["symmetry_projector"]:
+            S = options["target_spin"] / 2.0
+            Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
+            nalpha = options.get("nalpha", 8)
+            nbeta = options.get("nbeta", 8)
+            alphas = np.linspace(0, 2 * np.pi, nalpha, endpoint=False)
+            # betas = np.linspace(0, np.pi, nbeta, endpoint=False)
 
-        # Gauss-Legendre
-        #
-        # \int_0^\pi sin(\beta) f(\beta) \dd\beta
-        # x = \cos(beta), \dd x = -\sin(beta)
-        # = \int_{-1}^{1} f(\arccos(x)) \dd x
-        #\approx \sum_{i=1}^n w_i f(\arccos(x_i))
-        #
-        S = options["target_spin"] / 2.0
-        Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
-        ngrid = options.get("ngrid")  # number of points for the quadrature
+            # This seems to work better.
+            edges = jnp.linspace(0.0, jnp.pi, nbeta + 1)
+            betas = 0.5 * (edges[:-1] + edges[1:])
 
-        # Gauss–Legendre
-        x, w = leggauss(ngrid)
-        beta_vals = jnp.arccos(x)  # map [-1, 1] to [0, pi]
+            w_alphas = jnp.exp(1.0j * Sz * alphas) / nalpha
+            w_betas = (
+                jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+                    S, Sz, Sz, betas
+                )
+                * jnp.sin(betas)
+                * (2 * S + 1)
+                / 2.0
+                * jnp.pi
+                / nbeta
+            )
+            A, B = jnp.meshgrid(alphas, betas, indexing="ij")
+            w_A, w_B = jnp.meshgrid(w_alphas, w_betas, indexing="ij")
+            A = A.reshape(-1)
+            B = B.reshape(-1)
+            w_A = w_A.reshape(-1)
+            w_B = w_B.reshape(-1)
+            angles = jnp.stack([A, B], axis=-1)
+            ws = w_A * w_B
+            wave_data["angles"] = (S, Sz, ws, angles)
 
-        # Wigner small-d matrix elements for each point
-        wigner_d = jax.vmap(
-            Wigner_small_d.wigner_small_d, (None, None, None, 0)
-        )(S, Sz, Sz, beta_vals)
+        elif "s2" in options["symmetry_projector"]:
+            from numpy.polynomial.legendre import leggauss
 
-        # Combine
-        prefactor = 0.5 * (2*S + 1)
-        wigner = prefactor * w * wigner_d
-        wave_data["wigner"] = (S, Sz, wigner, beta_vals)
+            # Gauss-Legendre
+            #
+            # \int_0^\pi sin(\beta) f(\beta) \dd\beta
+            # x = \cos(beta), \dd x = -\sin(beta)
+            # = \int_{-1}^{1} f(\arccos(x)) \dd x
+            #\approx \sum_{i=1}^n w_i f(\arccos(x_i))
+            #
+            S = options["target_spin"] / 2.0
+            Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
+            ngrid = options.get("s2_projector_ngrid", 4)
+
+            # Gauss–Legendre
+            x, w = leggauss(ngrid)
+            betas = jnp.arccos(x)  # map [-1, 1] to [0, pi]
+
+            # Wigner small-d matrix elements for each point
+            w_betas = (
+                jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+                    S, Sz, Sz, betas
+                )
+                * jnp.sin(betas)
+                * (2 * S + 1)
+                / 2.0
+                * jnp.pi
+                / ngrid
+            )
+            wave_data["betas"] = (S, Sz, w_betas, betas)
 
     # Set up trial wavefunction based on specified type
     if options_trial == "rhf":
@@ -542,8 +580,22 @@ def set_trial(
         except:
             raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
 
+    elif options_trial == "ghf":
+        trial = wavefunctions.ghf(
+            norb,
+            nelec_sp,
+            n_chunks=options["n_chunks"],
+            projector=options["symmetry_projector"],
+        )
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
+
     elif options_trial == "ghf_complex":
-        trial = wavefunctions.ghf_complex(norb, nelec_sp, n_chunks=options["n_chunks"])
+        trial = wavefunctions.ghf_complex(
+            norb,
+            nelec_sp,
+            n_chunks=options["n_chunks"],
+            projector=options["symmetry_projector"],
+        )
         wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0] + nelec_sp[1]]
 
     elif options_trial == "gcisd_complex":
