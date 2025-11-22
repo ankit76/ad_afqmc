@@ -370,12 +370,24 @@ def set_trial(
                 jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
                     S, Sz, Sz, betas
                 )
-                * jnp.sin(betas)
-                * (2 * S + 1)
-                / 2.0
+                * w
+                * (2.0 * S + 1.0)
+                * 0.5
                 * jnp.pi
-                / ngrid
             )
+
+            #betas = np.linspace(0, np.pi, ngrid, endpoint=False)
+            #w_betas = (
+            #    jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+            #        S, Sz, Sz, betas
+            #    )
+            #    * jnp.sin(betas)
+            #    * (2 * S + 1)
+            #    / 2.0
+            #    * jnp.pi
+            #    / ngrid
+            #)
+
             wave_data["betas"] = (S, Sz, w_betas, betas)
 
     # Set up trial wavefunction based on specified type
