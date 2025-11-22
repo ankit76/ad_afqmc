@@ -843,12 +843,22 @@ def read_pyscf_ccsd(mf_or_cc, tmpdir):
             ci2aa=ci2aa,
             ci2ab=ci2ab,
             ci2bb=ci2bb,
+            t1a=cc.t1[0],
+            t1b=cc.t1[1],
+            t2aa=cc.t2[0],
+            t2ab=cc.t2[1],
+            t2bb=cc.t2[2],
         )
     else:
         ci2 = cc.t2 + np.einsum("ia,jb->ijab", np.array(cc.t1), np.array(cc.t1))
         ci2 = ci2.transpose(0, 2, 1, 3)
         ci1 = np.array(cc.t1)
-        np.savez(tmpdir + "/amplitudes.npz", ci1=ci1, ci2=ci2, t1=cc.t1, t2=cc.t2)
+        np.savez(tmpdir + "/amplitudes.npz",
+            ci1=ci1,
+            ci2=ci2,
+            t1=cc.t1,
+            t2=cc.t2,
+        )
 
     return mf, cc, norb_frozen
 

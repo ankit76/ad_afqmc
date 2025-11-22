@@ -348,20 +348,46 @@ def set_trial(
             wave_data["angles"] = (S, Sz, ws, angles)
 
         elif "s2" in options["symmetry_projector"]:
+            from numpy.polynomial.legendre import leggauss
+
+            # Gauss-Legendre
+            #
+            # \int_0^\pi sin(\beta) f(\beta) \dd\beta
+            # x = \cos(beta), \dd x = -\sin(beta)
+            # = \int_{-1}^{1} f(\arccos(x)) \dd x
+            #\approx \sum_{i=1}^n w_i f(\arccos(x_i))
+            #
             S = options["target_spin"] / 2.0
             Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
-            ngrid = options.get("s2_projector_ngrid", 8)
-            betas = np.linspace(0, np.pi, ngrid, endpoint=False)
+            ngrid = options.get("s2_projector_ngrid", 4)
+
+            # Gauss–Legendre
+            x, w = leggauss(ngrid)
+            betas = jnp.arccos(x)  # map [-1, 1] to [0, pi]
+
+            # Wigner small-d matrix elements for each point
             w_betas = (
                 jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
                     S, Sz, Sz, betas
                 )
-                * jnp.sin(betas)
-                * (2 * S + 1)
-                / 2.0
+                * w
+                * (2.0 * S + 1.0)
+                * 0.5
                 * jnp.pi
-                / ngrid
             )
+
+            #betas = np.linspace(0, np.pi, ngrid, endpoint=False)
+            #w_betas = (
+            #    jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+            #        S, Sz, Sz, betas
+            #    )
+            #    * jnp.sin(betas)
+            #    * (2 * S + 1)
+            #    / 2.0
+            #    * jnp.pi
+            #    / ngrid
+            #)
+
             wave_data["betas"] = (S, Sz, w_betas, betas)
 
     # Set up trial wavefunction based on specified type
@@ -430,24 +456,21 @@ def set_trial(
             raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
 
     elif options_trial == "ccsd":
+        assert options["walker_type"] == "restricted"
         try:
-            amplitudes = np.load(directory + "/amplitudes.npz")
-            T1 = jnp.array(amplitudes["t1"])
-            nex = T1.size
-            T2 = jnp.array(amplitudes["t2"].transpose(0, 2, 1, 3)).reshape(nex, nex)
-            evals, evecs = jnp.linalg.eigh(T2)
-            nocc, nvirt = T1.shape[0], T1.shape[1]
+            amplitudes = jnp.load(directory + "/amplitudes.npz")
 
-            hs_ops = jnp.einsum(
-                "i,ijk->ijk",
-                jnp.sqrt(evals + 0.0j),
-                jnp.transpose(evecs.reshape((nocc, nvirt, nex)), (2, 1, 0)),
-            )
+            t1 = jnp.array(amplitudes["t1"])
+            t2 = jnp.array(amplitudes["t2"])
 
-            trial_wave_data = {"T1": T1, "T2": T2, "hs_ops": hs_ops}
+            nocc, nvirt = t1.shape
+
+            trial_wave_data = {
+                "t1": t1,
+            }
 
             wave_data.update(trial_wave_data)
-            wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
+            wave_data["mo_coeff"] = mo_coeff[0]
 
             if options["trial_mixed_precision"]:
                 mixed_real_dtype = jnp.float32
@@ -466,8 +489,62 @@ def set_trial(
                 mixed_complex_dtype=mixed_complex_dtype,
                 memory_mode=options["memory_mode"],
             )
+            wave_data = trial.hs_op(wave_data, t2)
         except:
             raise ValueError("Trial specified as ccsd, but amplitudes.npz not found.")
+
+    elif options_trial == "uccsd":
+        assert options["walker_type"] == "unrestricted"
+        try:
+            amplitudes = jnp.load(directory + "/amplitudes.npz")
+
+            t1a = jnp.array(amplitudes["t1a"])
+            t1b = jnp.array(amplitudes["t1b"])
+            t2aa = jnp.array(amplitudes["t2aa"])
+            t2ab = jnp.array(amplitudes["t2ab"])
+            t2bb = jnp.array(amplitudes["t2bb"])
+
+            trial_wave_data = {
+                "t1a": t1a,
+                "t1b": t1b,
+            }
+
+            nOa, nVa = amplitudes["t1a"].shape
+            nOb, nVb = amplitudes["t1b"].shape
+            nocc = (nOa, nOb)
+            nvir = (nVa, nVb)
+
+            assert nocc == nelec_sp
+            assert nvir == (norb-nOa, norb-nOb)
+
+            wave_data.update(trial_wave_data)
+            wave_data["mo_coeff"] = [mo_coeff[0], mo_coeff[1]]
+
+            if options["trial_mixed_precision"]:
+                mixed_real_dtype = jnp.float32
+                mixed_complex_dtype = jnp.complex64
+            else:
+                mixed_real_dtype = jnp.float64
+                mixed_complex_dtype = jnp.complex128
+
+            trial = wavefunctions.uccsd(
+                norb,
+                nelec_sp,
+                nocc,
+                nvir,
+                n_chunks=options["n_chunks"],
+                mixed_real_dtype=mixed_real_dtype,
+                mixed_complex_dtype=mixed_complex_dtype,
+                memory_mode=options["memory_mode"],
+            )
+
+            wave_data = trial.hs_op(wave_data,
+                t2aa,
+                t2ab,
+                t2bb,
+            )
+        except:
+            raise ValueError("Trial specified as uccsd, but amplitudes.npz not found.")
 
     elif options_trial == "ucisd" or options_trial == "UCISD":
         try:
