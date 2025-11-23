@@ -266,6 +266,74 @@ def apply_s0_projector(
     return kets, coeffs
 
 
+def _gauss_legendre_nodes_weights(n: int):
+    """
+    Golub–Welsch for Gauss–Legendre on [-1, 1].
+    Returns nodes x (ascending) and weights w.
+    """
+    assert n > 0, "Number of Gauss–Legendre points must be positive."
+    k = jnp.arange(1, n)
+    b = k / jnp.sqrt(4.0 * k * k - 1.0)  # off-diagonals
+    # symmetric tridiagonal Jacobi matrix
+    J = jnp.zeros((n, n))
+    J = J.at[jnp.arange(n - 1), jnp.arange(1, n)].set(b)
+    J = J.at[jnp.arange(1, n), jnp.arange(n - 1)].set(b)
+    x, V = jnp.linalg.eigh(J)  # x: nodes; V: eigenvectors
+    w = 2.0 * (V[0, :] ** 2)  # weights
+    return x, w
+
+
+def apply_s0_projector_gauss(
+    input_ket: jnp.ndarray,
+    n_alpha: int = 8,
+    n_beta: int = 16,
+    n_gamma: int = 8,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    S=0 projector with Gauss–Legendre quadrature in β (via t = cos β).
+    α, γ use uniform trapezoidal grids.
+
+    Returns:
+      kets   : (n_alpha * n_beta * n_gamma, 2*norb, nocc)
+      coeffs : (n_alpha * n_beta * n_gamma,) complex weights
+               equal to (1/8π^2) * (2π/n_alpha) * (2π/n_gamma) * w_beta[j]
+    """
+    norb = input_ket.shape[0] // 2
+    dtype_f = input_ket.real.dtype
+    dtype_c = input_ket.dtype
+
+    # α, γ: uniform on [0, 2π)
+    dalpha = (2.0 * jnp.pi) / n_alpha
+    dgamma = (2.0 * jnp.pi) / n_gamma
+    alpha = jnp.arange(n_alpha) * dalpha
+    gamma = jnp.arange(n_gamma) * dgamma
+
+    # β: Gauss–Legendre on t = cos β ∈ [-1, 1]
+    t, w_beta = _gauss_legendre_nodes_weights(n_beta)
+    beta = jnp.arccos(t)  # maps [-1,1] → [0,π]
+
+    # full tensor grid, then flatten
+    A, B, G = jnp.meshgrid(alpha, beta, gamma, indexing="ij")
+    angles = jnp.stack([A.ravel(), B.ravel(), G.ravel()], axis=1)
+
+    # weights: (1/8π^2) * dα * dγ * w_beta[j]
+    W = (1.0 / (8.0 * jnp.pi**2)) * dalpha * dgamma
+    weights = (W * jnp.tile(w_beta[None, :, None], (n_alpha, 1, n_gamma))).ravel()
+
+    up = input_ket[:norb, :]
+    dn = input_ket[norb:, :]
+
+    def rotate_one(ang):
+        a, b, g = ang
+        u11, u12, u21, u22 = _spin_rot_elements(a, b, g)
+        alpha_block = u11 * up + u12 * dn
+        beta_block = u21 * up + u22 * dn
+        return jnp.vstack([alpha_block, beta_block])
+
+    kets = jax.vmap(rotate_one)(angles)
+    return kets, weights
+
+
 def _apply_pg_to_ket(ket: jnp.ndarray, U: jnp.ndarray) -> jnp.ndarray:
     """U acts in orbital space on both spin blocks."""
     norb = ket.shape[0] // 2
@@ -315,7 +383,7 @@ class singlet_projector(projector):
         self, kets: jnp.ndarray, coeffs: jnp.ndarray
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         def rotate_single(ket):
-            return apply_s0_projector(
+            return apply_s0_projector_gauss(
                 ket, n_alpha=self.n_alpha, n_beta=self.n_beta, n_gamma=self.n_gamma
             )
 
@@ -418,6 +486,7 @@ def optimize(
     projectors: tuple[projector, ...],
     maxiter: int = 100,
     step: float = 0.01,
+    printQ: bool = True,
 ) -> tuple[float, np.ndarray]:
     """
     Variationally optimize a GHF determinant under optional symmetry projections.
@@ -453,11 +522,11 @@ def optimize(
         updates, opt_state = optimizer.update(grads_typed, opt_state, psi_var)
         psi_var = optax.apply_updates(psi_var, updates)
         energy = energy_val
-        print(
-            f"Iteration {iteration + 1}: Energy = {float(np.array(energy_val))}, "
-            f"Grad norm = {grad_norm}"
-        )
-
+        if printQ:
+            print(
+                f"Iteration {iteration + 1}: Energy = {float(np.array(energy_val))}, "
+                f"Grad norm = {grad_norm}"
+            )
     return float(np.array(energy)), np.array(psi_var)
 
 
