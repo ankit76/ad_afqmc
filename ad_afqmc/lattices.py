@@ -467,7 +467,7 @@ class triangular_grid(lattice):
     boundary: str = "pbc"
 
     def __post_init__(self):
-        self.shape = (self.l_y, self.l_x)
+        self.shape = (self.l_x, self.l_y)
         self.n_sites = self.l_x * self.l_y
         self.sites = tuple(
             [(i // self.l_y, i % self.l_y) for i in range(self.l_x * self.l_y)]
