@@ -4,10 +4,12 @@ import pickle
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import h5py
 import jax
-import numpy as np
 from jax import numpy as jnp
+
+import h5py
+import numpy as np
+from numpy.polynomial.legendre import leggauss
 
 from ad_afqmc import (
     Wigner_small_d,
@@ -319,24 +321,22 @@ def set_trial(
             Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
             nalpha = options.get("nalpha", 8)
             nbeta = options.get("nbeta", 8)
+
             alphas = np.linspace(0, 2 * np.pi, nalpha, endpoint=False)
-            # betas = np.linspace(0, np.pi, nbeta, endpoint=False)
-
-            # This seems to work better.
-            edges = jnp.linspace(0.0, jnp.pi, nbeta + 1)
-            betas = 0.5 * (edges[:-1] + edges[1:])
-
             w_alphas = jnp.exp(1.0j * Sz * alphas) / nalpha
+
+            # Gauss–Legendre
+            x, w = leggauss(nbeta)
+            betas = jnp.arccos(x)  # map [-1, 1] to [0, pi]
+
+            # Wigner small-d matrix elements for each point
             w_betas = (
                 jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
                     S, Sz, Sz, betas
                 )
-                * jnp.sin(betas)
-                * (2 * S + 1)
-                / 2.0
-                * jnp.pi
-                / nbeta
+                * w * (2.0*S+1.0) / 2.0
             )
+
             A, B = jnp.meshgrid(alphas, betas, indexing="ij")
             w_A, w_B = jnp.meshgrid(w_alphas, w_betas, indexing="ij")
             A = A.reshape(-1)
@@ -348,8 +348,6 @@ def set_trial(
             wave_data["angles"] = (S, Sz, ws, angles)
 
         elif "s2" in options["symmetry_projector"]:
-            from numpy.polynomial.legendre import leggauss
-
             # Gauss-Legendre
             #
             # \int_0^\pi sin(\beta) f(\beta) \dd\beta
@@ -370,24 +368,8 @@ def set_trial(
                 jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
                     S, Sz, Sz, betas
                 )
-                * w
-                * (2.0 * S + 1.0)
-                * 0.5
-                * jnp.pi
+                * w * (2.0*S+1.0) / 2.0
             )
-
-            #betas = np.linspace(0, np.pi, ngrid, endpoint=False)
-            #w_betas = (
-            #    jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
-            #        S, Sz, Sz, betas
-            #    )
-            #    * jnp.sin(betas)
-            #    * (2 * S + 1)
-            #    / 2.0
-            #    * jnp.pi
-            #    / ngrid
-            #)
-
             wave_data["betas"] = (S, Sz, w_betas, betas)
 
     # Set up trial wavefunction based on specified type
