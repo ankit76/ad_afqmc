@@ -102,7 +102,7 @@ class sampler:
         prop: propagator,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[dict, Tuple[dict, jax.Array, jax.Array]]:
+    ) -> Tuple[dict, Tuple]:
         """Block scan function for free propagation."""
         prop_data["key"], subkey = random.split(prop_data["key"])
         fields = random.normal(
@@ -119,12 +119,12 @@ class sampler:
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
 
         # Already done in _step_scan_free by propagate_free
-        #prop_data["key"], subkey = random.split(prop_data["key"])
-        #zeta = random.uniform(subkey)
-        #prop_data["walkers"], prop_data["weights"] = prop_data[
+        # prop_data["key"], subkey = random.split(prop_data["key"])
+        # zeta = random.uniform(subkey)
+        # prop_data["walkers"], prop_data["weights"] = prop_data[
         #    "walkers"
-        #].stochastic_reconfiguration_local(prop_data["weights"], zeta)
-        #prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        # ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
+        # prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
         energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
         energy_samples = jnp.where(
