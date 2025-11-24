@@ -4,11 +4,10 @@ import pickle
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import jax
-from jax import numpy as jnp
-
 import h5py
+import jax
 import numpy as np
+from jax import numpy as jnp
 from numpy.polynomial.legendre import leggauss
 
 from ad_afqmc import (
@@ -317,35 +316,23 @@ def set_trial(
 
     if options.get("symmetry_projector", None) is not None:
         if "s2_ghf" in options["symmetry_projector"]:
-            S = options["target_spin"] / 2.0
-            Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
-            nalpha = options.get("nalpha", 8)
-            nbeta = options.get("nbeta", 8)
+            # only singlet projection supported for now
+            n_alpha = options.get("nalpha", 6)
+            alpha_vals = 2.0 * jnp.pi * jnp.arange(n_alpha) / n_alpha
+            w_alpha = 1.0 / n_alpha
+            wave_data["alpha"] = (alpha_vals, w_alpha)
 
-            alphas = np.linspace(0, 2 * np.pi, nalpha, endpoint=False)
-            w_alphas = jnp.exp(1.0j * Sz * alphas) / nalpha
+            def make_beta_gl(n_beta: int):
+                x, w = leggauss(int(n_beta))
+                beta = np.arccos(x)
+                order = np.argsort(beta)
+                return beta[order], w[order]
 
-            # Gauss–Legendre
-            x, w = leggauss(nbeta)
-            betas = jnp.arccos(x)  # map [-1, 1] to [0, pi]
-
-            # Wigner small-d matrix elements for each point
-            w_betas = (
-                jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
-                    S, Sz, Sz, betas
-                )
-                * w * (2.0*S+1.0) / 2.0
-            )
-
-            A, B = jnp.meshgrid(alphas, betas, indexing="ij")
-            w_A, w_B = jnp.meshgrid(w_alphas, w_betas, indexing="ij")
-            A = A.reshape(-1)
-            B = B.reshape(-1)
-            w_A = w_A.reshape(-1)
-            w_B = w_B.reshape(-1)
-            angles = jnp.stack([A, B], axis=-1)
-            ws = w_A * w_B
-            wave_data["angles"] = (S, Sz, ws, angles)
+            n_beta = options.get("nbeta", 6)
+            beta_vals_np, w_beta_np = make_beta_gl(n_beta)
+            beta_vals = jnp.asarray(beta_vals_np)
+            w_beta = jnp.asarray(w_beta_np)
+            wave_data["beta"] = (beta_vals, w_beta)
 
         elif "s2" in options["symmetry_projector"]:
             # Gauss-Legendre
@@ -353,7 +340,7 @@ def set_trial(
             # \int_0^\pi sin(\beta) f(\beta) \dd\beta
             # x = \cos(beta), \dd x = -\sin(beta)
             # = \int_{-1}^{1} f(\arccos(x)) \dd x
-            #\approx \sum_{i=1}^n w_i f(\arccos(x_i))
+            # \approx \sum_{i=1}^n w_i f(\arccos(x_i))
             #
             S = options["target_spin"] / 2.0
             Sz = (nelec_sp[0] - nelec_sp[1]) / 2.0
@@ -368,8 +355,23 @@ def set_trial(
                 jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
                     S, Sz, Sz, betas
                 )
-                * w * (2.0*S+1.0) / 2.0
+                * w
+                * (2.0 * S + 1.0)
+                / 2.0
             )
+
+            # betas = np.linspace(0, np.pi, ngrid, endpoint=False)
+            # w_betas = (
+            #    jax.vmap(Wigner_small_d.wigner_small_d, (None, None, None, 0))(
+            #        S, Sz, Sz, betas
+            #    )
+            #    * jnp.sin(betas)
+            #    * (2 * S + 1)
+            #    / 2.0
+            #    * jnp.pi
+            #    / ngrid
+            # )
+
             wave_data["betas"] = (S, Sz, w_betas, betas)
 
     # Set up trial wavefunction based on specified type
@@ -497,7 +499,7 @@ def set_trial(
             nvir = (nVa, nVb)
 
             assert nocc == nelec_sp
-            assert nvir == (norb-nOa, norb-nOb)
+            assert nvir == (norb - nOa, norb - nOb)
 
             wave_data.update(trial_wave_data)
             wave_data["mo_coeff"] = [mo_coeff[0], mo_coeff[1]]
@@ -520,7 +522,8 @@ def set_trial(
                 memory_mode=options["memory_mode"],
             )
 
-            wave_data = trial.hs_op(wave_data,
+            wave_data = trial.hs_op(
+                wave_data,
                 t2aa,
                 t2ab,
                 t2bb,
