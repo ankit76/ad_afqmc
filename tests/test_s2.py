@@ -1,3 +1,4 @@
+import os
 import jax
 import jax.numpy as jnp
 from pyscf import gto, scf, fci, ci, cc
@@ -38,7 +39,8 @@ mf = mf.newton().run(mo1, mf.mo_occ)
 mo1 = mf.stability()[0]
 mf = mf.newton().run(mo1, mf.mo_occ)
 
-with open("test_s2.bin", "rb") as f:
+path = os.path.dirname(os.path.abspath(__file__))
+with open(path+"/test_s2.bin", "rb") as f:
     mf.mo_coeff = pickle.load(f)
 
 mycc = cc.UCCSD(mf)
