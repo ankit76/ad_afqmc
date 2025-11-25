@@ -10,7 +10,6 @@ jax.config.update("jax_enable_x64", True)
 
 def get_walker(key, nmo, nelec):
     n = nmo
-    #A = rng.standard_normal((n, n)) + 1.0j * rng.standard_normal((n, n))
     key1, key2 = jax.random.split(key)
     A = (
         jax.random.normal(key1, (n, n)) +
@@ -39,8 +38,6 @@ mf = mf.newton().run(mo1, mf.mo_occ)
 mo1 = mf.stability()[0]
 mf = mf.newton().run(mo1, mf.mo_occ)
 
-#with open("test_s2.bin", "wb") as f:
-#    pickle.dump(mf.mo_coeff, f)
 with open("test_s2.bin", "rb") as f:
     mf.mo_coeff = pickle.load(f)
 
@@ -51,17 +48,11 @@ def prep(obj, target_spin):
     af = afqmc.AFQMC(obj)
     af.chol_cut = 1e-5
     af.free_projection = True
-    af.dt= 0.1
-    af.n_prop_steps= 1  # number of dt long steps in a propagation block
-    af.n_blocks= 1 # number of propagation and measurement blocks
-    af.n_ene_blocks= 1  # number of trajectories
-    af.n_walkers= 1
-    af.walker_type= "uhf"
-    af.norb_frozen=0
-    af.ene0= mycc.e_tot
-    af.seed = 42
+    af.n_walkers = 1
+    af.walker_type = "uhf"
+    af.ene0 = obj.e_tot
     af.s2_projector_ngrid = 100
-    af.symmetry_projector="s2"
+    af.symmetry_projector = "s2"
     af.target_spin = target_spin
     af.tmpdir = "."
     af.kernel(dry_run=True)
