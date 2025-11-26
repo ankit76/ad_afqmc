@@ -1126,7 +1126,7 @@ def _analyze_energy_results(
         )
 
         # Print formatted results
-        if e_err_afqmc is not None:
+        if e_err_afqmc is not None and e_err_afqmc > 0.0:
             sig_dec = int(abs(np.floor(np.log10(e_err_afqmc))))
             sig_err = np.around(
                 np.round(e_err_afqmc * 10**sig_dec) * 10 ** (-sig_dec), sig_dec
