@@ -102,7 +102,7 @@ class sampler:
         prop: propagator,
         trial: wave_function,
         wave_data: dict,
-    ) -> Tuple[dict, Tuple[dict, jax.Array, jax.Array]]:
+    ) -> Tuple[dict, Tuple]:
         """Block scan function for free propagation."""
         prop_data["key"], subkey = random.split(prop_data["key"])
         fields = random.normal(
@@ -118,16 +118,17 @@ class sampler:
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
 
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        zeta = random.uniform(subkey)
-        prop_data["walkers"], prop_data["weights"] = prop_data[
-            "walkers"
-        ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-        energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+        # Already done in _step_scan_free by propagate_free
+        # prop_data["key"], subkey = random.split(prop_data["key"])
+        # zeta = random.uniform(subkey)
+        # prop_data["walkers"], prop_data["weights"] = prop_data[
+        #    "walkers"
+        # ].stochastic_reconfiguration_local(prop_data["weights"], zeta)
+        # prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
+        energy_samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
         energy_samples = jnp.where(
-            jnp.abs(energy_samples - ham_data["ene0"]) > jnp.sqrt(2.0 / propagator.dt),
+            jnp.abs(energy_samples - ham_data["ene0"]) > jnp.sqrt(2.0 / prop.dt),
             ham_data["ene0"],
             energy_samples,
         )
@@ -136,7 +137,11 @@ class sampler:
         ) / jnp.sum(prop_data["overlaps"] * prop_data["weights"])
 
         block_weight = jnp.sum(prop_data["overlaps"] * prop_data["weights"])
-        return prop_data, (prop_data, block_energy, block_weight)
+
+        ov = jnp.sum(prop_data["overlaps"])
+        abs_ov = jnp.sum(jnp.abs(prop_data["overlaps"]))
+
+        return prop_data, (ov, abs_ov, prop_data.copy(), block_energy, block_weight)
 
     @partial(jit, static_argnums=(0, 4, 5))
     def _sr_block_scan(
@@ -373,10 +378,10 @@ class sampler:
             return self._block_scan_free(x, y, ham_data, prop, trial, wave_data)
 
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-        prop_data, (prop_data_tr, block_energy, block_weight) = lax.scan(
+        (prop_data, (ov, abs_ov, prop_data_tr, block_energy, block_weight)) = lax.scan(
             _block_scan_free_wrapper, prop_data, None, length=self.n_blocks
         )
-        return prop_data_tr, block_energy, block_weight, prop_data["key"]
+        return ov, abs_ov, prop_data_tr, block_energy, block_weight, prop_data["key"]
 
     @partial(jit, static_argnums=(0, 1, 6, 8))
     def propagate_phaseless_nucgrad_norot(

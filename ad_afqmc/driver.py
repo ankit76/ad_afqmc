@@ -1235,7 +1235,7 @@ def _analyze_observable_results(
         )
 
         # Print formatted observable results
-        if obs_err_afqmc is not None:
+        if obs_err_afqmc is not None and obs_err_afqmc > 0.0:
             sig_dec = int(abs(np.floor(np.log10(obs_err_afqmc))))
             sig_err = np.around(
                 np.round(obs_err_afqmc * 10**sig_dec) * 10 ** (-sig_dec), sig_dec
@@ -1468,7 +1468,6 @@ def afqmc(
         )
         return e_afqmc, e_err_afqmc
 
-
 def fp_afqmc(
     ham_data: dict,
     ham: hamiltonian.hamiltonian,
@@ -1506,7 +1505,7 @@ def fp_afqmc(
     comm.Barrier()
     init_time = time.time() - init
     print("#\n# Sampling sweeps:")
-    print("#  Iter        Mean energy          Stochastic error       Walltime")
+    print("#  Iter        Mean energy    Stochastic error    Sign")
     comm.Barrier()
 
     total_energy = np.zeros((sampler.n_ene_blocks, sampler.n_blocks + 1)) + 0.0j
@@ -1515,37 +1514,48 @@ def fp_afqmc(
 
     avg_energy = np.zeros((sampler.n_blocks)) + 0.0j
     avg_weight = np.zeros((sampler.n_blocks)) + 0.0j
+
     for n in range(
         sampler.n_ene_blocks
     ):  # hacking this variable for number of trajectories
-
         # initialize a new set of determinants every block
         # if the ket is CCSD that is being sampled then good to sample it many times
-        if n != 0:
-            wave_data_ket["key"] = jax.random.PRNGKey(local_seed + n)
-            prop_data["walkers"] = trial_ket.get_init_walkers(
-                wave_data_ket,
-                propagator.n_walkers,
-                (
-                    "unrestricted"
-                    if isinstance(prop_data["walkers"], UHFWalkers)
-                    else "restricted"
-                ),
-            )
 
-            energy_samples = jnp.real(
-                trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
-            )
-            e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
-            prop_data["e_estimate"] = e_estimate
-
-        total_sign[n, 0] = jnp.sum(prop_data["overlaps"]) / jnp.sum(
-            jnp.abs(prop_data["overlaps"])
+        wave_data_ket["key"] = jax.random.PRNGKey(local_seed + n)
+        prop_data["walkers"] = trial_ket.get_init_walkers(
+            wave_data_ket,
+            propagator.n_walkers,
+            (
+                "unrestricted"
+                if isinstance(prop_data["walkers"], UHFWalkers)
+                else "restricted"
+            ),
         )
-        total_energy[n, 0] = prop_data["e_estimate"]
+
+        prop_data["overlaps"] = trial_bra.calc_overlap(prop_data["walkers"], wave_data_bra)
+        prop_data["weights"] = jnp.ones_like(prop_data["weights"])
+        energy_samples = trial_bra.calc_energy(prop_data["walkers"], ham_data, wave_data_bra)
+
+        e_estimate = jnp.array(jnp.sum(energy_samples) / propagator.n_walkers)
+        prop_data["e_estimate"] = e_estimate.real
+        ov = prop_data["overlaps"]
+        sign = np.sum(ov) / np.sum(np.abs(ov))
+
+        if options["save_walkers"] == True:
+            if n > 0:
+                with open(f"prop_data_init_{rank}.bin", "ab") as f:
+                    pickle.dump(prop_data, f)
+            else:
+                with open(f"prop_data_init_{rank}.bin", "wb") as f:
+                    pickle.dump(prop_data, f)
+
+        total_sign[n, 0] = sign
+        total_energy[n, 0] = e_estimate
         total_weight[n, 0] = jnp.sum(prop_data["weights"])
 
         (
+            ov,
+            abs_ov,
             prop_data_tr,
             energy_samples,
             weights,
@@ -1555,15 +1565,15 @@ def fp_afqmc(
         )
         # global_block_weights[n] = weights[0]
         # global_block_energies[n] = energy_samples[0]
-        avg_sign = jax.vmap(lambda ov: jnp.sum(ov) / jnp.sum(jnp.abs(ov)))(
-            prop_data_tr["overlaps"]
-        )
+
+        sign = ov / abs_ov
         total_energy[n, 1:] = energy_samples
         total_weight[n, 1:] = weights
-        total_sign[n, 1:] = avg_sign
+        total_sign[n, 1:] = sign
 
-        avg_weight += weights
-        avg_energy += weights * (energy_samples - avg_energy) / avg_weight
+        #avg_weight += weights
+        #avg_energy += weights * (energy_samples - avg_energy) / avg_weight
+
         if options["save_walkers"] == True:
             if n > 0:
                 with open(f"prop_data_{rank}.bin", "ab") as f:
@@ -1574,34 +1584,49 @@ def fp_afqmc(
 
         # if n % (max(sampler.n_ene_blocks // 10, 1)) == 0:
         comm.Barrier()
-        if rank == 0:
-            for i in range(avg_energy.shape[0]):
-                print(
-                    "{0:5.3f}  {1:18.9f}  {2:8.2f}".format(
-                        (i + 1) * propagator.dt * sampler.n_prop_steps,
-                        avg_energy[i].real,
-                        avg_sign[i].real,
-                    )
-                )
-            print("")
+
         times = propagator.dt * sampler.n_prop_steps * jnp.arange(sampler.n_blocks + 1)
+
         mean_energies = np.sum(
             total_energy[: n + 1] * total_weight[: n + 1], axis=0
         ) / np.sum(total_weight[: n + 1], axis=0)
+
         if n == 0:
-            error = np.zeros_like(mean_energies)
+            errors = np.zeros_like(mean_energies)
         else:
-            error = np.std(total_energy[: n + 1], axis=0) / (n) ** 0.5
+            errors = np.std(total_energy[: n + 1], axis=0) / (n) ** 0.5
+
+        mean_signs = np.sum(
+            total_sign[: n + 1] * total_weight[: n + 1], axis=0
+        ) / np.sum(total_weight[: n + 1], axis=0)
+
+        if rank == 0:
+            for i in range(sampler.n_blocks+1):
+                print(
+                    "{0:5.3f}  {1:18.9f}  {2:15.2e}  {3:10.2f}".format(
+                        times[i],
+                        mean_energies[i].real,
+                        errors[i].real,
+                        mean_signs[i].real,
+                    )
+                )
+            print("")
+
         np.savetxt(
             "samples_raw.dat",
             np.stack(
                 (
                     times,
                     mean_energies.real,
-                    error.real,
-                    np.mean(total_sign[: n + 1], axis=0).real,
+                    errors.real,
+                    mean_signs.real,
                 )
             ).T,
         )
+
         np.savetxt("RawEnergies.dat", total_energy[: n + 1].T.real)
+        np.savetxt("Raw_E.dat", total_energy[: n + 1].T)
+        np.savetxt("Raw_W.dat", total_weight[: n + 1].T)
+        np.savetxt("Raw_S.dat", total_sign[: n + 1].T)
+
         # print(f"{n:5d}: {mean_energies.real}")

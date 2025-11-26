@@ -193,7 +193,7 @@ class two_dimensional_grid(lattice):
     bond_shell_distances: Optional[Sequence] = None
     sites: Optional[Sequence] = None
     bonds: Optional[Sequence] = None
-    n_sites: int = 0
+    n_sites: Optional[int] = None
     hop_signs: Sequence = (-1.0, -1.0, 1.0, 1.0)
     coord_num: int = 4
     boundary: str = "pbc"
@@ -353,6 +353,7 @@ class two_dimensional_grid(lattice):
             down = (pos[0] + 1, pos[1])
             left = (pos[0], pos[1] - 1)
             up = (pos[0] - 1, pos[1])
+
         return jnp.array([right, down, left, up])
 
     # used in the ssh model
@@ -625,6 +626,77 @@ class triangular_grid(lattice):
             dm_init[i, i + self.n_sites] = spinor_2_dm[0, 1]
             dm_init[i + self.n_sites, i] = spinor_2_dm[1, 0]
         return dm_init
+
+    def build_pg_ops_xc(self):
+        """
+        Full space-group ops for triangular XC cylinder (PBC in x, OBC in y)
+        with a 2-row unit cell along x.
+
+        Returns
+        -------
+        pg_ops  : list of (N, N) arrays
+            All symmetry operators: {E, C2, G, C2G} * {T2^n}, n = 0..nx/2-1.
+            Total number of ops = 2 * nx.
+        pg_chars: list of ints
+            Characters for the totally symmetric irrep (all +1).
+        """
+        nx = self.l_x
+        ny = self.l_y
+
+        if nx % 2 != 0:
+            raise ValueError("nx must be even to have a 2-row unit cell along x.")
+
+        n_sites = nx * ny
+        E = np.eye(n_sites, dtype=float)
+
+        def idx(x, y):
+            return (x % nx) * ny + y
+
+        # --- C2: inversion ---
+        # (x, y) -> (nx-1-x, ny-1-y)  <=>  i -> N-1-i in row-major
+        perm_c2 = np.arange(n_sites - 1, -1, -1)
+        U_c2 = E[:, perm_c2]
+
+        # --- Glide G: (x, y) -> (x+1, ny-1-y) ---
+        perm_g = np.empty(n_sites, dtype=int)
+        for x in range(nx):
+            for y in range(ny):
+                i = idx(x, y)
+                perm_g[i] = idx((x + 1) % nx, ny - 1 - y)
+        U_g = E[:, perm_g]
+
+        # --- T2^n: translation by 2n rows: (x, y) -> (x+2n, y) ---
+        def U_t2_power(n):
+            perm = np.empty(n_sites, dtype=int)
+            for x in range(nx):
+                for y in range(ny):
+                    i = idx(x, y)
+                    perm[i] = idx((x + 2 * n) % nx, y)
+            return E[:, perm]
+
+        # Base (point-group) ops without translations
+        base_ops = [E, U_c2, U_g, U_c2 @ U_g]
+
+        pg_ops = []
+        pg_chars = []
+
+        # n = 0: just the base ops
+        for U in base_ops:
+            if not any(np.array_equal(U, V) for V in pg_ops):
+                pg_ops.append(U)
+                pg_chars.append(1)
+
+        # n = 1 .. nx/2-1: T2^n and its products with base ops
+        maxn = nx // 2
+        for n in range(1, maxn):
+            U_tn = U_t2_power(n)
+            for U0 in base_ops:
+                U = U0 @ U_tn
+                if not any(np.array_equal(U, V) for V in pg_ops):
+                    pg_ops.append(U)
+                    pg_chars.append(1)
+
+        return pg_ops, pg_chars
 
     def __hash__(self):
         return hash(
