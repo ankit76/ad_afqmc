@@ -550,7 +550,7 @@ class wave_function_cpmc(wave_function):
             beta_vals
         )
         total = jnp.sum(w_beta[:, None] * ovlp_alpha) * w_alpha
-        return total
+        return total.real
 
     def _calc_overlap_ext_s2_ghf(
         self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
@@ -685,8 +685,8 @@ class wave_function_cpmc(wave_function):
         num_alpha, den_alpha = vmap(
             lambda b: vmap(lambda a: eval_one(b, a))(alpha_vals)
         )(beta_vals)
-        num = jnp.sum(w_beta[:, None] * num_alpha) * w_alpha
-        den = jnp.sum(w_beta[:, None] * den_alpha) * w_alpha
+        num = jnp.sum(w_beta[:, None] * num_alpha).real * w_alpha
+        den = jnp.sum(w_beta[:, None] * den_alpha).real * w_alpha
         return num / den
 
     @singledispatchmethod
