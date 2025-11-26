@@ -1267,6 +1267,12 @@ def read_options(options: Optional[Dict] = None, tmp_dir: str = ".") -> Dict:
         except:
             options = {}
 
+    options = get_options(options)
+
+    return options
+
+
+def get_options(options: Dict):
     # Set default values for options
     options["dt"] = options.get("dt", 0.01)
     options["n_walkers"] = options.get("n_walkers", 50)
@@ -1858,6 +1864,7 @@ def setup_afqmc_ph(
         ms, nelec, norb = int(ms), int(nelec), int(norb)
         nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
         mo_coeff = jnp.array(pyscf_prep["trial_coeffs"])
+        options = get_options(options)
     else:
         h0, h1, chol, norb, nelec_sp = read_fcidump(directory)
         mo_coeff = load_mo_coefficients(directory)
