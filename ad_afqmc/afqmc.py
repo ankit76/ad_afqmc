@@ -314,6 +314,7 @@ class AFQMC:
 
         # this can be tr, s2 or sz for time-reversal, S^2, or S_z symmetry projection, respectively
         self.symmetry_projector = None
+        self.ngrid = 4 # Number of grid point for the quadrature
         self.optimize_trial = False
         self.target_spin = 0  # 2S and is only used when symmetry_projector is s2
         self.symmetry = False
@@ -349,6 +350,7 @@ class AFQMC:
         self.trial_mixed_precision = False
         self.memory_mode = "low"
         self.tmpdir = __config__.TMPDIR + f"/afqmc{np.random.randint(1, int(1e6))}/"
+        self.write_to_disk = False # Write FCIDUMP and ci/cc coeff to disk
         self.prjlo = None  # used in LNO, need to fix
 
     def make_options_dict(self):
@@ -381,6 +383,7 @@ class AFQMC:
                 If True, writes input files like integrals to disk, useful for large calculations where one would like to run the trial generation and AFQMC calculations on different machines, on CPU and GPU, for example.
         """
         os.makedirs(self.tmpdir, exist_ok=True)
+
         if self.ad_mode != "nuc_grad":
             pyscf_prep = utils.prep_afqmc(
                 self.mf_or_cc,
@@ -389,6 +392,7 @@ class AFQMC:
                 chol_cut=self.chol_cut,
                 integrals=self.integrals,
                 tmpdir=self.tmpdir,
+                write_to_disk=self.write_to_disk,
             )
         else:
             raise NotImplementedError(
@@ -396,11 +400,12 @@ class AFQMC:
             )
             # grad_utils.prep_afqmc_nuc_grad(self.mf_or_cc, self.dR, tmpdir=self.tmpdir)
         options = self.make_options_dict()
-        # with open(self.tmpdir + "/options.bin", "wb") as f:
-        #     pickle.dump(options, f)
+
         if dry_run:
             with open("tmpdir.txt", "w") as f:
                 f.write(self.tmpdir)
+            with open(self.tmpdir + "/options.bin", "wb") as f:
+                pickle.dump(options, f)
             return self.tmpdir
         elif options["free_projection"]:
             # run_afqmc.optimize_trial(options)

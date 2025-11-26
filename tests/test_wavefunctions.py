@@ -261,10 +261,10 @@ def test_uhf_cpmc():
     hs_constant = const * jnp.array(
         [[jnp.exp(gamma), jnp.exp(-gamma)], [jnp.exp(-gamma), jnp.exp(gamma)]]
     )
-    green = uhf_cpmc.calc_full_green(walker_up, walker_dn, wave_data_u)
+    green = uhf_cpmc._calc_green_full_unrestricted(walker_up, walker_dn, wave_data_u)
     assert green[0].shape == (norb, norb)
     assert green[1].shape == (norb, norb)
-    wick_ratio = uhf_cpmc.calc_overlap_ratio(
+    wick_ratio = uhf_cpmc._calc_overlap_ratio(
         green,
         jnp.array([[0, 3], [1, 3]]),
         hs_constant[0] - 1,
@@ -275,8 +275,8 @@ def test_uhf_cpmc():
     ratio = uhf_cpmc._calc_overlap_unrestricted(new_walker_0, new_walker_1, wave_data_u) / overlap_0
     assert np.allclose(ratio, wick_ratio)
 
-    new_green = uhf_cpmc.calc_full_green(new_walker_0, new_walker_1, wave_data_u)
-    new_green_wick = uhf_cpmc.update_greens_function(
+    new_green = uhf_cpmc._calc_green_full_unrestricted(new_walker_0, new_walker_1, wave_data_u)
+    new_green_wick = uhf_cpmc._update_green(
         green,
         ratio,
         jnp.array([[0, 3], [1, 3]]),

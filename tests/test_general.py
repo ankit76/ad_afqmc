@@ -1,5 +1,5 @@
 from pyscf import scf, gto, cc
-from ad_afqmc import pyscf_interface, afqmc, run_afqmc
+from ad_afqmc import utils, afqmc, run_afqmc
 import numpy as np
 import os
 
@@ -22,7 +22,12 @@ options = {
 }
 
 def check(obj, options, e, atol, mpi):
-    pyscf_interface.prep_afqmc(obj, tmpdir="tmp", chol_cut=1e-12)
+    # write_to_disk = True and run_afqmc
+    # or
+    # write_to_disk = False and run_afqmc_ph
+
+    #utils.prep_afqmc(obj, tmpdir=tmpdir, chol_cut=1e-12, write_to_disk=True)
+    pyscf_prep = utils.prep_afqmc(obj, tmpdir=tmpdir, chol_cut=1e-12, write_to_disk=False)
 
     if mpi:
         mpi_prefix = "mpirun "
@@ -31,9 +36,13 @@ def check(obj, options, e, atol, mpi):
         mpi_prefix = None
         nproc = None
 
-    ene, _ = run_afqmc.run_afqmc(
-            options=options, mpi_prefix=mpi_prefix, nproc=nproc, tmpdir=tmpdir
-        )
+    #ene, _ = run_afqmc.run_afqmc(
+    #    options=options, mpi_prefix=mpi_prefix, nproc=nproc, tmpdir=tmpdir
+    #)
+    ene, _ = run_afqmc.run_afqmc_ph(
+        pyscf_prep, options=options, mpi_prefix=mpi_prefix, nproc=nproc, tmpdir=tmpdir
+    )
+
     assert np.isclose(ene, e, atol)
     return ene
 
@@ -102,6 +111,7 @@ def check_ucisd_fc_restricted_w(mf, nfrozen, e, atol, mpi):
 def run(l_flag, l_fun):
     res = []
     for flag, (fun, args) in zip(l_flag, l_fun):
+        print(flag)
         if flag:
             res.append(float(fun(*args)))
 
@@ -152,18 +162,18 @@ def check_nh2(l_flag):
     mf.kernel()
 
     l_fun = [
-    # No MPI
-    (check_uhf_restricted_w, (mf, -55.65599052681822, 1e-5, False)),
-    (check_uhf_unrestricted_w, (mf, -55.655991946870884, 1e-5, False)),
-    (check_ucisd_restricted_w, (mf, -55.636250653696585, 1e-5, False)),
-    (check_ucisd_unrestricted_w, (mf, -55.636251418009444, 1e-5, False)),
-    (check_ucisd_fc_restricted_w, (mf, 1, -55.63515276697131, 1e-5, False)),
-    # MPI
-    (check_uhf_restricted_w, (mf, -55.648220092580814, 1e-5, True)),
-    (check_uhf_unrestricted_w, (mf, -55.648219500346904, 1e-5, True)),
-    (check_ucisd_restricted_w, (mf, -55.636109651463116, 1e-5, True)),
-    (check_ucisd_unrestricted_w, (mf, -55.63613901998812, 1e-5, True)),
-    (check_ucisd_fc_restricted_w, (mf, 1, -55.63511844686504, 1e-5, True))
+        # No MPI
+        (check_uhf_restricted_w, (mf, -55.65599052681822, 1e-5, False)),
+        (check_uhf_unrestricted_w, (mf, -55.655991946870884, 1e-5, False)),
+        (check_ucisd_restricted_w, (mf, -55.636250653696585, 1e-5, False)),
+        (check_ucisd_unrestricted_w, (mf, -55.636251418009444, 1e-5, False)),
+        (check_ucisd_fc_restricted_w, (mf, 1, -55.63515276697131, 1e-5, False)),
+        ## MPI
+        (check_uhf_restricted_w, (mf, -55.648220092580814, 1e-5, True)),
+        (check_uhf_unrestricted_w, (mf, -55.648219500346904, 1e-5, True)),
+        (check_ucisd_restricted_w, (mf, -55.636109651463116, 1e-5, True)),
+        (check_ucisd_unrestricted_w, (mf, -55.63613901998812, 1e-5, True)),
+        (check_ucisd_fc_restricted_w, (mf, 1, -55.63511844686504, 1e-5, True))
     ]
 
     res = run(l_flag, l_fun)
@@ -177,17 +187,17 @@ def test_handler(pytestconfig):
 
     # MPI
     if pytestconfig.getoption("mpi"):
-        l_flag_cs[0:4] = [True]*4
-        l_flag_os[0:5] = [True]*5
-    # No MPI
-    else:
         l_flag_cs[4:8] = [True]*4
         l_flag_os[5:10] = [True]*5
+    # No MPI
+    else:
+        l_flag_cs[0:4] = [True]*4
+        l_flag_os[0:5] = [True]*5
 
     # MPI + no MPI
     if pytestconfig.getoption("all"):
         l_flag_cs = [True for i in range(8)]
         l_flag_os = [True for i in range(10)]
-        
+
     check_h2o(l_flag_cs)
     check_nh2(l_flag_os)
