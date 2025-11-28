@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-afqmc_config = {"use_gpu": False, "use_mpi": None, "precision": "double"}
+afqmc_config = {"use_gpu": False, "use_mpi": None, "single_precision": False}
 rank = 0
 
 
@@ -70,7 +70,7 @@ class not_MPI:
 def setup_jax():
     from jax import config
 
-    if afqmc_config["precision"] == "double":
+    if afqmc_config["single_precision"] == False:
         config.update("jax_enable_x64", True)
     # breaking change in random number generation in jax v0.5
     config.update("jax_threefry_partitionable", False)
