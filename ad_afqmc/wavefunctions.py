@@ -2382,60 +2382,225 @@ class multi_ghf_cpmc(wave_function_cpmc):
 
         return {"G": G_states_new, "w": w_states_new}
 
-    def _prepare_wave_data_symm(self, wave_data):
-        mo_coeffs = jnp.array(wave_data["mo_coeff"])[jnp.newaxis, ...]
-        ci_coeffs = jnp.array([1.0])
+    def prepare_wave_data_symm(
+        self,
+        wave_data: dict,
+        ham_data: dict | None = None,
+        test_walker: tuple[jax.Array, jax.Array] | None = None,
+        energy_tol: float = 1.0e-3,
+        tol_same: float = 1.0e-5,
+        auto_grid: bool = False,
+    ) -> dict:
+        """
+        Prepare symmetry-projected multi-GHF expansion.
+        """
+
+        mo0_jax = jnp.array(wave_data["mo_coeff"])
+        norb = mo0_jax.shape[0] // 2
+        nelec_tot = mo0_jax.shape[1]
 
         def _apply_pg_to_ket(ket: jnp.ndarray, U: jnp.ndarray) -> jnp.ndarray:
-            norb = ket.shape[0] // 2
+            """U acts in orbital space on both spin blocks."""
             up = U @ ket[:norb, :]
             dn = U @ ket[norb:, :]
             return jnp.vstack([up, dn])
 
         if "ext_ops" in wave_data:
-            ext_ops = wave_data["ext_ops"]
-            ext_chars = wave_data["ext_chars"]
+            ext_ops = jnp.array(wave_data["ext_ops"])
+            ext_chars = jnp.array(wave_data["ext_chars"])
+            print(f"Found point-group projection with {ext_ops.shape[0]} operations.")
 
-            def apply_one_op(U, kets_batch):
-                return jax.vmap(_apply_pg_to_ket, in_axes=(0, None))(kets_batch, U)
+            rotated_all = vmap(lambda U: _apply_pg_to_ket(mo0_jax, U))(ext_ops)
 
-            rotated = jax.vmap(apply_one_op, in_axes=(0, None))(ext_ops, mo_coeffs)
-            mo_coeffs = rotated.reshape(-1, *mo_coeffs.shape[1:])
-            weight_factors = (jnp.conj(ext_chars) / len(ext_ops))[:, None]
-            ci_coeffs = (weight_factors * ci_coeffs[None, :]).reshape(-1)
+            rotated_np = np.asarray(rotated_all)
+            ext_chars_np = np.asarray(ext_chars)
+            n_pg = rotated_np.shape[0]
 
-        beta_vals, w_beta = wave_data["beta"]
-        alpha_vals, w_alpha = wave_data["alpha"]
+            unique_mos = []
+            unique_coeffs = []
 
-        def rotate_trial(beta, alpha, mo_coeff):
-            c, s = jnp.cos(beta / 2.0), jnp.sin(beta / 2.0)
-            u_rot = jnp.array([[c, s], [-s, c]])
+            for k in range(n_pg):
+                Ck = rotated_np[k]
+                chi_k = np.conj(ext_chars_np[k])
 
-            phase_up = jnp.exp(+0.5j * alpha)
-            phase_dn = jnp.exp(-0.5j * alpha)
-            C_up = mo_coeff[: mo_coeff.shape[0] // 2, :]
-            C_dn = mo_coeff[mo_coeff.shape[0] // 2 :, :]
-            C_up_p = phase_up * C_up
-            C_dn_p = phase_dn * C_dn
+                if not unique_mos:
+                    unique_mos.append(Ck)
+                    unique_coeffs.append(chi_k)
+                    continue
 
-            a = u_rot[0, 0] * C_up_p + u_rot[0, 1] * C_dn_p
-            b = u_rot[1, 0] * C_up_p + u_rot[1, 1] * C_dn_p
+                matched = False
+                for m, Cref in enumerate(unique_mos):
+                    S = Cref.conj().T @ Ck
+                    detS = np.linalg.det(S)
 
-            C_rot = jnp.concatenate([a, b], axis=0)  # (2*norb, nelec_tot)
-            return C_rot
+                    if abs(abs(detS) - 1.0) < tol_same:
+                        unique_coeffs[m] += chi_k * detS
+                        matched = True
+                        break
 
-        mo_coeffs = vmap(
-            lambda b: vmap(lambda a: vmap(lambda c: rotate_trial(b, a, c))(mo_coeffs))(
-                alpha_vals
+                if not matched:
+                    unique_mos.append(Ck)
+                    unique_coeffs.append(chi_k)
+
+            mo_pg = jnp.asarray(unique_mos)
+            ci_pg = jnp.asarray(unique_coeffs) / n_pg
+
+            mask = jnp.abs(ci_pg) > tol_same
+            mo_pg = mo_pg[mask]
+            ci_pg = ci_pg[mask]
+
+            print(
+                f"PG projection: {len(ci_pg)} unique determinants from {n_pg} operations."
             )
-        )(beta_vals)
-        wave_data["mo_coeffs"] = mo_coeffs.reshape(
-            -1, mo_coeffs.shape[-2], mo_coeffs.shape[-1]
+
+        else:
+            mo_pg = mo0_jax[jnp.newaxis, ...]
+            ci_pg = jnp.array([1.0 + 0.0j])
+
+        has_alpha = "alpha" in wave_data
+        has_beta = "beta" in wave_data
+
+        if test_walker is None and "rdm1" in wave_data:
+            rdm1_up, rdm1_dn = wave_data["rdm1"]
+
+            evals_u, evecs_u = jnp.linalg.eigh(rdm1_up)
+            evals_d, evecs_d = jnp.linalg.eigh(rdm1_dn)
+            evecs_u = evecs_u[:, ::-1]
+            evecs_d = evecs_d[:, ::-1]
+
+            n_up, n_dn = self.nelec
+            walker_up = evecs_u[:, :n_up]
+            walker_dn = evecs_d[:, :n_dn]
+            test_walker = (walker_up, walker_dn)
+
+        candidate_grids = [
+            (3, 4),
+            (4, 4),
+            (5, 4),
+            (5, 6),
+            (6, 6),
+            (6, 8),
+            (8, 8),
+            (10, 10),
+        ]
+
+        def _make_alpha(n_alpha: int):
+            alpha_vals = jnp.pi * (jnp.arange(n_alpha) + 0.5) / n_alpha
+            w_alpha = 1.0 / n_alpha
+            return alpha_vals, w_alpha
+
+        from numpy.polynomial.legendre import leggauss
+
+        def _make_beta(n_beta: int):
+            x, w = leggauss(int(n_beta))
+            beta = np.arccos(x)
+            order = np.argsort(beta)
+            beta_vals = jnp.asarray(beta[order])
+            w_beta = jnp.asarray(w[order])
+            return beta_vals, w_beta
+
+        def _build_pg_s2_expansion(alpha_vals, w_alpha, beta_vals, w_beta):
+            def rotate_trial(beta, alpha, mo_coeff):
+                c, s = jnp.cos(beta / 2.0), jnp.sin(beta / 2.0)
+                u_rot = jnp.array([[c, s], [-s, c]])
+
+                phase_up = jnp.exp(+0.5j * alpha)
+                phase_dn = jnp.exp(-0.5j * alpha)
+
+                C_up = mo_coeff[:norb, :]
+                C_dn = mo_coeff[norb:, :]
+
+                C_up_p = phase_up * C_up
+                C_dn_p = phase_dn * C_dn
+
+                a = u_rot[0, 0] * C_up_p + u_rot[0, 1] * C_dn_p
+                b = u_rot[1, 0] * C_up_p + u_rot[1, 1] * C_dn_p
+
+                return jnp.concatenate([a, b], axis=0)  # (2*norb, nelec_tot)
+
+            mo_coeffs_grid = vmap(
+                lambda b: vmap(lambda a: vmap(lambda C: rotate_trial(b, a, C))(mo_pg))(
+                    alpha_vals
+                )
+            )(beta_vals)
+
+            mo_coeffs = mo_coeffs_grid.reshape(
+                -1, mo_coeffs_grid.shape[-2], mo_coeffs_grid.shape[-1]
+            )
+
+            ci_full = jnp.einsum(
+                "i,j,k->ijk",
+                w_beta,
+                jnp.full(alpha_vals.shape, w_alpha),
+                ci_pg,
+            ).reshape(-1)
+
+            wd_local = dict(wave_data)
+            wd_local["alpha"] = (alpha_vals, w_alpha)
+            wd_local["beta"] = (beta_vals, w_beta)
+            wd_local["mo_coeffs"] = mo_coeffs
+            wd_local["ci_coeffs"] = ci_full
+            return wd_local
+
+        if (
+            ((not (has_alpha and has_beta)) or auto_grid)
+            and (ham_data is not None)
+            and (test_walker is not None)
+        ):
+            print("Auto-selecting (alpha, beta) grid via energy convergence...")
+            walker_up, walker_dn = test_walker
+
+            best_alpha = best_w_alpha = None
+            best_beta = best_w_beta = None
+            prev_E = None
+
+            for n_alpha, n_beta in candidate_grids:
+                alpha_vals, w_alpha = _make_alpha(n_alpha)
+                beta_vals, w_beta = _make_beta(n_beta)
+
+                wd_tmp = _build_pg_s2_expansion(alpha_vals, w_alpha, beta_vals, w_beta)
+                E = self._calc_energy_unrestricted(
+                    walker_up, walker_dn, ham_data, wd_tmp
+                )
+
+                print(f"(n_alpha={n_alpha}, n_beta={n_beta}) -> E = {float(E):.8f}")
+
+                if prev_E is not None:
+                    dE = abs(float(E - prev_E))
+                    if dE < energy_tol:
+                        break
+
+                prev_E = E
+                best_alpha, best_w_alpha = alpha_vals, w_alpha
+                best_beta, best_w_beta = beta_vals, w_beta
+
+            print(
+                f"Chosen grid: n_alpha={best_alpha.shape[0]}, n_beta={best_beta.shape[0]}"
+            )
+
+            alpha_vals, w_alpha = best_alpha, best_w_alpha
+            beta_vals, w_beta = best_beta, best_w_beta
+            wave_data["alpha"] = (alpha_vals, w_alpha)
+            wave_data["beta"] = (beta_vals, w_beta)
+
+        if "alpha" not in wave_data or "beta" not in wave_data:
+            alpha_vals, w_alpha = _make_alpha(5)
+            beta_vals, w_beta = _make_beta(8)
+            wave_data["alpha"] = (alpha_vals, w_alpha)
+            wave_data["beta"] = (beta_vals, w_beta)
+        else:
+            alpha_vals, w_alpha = wave_data["alpha"]
+            beta_vals, w_beta = wave_data["beta"]
+
+        wd_final = _build_pg_s2_expansion(alpha_vals, w_alpha, beta_vals, w_beta)
+
+        wave_data["mo_coeffs"] = wd_final["mo_coeffs"]
+        wave_data["ci_coeffs"] = wd_final["ci_coeffs"]
+
+        print(
+            f"Final multi-GHF expansion: {wave_data['ci_coeffs'].shape[0]} determinants."
         )
 
-        wave_data["ci_coeffs"] = jnp.einsum(
-            "i,j,k->ijk", w_beta, jnp.full(alpha_vals.shape, w_alpha), ci_coeffs
-        ).reshape(-1)
         return wave_data
 
     def __hash__(self) -> int:
