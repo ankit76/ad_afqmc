@@ -2476,7 +2476,7 @@ class multi_ghf_cpmc(wave_function_cpmc):
         candidate_grids = [
             (3, 4),
             (4, 4),
-            (5, 4),
+            # (5, 4),
             (5, 6),
             (6, 6),
             (6, 8),
@@ -2550,10 +2550,8 @@ class multi_ghf_cpmc(wave_function_cpmc):
             print("Auto-selecting (alpha, beta) grid via energy convergence...")
             walker_up, walker_dn = test_walker
 
-            best_alpha = best_w_alpha = None
-            best_beta = best_w_beta = None
-            prev_E = None
-
+            Es = []
+            grids = []
             for n_alpha, n_beta in candidate_grids:
                 alpha_vals, w_alpha = _make_alpha(n_alpha)
                 beta_vals, w_beta = _make_beta(n_beta)
@@ -2563,25 +2561,25 @@ class multi_ghf_cpmc(wave_function_cpmc):
                     walker_up, walker_dn, ham_data, wd_tmp
                 )
 
+                Es.append(float(E))
+                grids.append((alpha_vals, w_alpha, beta_vals, w_beta))
                 print(f"(n_alpha={n_alpha}, n_beta={n_beta}) -> E = {float(E):.8f}")
 
-                if prev_E is not None:
-                    dE = abs(float(E - prev_E))
-                    if dE < energy_tol:
-                        break
+            E_ref = Es[-1]
 
-                prev_E = E
-                best_alpha, best_w_alpha = alpha_vals, w_alpha
-                best_beta, best_w_beta = beta_vals, w_beta
+            best_idx = len(Es) - 1
+            for k, E_k in enumerate(Es):
+                if abs(E_k - E_ref) < energy_tol:
+                    best_idx = k
+                    break
 
-            print(
-                f"Chosen grid: n_alpha={best_alpha.shape[0]}, n_beta={best_beta.shape[0]}"
-            )
-
-            alpha_vals, w_alpha = best_alpha, best_w_alpha
-            beta_vals, w_beta = best_beta, best_w_beta
+            alpha_vals, w_alpha, beta_vals, w_beta = grids[best_idx]
             wave_data["alpha"] = (alpha_vals, w_alpha)
             wave_data["beta"] = (beta_vals, w_beta)
+
+            print(
+                f"Chosen grid: n_alpha={alpha_vals.shape[0]}, n_beta={beta_vals.shape[0]}"
+            )
 
         if "alpha" not in wave_data or "beta" not in wave_data:
             alpha_vals, w_alpha = _make_alpha(5)
