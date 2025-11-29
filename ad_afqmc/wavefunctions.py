@@ -2170,6 +2170,8 @@ class multi_ghf_cpmc(wave_function_cpmc):
     nelec: Tuple[int, int]
     n_chunks: int = 1
     projector: Optional[str] = None
+    green_real_dtype: DTypeLike = jnp.float32
+    green_complex_dtype: DTypeLike = jnp.complex64
 
     @partial(jit, static_argnums=0)
     def _calc_overlap_unrestricted(
@@ -2199,11 +2201,13 @@ class multi_ghf_cpmc(wave_function_cpmc):
         wave_data: dict,
     ) -> dict:
         """Full per-determinant greens + weights for a single UHF walker."""
-        ci_coeffs = wave_data["ci_coeffs"]
-        mo_coeffs = wave_data["mo_coeffs"]
+        ci_coeffs = wave_data["ci_coeffs"].astype(self.green_complex_dtype)
+        mo_coeffs = wave_data["mo_coeffs"].astype(self.green_complex_dtype)
 
         nelec_tot = self.nelec[0] + self.nelec[1]
-        walker_ghf = jsp.linalg.block_diag(walker_up, walker_dn)
+        walker_ghf = jsp.linalg.block_diag(walker_up, walker_dn).astype(
+            self.green_real_dtype
+        )
 
         def per_det(Ck, ck):
             Cocc = Ck[:, :nelec_tot]
@@ -2343,7 +2347,9 @@ class multi_ghf_cpmc(wave_function_cpmc):
         i_eff = i + (spin_i == 1) * self.norb
         j_eff = j + (spin_j == 1) * self.norb
 
-        u0, u1 = update_constants[0], update_constants[1]
+        u0, u1 = update_constants[0].astype(self.green_real_dtype), update_constants[
+            1
+        ].astype(self.green_real_dtype)
 
         def ratio_one(G):
             return (1.0 + u0 * G[i_eff, i_eff]) * (1.0 + u1 * G[j_eff, j_eff]) - (
@@ -2476,7 +2482,7 @@ class multi_ghf_cpmc(wave_function_cpmc):
         candidate_grids = [
             (3, 4),
             (4, 4),
-            # (5, 4),
+            (5, 4),
             (5, 6),
             (6, 6),
             (6, 8),
