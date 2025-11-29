@@ -2239,7 +2239,9 @@ class multi_ghf_cpmc(wave_function_cpmc):
         i_eff = i + (spin_i == 1) * self.norb
         j_eff = j + (spin_j == 1) * self.norb
 
-        u0, u1 = update_constants[0], update_constants[1]
+        u0, u1 = update_constants[0].astype(self.green_real_dtype), update_constants[
+            1
+        ].astype(self.green_real_dtype)
 
         def ratio_one(G):
             return (1.0 + u0 * G[i_eff, i_eff]) * (1.0 + u1 * G[j_eff, j_eff]) - (
@@ -2359,11 +2361,14 @@ class multi_ghf_cpmc(wave_function_cpmc):
         r_k = vmap(ratio_one, in_axes=0)(G_states)  # (ndets,)
 
         def update_one(G, r):
-            r_safe = jnp.where(jnp.abs(r) < 1.0e-16, 1.0 + 0.0j, r)
-            r_safe = jnp.array(r_safe)
+            complex_one = jnp.array(1.0 + 0.0j, dtype=self.green_complex_dtype)
+            complex_zero = jnp.array(0.0 + 0.0j, dtype=self.green_complex_dtype)
+            real_one = jnp.array(1.0, dtype=self.green_real_dtype)
 
-            sg_i = G[i_eff].at[i_eff].add(-1.0)
-            sg_j = G[j_eff].at[j_eff].add(-1.0)
+            r_safe = jnp.array(jnp.where(jnp.abs(r) < 1.0e-8, complex_one, r))
+
+            sg_i = G[i_eff].at[i_eff].add(-real_one)
+            sg_j = G[j_eff].at[j_eff].add(-real_one)
 
             G_new = (
                 G
@@ -2379,8 +2384,8 @@ class multi_ghf_cpmc(wave_function_cpmc):
                 )
             )
 
-            G_new = jnp.array(jnp.where(jnp.isinf(G_new), 0.0, G_new))
-            G_new = jnp.array(jnp.where(jnp.isnan(G_new), 0.0, G_new))
+            G_new = jnp.array(jnp.where(jnp.isinf(G_new), complex_zero, G_new))
+            G_new = jnp.array(jnp.where(jnp.isnan(G_new), complex_zero, G_new))
             return G_new
 
         G_states_new = vmap(update_one, in_axes=(0, 0))(G_states, r_k)
