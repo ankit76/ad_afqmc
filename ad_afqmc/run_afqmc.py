@@ -147,7 +147,7 @@ def run_afqmc_ph(
         sampler,
         observable,
         options,
-    ) = utils.setup_afqmc_ph(pyscf_prep, options)
+    ) = utils.setup_afqmc_ph(pyscf_prep, options, tmpdir)
     e_afqmc, err_afqmc = driver.afqmc(
         ham_data,
         ham,

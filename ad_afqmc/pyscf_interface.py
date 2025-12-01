@@ -856,6 +856,7 @@ def get_ci_amplitudes_from_cc(cc):
         ci2ab = ci2ab.transpose(0, 2, 1, 3)
         ci1a = np.array(cc.t1[0])
         ci1b = np.array(cc.t1[1])
+
         return {
             "ci1a": ci1a,
             "ci1b": ci1b,
@@ -867,8 +868,8 @@ def get_ci_amplitudes_from_cc(cc):
         ci2 = cc.t2 + np.einsum("ia,jb->ijab", np.array(cc.t1), np.array(cc.t1))
         ci2 = ci2.transpose(0, 2, 1, 3)
         ci1 = np.array(cc.t1)
-        return {"ci1": ci1, "ci2": ci2}
 
+        return {"ci1": ci1, "ci2": ci2}
 
 def write_pyscf_ccsd(cc, tmpdir):
     ci_amps = get_ci_amplitudes_from_cc(cc)
@@ -880,6 +881,11 @@ def write_pyscf_ccsd(cc, tmpdir):
             ci2aa=ci_amps["ci2aa"],
             ci2ab=ci_amps["ci2ab"],
             ci2bb=ci_amps["ci2bb"],
+            t1a=cc.t1[0],
+            t1b=cc.t1[1],
+            t2aa=cc.t2[0],
+            t2ab=cc.t2[1],
+            t2bb=cc.t2[2],
         )
     else:
         np.savez(
