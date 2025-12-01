@@ -1481,7 +1481,7 @@ def set_trial(
         if "s2_ghf" in options["symmetry_projector"]:
             # only singlet projection supported for now
             n_alpha = options.get("nalpha", 6)
-            alpha_vals = 2.0 * jnp.pi * jnp.arange(n_alpha) / n_alpha
+            alpha_vals = jnp.pi * (jnp.arange(n_alpha) + 0.5) / n_alpha
             w_alpha = 1.0 / n_alpha
             wave_data["alpha"] = (alpha_vals, w_alpha)
 

@@ -581,27 +581,28 @@ class triangular_grid(lattice):
                         h[j, i] = 1
         return h
 
-    def get_neel_guess_xc(self):
+    def get_neel_guess(self):
+        boundary = self.boundary
         sites_0 = []
         sites_1 = []
         sites_2 = []
         for site in self.sites:
             x, y = site
             site_n = self.get_site_num(site)
-            if x % 2 == 0:
-                if y % 3 == 0:
-                    sites_0.append(site_n)
-                elif y % 3 == 1:
-                    sites_1.append(site_n)
-                else:
-                    sites_2.append(site_n)
+            if boundary == "xc" or boundary == "oxc":
+                sub = (y + 2 * (x & 1)) % 3
+            elif boundary == "yc":
+                sub = (x + (y & 1)) % 3
             else:
-                if y % 3 == 0:
-                    sites_2.append(site_n)
-                elif y % 3 == 1:
-                    sites_0.append(site_n)
-                else:
-                    sites_1.append(site_n)
+                raise ValueError(
+                    "Neel guess only implemented for XC or OXC or YC boundaries."
+                )
+            if sub == 0:
+                sites_0.append(site_n)
+            elif sub == 1:
+                sites_1.append(site_n)
+            else:
+                sites_2.append(site_n)
         spinor_0 = np.array([1, 0])
         spinor_0_dm = np.outer(spinor_0, spinor_0)
         theta = 2 * np.pi / 3
@@ -626,6 +627,264 @@ class triangular_grid(lattice):
             dm_init[i, i + self.n_sites] = spinor_2_dm[0, 1]
             dm_init[i + self.n_sites, i] = spinor_2_dm[1, 0]
         return dm_init
+
+    def get_chiral_guess(self, tilt=np.pi / 3):
+        boundary = self.boundary
+        if boundary not in ("xc", "oxc", "yc"):
+            raise ValueError(
+                "Chiral guess only implemented for 'xc', 'oxc' or 'yc' boundaries."
+            )
+        sites_0, sites_1, sites_2 = [], [], []
+        for x, y in self.sites:
+            site_n = self.get_site_num((x, y))
+            if boundary == "xc" or boundary == "oxc":
+                sub = (y + 2 * (x & 1)) % 3
+            elif boundary == "yc":
+                sub = (x + (y & 1)) % 3
+            if sub == 0:
+                sites_0.append(site_n)
+            elif sub == 1:
+                sites_1.append(site_n)
+            else:
+                sites_2.append(site_n)
+
+        def spinor(theta, phi):
+            up = np.cos(theta / 2.0)
+            dn = np.exp(1j * phi) * np.sin(theta / 2.0)
+            return np.array([up, dn])
+
+        s0 = spinor(tilt, 0.0)
+        s1 = spinor(tilt, 2.0 * np.pi / 3.0)
+        s2 = spinor(tilt, 4.0 * np.pi / 3.0)
+
+        rho0 = np.outer(s0, s0.conj())
+        rho1 = np.outer(s1, s1.conj())
+        rho2 = np.outer(s2, s2.conj())
+
+        dm = np.zeros((2 * self.n_sites, 2 * self.n_sites), dtype=complex)
+
+        def put_block(i, rho):
+            dm[i, i] = rho[0, 0]
+            dm[i, i + self.n_sites] = rho[0, 1]
+            dm[i + self.n_sites, i] = rho[1, 0]
+            dm[i + self.n_sites, i + self.n_sites] = rho[1, 1]
+
+        for i in sites_0:
+            put_block(i, rho0)
+        for i in sites_1:
+            put_block(i, rho1)
+        for i in sites_2:
+            put_block(i, rho2)
+
+        return dm
+
+    def get_stripe_guess(self, axis="x"):
+        """
+        Simple collinear stripe state.
+        axis="x": stripes along x (rows alternate up/down, uniform in y)
+        axis="y": stripes along y (columns alternate up/down, uniform in x)
+        """
+        sites_up = []
+        sites_dn = []
+
+        for x, y in self.sites:
+            site_n = self.get_site_num((x, y))
+            if axis == "x":
+                sub = x & 1
+            else:
+                sub = y & 1
+            if sub == 0:
+                sites_up.append(site_n)
+            else:
+                sites_dn.append(site_n)
+
+        dm = np.zeros((2 * self.n_sites, 2 * self.n_sites), dtype=complex)
+
+        for i in sites_up:
+            dm[i, i] = 1.0
+
+        for i in sites_dn:
+            dm[i + self.n_sites, i + self.n_sites] = 1.0
+
+        return dm
+
+    def plot_observables(
+        self,
+        spin_rdm1,
+        arrow_scale=1.5,
+        annotate_sites=True,
+        cmap="viridis",
+        size=None,
+        show_currents=False,
+        current_scale=0.6,
+        current_threshold=1e-3,
+        edge_only=False,
+        h1=None,
+        t=1.0,
+        current_color="magenta",
+    ):
+        """
+        Plot charge density (color) and spin expectation (arrows) on a triangular lattice,
+        and optionally charge currents on bonds.
+        """
+        import matplotlib.pyplot as plt
+
+        n_sites = self.n_sites
+        nx, ny = self.l_x, self.l_y
+
+        boundary = self.boundary
+        if boundary not in ("xc", "oxc", "yc"):
+            raise ValueError(
+                "plot_spin_charge only implemented for 'xc', 'oxc', or 'yc'."
+            )
+
+        r_uu = spin_rdm1[:n_sites, :n_sites]
+        r_dd = spin_rdm1[n_sites:, n_sites:]
+        r_ud = spin_rdm1[:n_sites, n_sites:]
+        r_du = spin_rdm1[n_sites:, :n_sites]
+
+        sz = (np.diag(r_uu) - np.diag(r_dd)) / 2.0
+        charge = np.diag(r_uu) + np.diag(r_dd)
+        sx = (np.diag(r_ud) + np.diag(r_du)) / 2.0
+        sy = -0.5j * (np.diag(r_ud) - np.diag(r_du))
+
+        sz = sz.real.reshape(nx, ny)
+        sx = sx.real.reshape(nx, ny)
+        sy = sy.real.reshape(nx, ny)
+        charge = charge.real.reshape(nx, ny)  # type: ignore
+
+        P = r_uu + r_dd
+
+        coords = []
+        xs, ys, cs = [], [], []
+        for i, (x, y) in enumerate(self.sites):
+            X, Y = self.get_site_coordinate((x, y))
+            coords.append((X, Y))
+            xs.append(X)
+            ys.append(Y)
+            cs.append(charge[x, y])
+        xs = np.array(xs)
+        ys = np.array(ys)
+        cs = np.array(cs)
+
+        def get_figsize(fig_height_pt, ratio):
+            inches_per_pt = 1.0 / 72.0
+            fig_height = fig_height_pt * inches_per_pt
+            fig_width = fig_height / ratio
+            return [fig_width, fig_height]
+
+        if size is None:
+            size = 100 * nx
+        fig, ax = plt.subplots(figsize=get_figsize(size, ratio=nx / ny))
+
+        def is_edge_site(x, y):
+            if boundary in ("xc", "oxc"):  # PBC in x, open in y
+                return (y == 0) or (y == ny - 1)
+            elif boundary == "yc":  # PBC in y, open in x
+                return (x == 0) or (x == nx - 1)
+            else:
+                return False
+
+        for i, (x, y) in enumerate(self.sites):
+            Xi, Yi = coords[i]
+            for nn in self.get_nearest_neighbors((x, y)):
+                xn, yn = int(nn[0]), int(nn[1])
+                if not (0 <= xn < nx and 0 <= yn < ny):
+                    continue
+                j = self.get_site_num((xn, yn))
+                if j <= i:
+                    continue
+
+                Xj, Yj = coords[j]
+
+                is_pbc = (abs(xn - x) > 1) or (abs(yn - y) > 1)
+                if is_pbc:
+                    ax.plot([Xi, Xj], [Yi, Yj], "k--", lw=0.03, zorder=0)
+                else:
+                    ax.plot([Xi, Xj], [Yi, Yj], "k-", lw=0.6, zorder=1)
+
+                if show_currents and not is_pbc:
+                    # bond hopping
+                    tij = h1[i, j] if h1 is not None else t
+                    if tij == 0:
+                        continue
+
+                    Jij = 2.0 * np.imag(tij * P[i, j])  # spin-summed charge current
+
+                    if abs(Jij) < current_threshold:
+                        continue
+
+                    if edge_only and not (is_edge_site(x, y) or is_edge_site(xn, yn)):
+                        continue
+
+                    # arrow along the bond, centered at the midpoint
+                    xm = 0.5 * (Xi + Xj)
+                    ym = 0.5 * (Yi + Yj)
+                    dx = Xj - Xi
+                    dy = Yj - Yi
+                    L = np.hypot(dx, dy)
+                    if L == 0:
+                        continue
+                    ux, uy = dx / L, dy / L
+
+                    direction = np.sign(Jij) if Jij != 0 else 1.0
+                    length = current_scale * abs(Jij)
+
+                    ax.arrow(
+                        xm,
+                        ym,
+                        direction * length * ux,
+                        direction * length * uy,
+                        head_width=0.08,
+                        length_includes_head=True,
+                        zorder=2.5,
+                        color=current_color,
+                    )
+
+        sc = ax.scatter(
+            xs,
+            ys,
+            c=cs,
+            cmap=cmap,
+            s=30 * (size / 100),
+            edgecolors="k",
+            linewidths=0.3,
+            zorder=2,
+        )
+
+        for i, (x, y) in enumerate(self.sites):
+            X, Y = coords[i]
+            ax.arrow(
+                X,
+                Y,
+                arrow_scale * sx[x, y],  # type: ignore
+                arrow_scale * sz[x, y],  # type: ignore
+                head_width=0.1,
+                length_includes_head=True,
+                zorder=3,
+            )
+            if annotate_sites:
+                ax.text(
+                    X + 0.1,
+                    Y + 0.1,
+                    f"{i}",
+                    color="red",
+                    zorder=4,
+                )
+
+        cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("charge density")
+
+        ax.set_aspect("equal")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for side in ["top", "right", "bottom", "left"]:
+            ax.spines[side].set_visible(False)
+
+        plt.tight_layout()
+        plt.show()
+
+        return fig, ax
 
     def build_pg_ops_xc(self):
         """
@@ -697,6 +956,85 @@ class triangular_grid(lattice):
                     pg_chars.append(1)
 
         return pg_ops, pg_chars
+
+    def build_pg_ops_yc(self):
+        """
+        Full space-group ops for triangular YC cylinder (PBC in x, OBC in y)
+        with a 1-row unit cell along x.
+
+        Returns
+        -------
+        pg_ops  : list of (N, N) arrays
+            All symmetry operators: {E, C2, G, C2G} * {T^n}, n = 0..nx-1.
+            Total number of ops = 4 * nx.
+        pg_chars: list of ints
+            Characters for the totally symmetric irrep (all +1).
+        """
+        nx = self.l_x
+        ny = self.l_y
+        n_sites = nx * ny
+
+        E = np.eye(n_sites, dtype=float)
+
+        def idx(x, y):
+            return (x % nx) * ny + y
+
+        # --- C2: inversion ---
+        perm_c2 = np.arange(n_sites - 1, -1, -1)
+        U_c2 = E[:, perm_c2]
+
+        # --- Glide G (YC) ---
+        perm_g = np.empty(n_sites, dtype=int)
+        for x in range(nx):
+            for y in range(ny):
+                i = idx(x, y)
+                if y % 2 == 0:  # even column
+                    xp = (x + 1) % nx
+                else:  # odd column
+                    xp = x
+                yp = ny - 1 - y
+                perm_g[i] = idx(xp, yp)
+        U_g = E[:, perm_g]
+
+        # --- T^n: translation by n rows: (x, y) -> (x + n, y) ---
+        def U_t_power(n):
+            perm = np.empty(n_sites, dtype=int)
+            for x in range(nx):
+                for y in range(ny):
+                    i = idx(x, y)
+                    perm[i] = idx(x + n, y)
+            return E[:, perm]
+
+        # Base (point-group) ops without translations
+        base_ops = [E, U_c2, U_g, U_c2 @ U_g]
+
+        pg_ops = []
+        pg_chars = []
+
+        # n = 0: just the base ops
+        for U in base_ops:
+            if not any(np.array_equal(U, V) for V in pg_ops):
+                pg_ops.append(U)
+                pg_chars.append(1)
+
+        # n = 1 .. nx-1: T^n and its products with base ops
+        for n in range(1, nx):
+            U_tn = U_t_power(n)
+            for U0 in base_ops:
+                U = U0 @ U_tn
+                if not any(np.array_equal(U, V) for V in pg_ops):
+                    pg_ops.append(U)
+                    pg_chars.append(1)
+
+        return pg_ops, pg_chars
+
+    def build_pg_ops(self):
+        if self.boundary in "xc":
+            return self.build_pg_ops_xc()
+        elif self.boundary == "yc":
+            return self.build_pg_ops_yc()
+        else:
+            raise ValueError("build_pg_ops only implemented for 'xc' or 'yc'.")
 
     def __hash__(self):
         return hash(
