@@ -398,7 +398,7 @@ class singlet_projector(projector):
 class point_group_projector(projector):
     """Project onto a point-group irrep defined by orbital operators."""
 
-    pg_ops: list
+    pg_ops: list | jnp.ndarray
     pg_chars: list | None = None
 
     def __post_init__(self):
@@ -407,20 +407,19 @@ class point_group_projector(projector):
         else:
             chars = jnp.asarray(self.pg_chars, dtype=jnp.complex128)
 
-        self.pg_ops = [jnp.asarray(U) for U in self.pg_ops]
+        self.pg_ops = jnp.array([jnp.asarray(U) for U in self.pg_ops])
         self._chars = chars
         self._norm = 1.0 / len(self.pg_ops)
 
     def apply(
         self, kets: jnp.ndarray, coeffs: jnp.ndarray
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        rotated = []
-        for U in self.pg_ops:
-            rotated.append(jax.vmap(lambda ket: _apply_pg_to_ket(ket, U))(kets))
 
-        rotated = jnp.stack(rotated, axis=0)  # (ngroup, batch, 2*norb, nocc)
+        def apply_one_op(U, kets_batch):
+            return jax.vmap(_apply_pg_to_ket, in_axes=(0, None))(kets_batch, U)
+
+        rotated = jax.vmap(apply_one_op, in_axes=(0, None))(self.pg_ops, kets)
         new_kets = rotated.reshape(-1, *kets.shape[1:])
-
         weight_factors = (jnp.conj(self._chars) * self._norm)[:, None]
         new_coeffs = (weight_factors * coeffs[None, :]).reshape(-1)
         return new_kets, new_coeffs
