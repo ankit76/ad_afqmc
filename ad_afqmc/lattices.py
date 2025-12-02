@@ -585,7 +585,7 @@ class triangular_grid(lattice):
                         h[j, i] = 1
         return h
 
-    def get_neel_guess(self):
+    def get_neel_guess(self, angle=0.0):
         boundary = self.boundary
         sites_0 = []
         sites_1 = []
@@ -607,30 +607,34 @@ class triangular_grid(lattice):
                 sites_1.append(site_n)
             else:
                 sites_2.append(site_n)
-        spinor_0 = np.array([1, 0])
-        spinor_0_dm = np.outer(spinor_0, spinor_0)
-        theta = 2 * np.pi / 3
-        spinor_1 = np.array([np.cos(theta / 2), np.sin(theta / 2)])
-        spinor_1_dm = np.outer(spinor_1, spinor_1)
-        spinor_2 = np.array([np.cos(theta / 2), -np.sin(theta / 2)])
-        spinor_2_dm = np.outer(spinor_2, spinor_2)
-        dm_init = np.zeros((2 * self.n_sites, 2 * self.n_sites))
+
+        def spinor(theta, phi):
+            up = np.cos(theta / 2.0)
+            dn = np.exp(1j * phi) * np.sin(theta / 2.0)
+            return np.array([up, dn])
+
+        spinor_0 = spinor(angle, 0)
+        spinor_0_dm = np.outer(spinor_0, spinor_0.conj())
+        theta = 2 * np.pi / 3 + angle
+        spinor_1 = spinor(theta, 0)
+        spinor_1_dm = np.outer(spinor_1, spinor_1.conj())
+        spinor_2 = spinor(-theta + angle, 0)
+        spinor_2_dm = np.outer(spinor_2, spinor_2.conj())
+        dm = np.zeros((2 * self.n_sites, 2 * self.n_sites), dtype=complex)
+
+        def put_block(i, rho):
+            dm[i, i] = rho[0, 0]
+            dm[i, i + self.n_sites] = rho[0, 1]
+            dm[i + self.n_sites, i] = rho[1, 0]
+            dm[i + self.n_sites, i + self.n_sites] = rho[1, 1]
+
         for i in sites_0:
-            dm_init[i, i] = spinor_0_dm[0, 0]
-            dm_init[i + self.n_sites, i + self.n_sites] = spinor_0_dm[1, 1]
-            dm_init[i, i + self.n_sites] = spinor_0_dm[0, 1]
-            dm_init[i + self.n_sites, i] = spinor_0_dm[1, 0]
+            put_block(i, spinor_0_dm)
         for i in sites_1:
-            dm_init[i, i] = spinor_1_dm[0, 0]
-            dm_init[i + self.n_sites, i + self.n_sites] = spinor_1_dm[1, 1]
-            dm_init[i, i + self.n_sites] = spinor_1_dm[0, 1]
-            dm_init[i + self.n_sites, i] = spinor_1_dm[1, 0]
+            put_block(i, spinor_1_dm)
         for i in sites_2:
-            dm_init[i, i] = spinor_2_dm[0, 0]
-            dm_init[i + self.n_sites, i + self.n_sites] = spinor_2_dm[1, 1]
-            dm_init[i, i + self.n_sites] = spinor_2_dm[0, 1]
-            dm_init[i + self.n_sites, i] = spinor_2_dm[1, 0]
-        return dm_init
+            put_block(i, spinor_2_dm)
+        return dm
 
     def get_chiral_guess(self, tilt=np.pi / 3):
         boundary = self.boundary
@@ -682,40 +686,164 @@ class triangular_grid(lattice):
 
         return dm
 
-    def get_stripe_guess(self, axis="x"):
-        """
-        Simple collinear stripe state.
-        axis="x": stripes along x (rows alternate up/down, uniform in y)
-        axis="y": stripes along y (columns alternate up/down, uniform in x)
-        """
+    def get_square_guess(self, angle=0.0):
         sites_up = []
         sites_dn = []
 
         for x, y in self.sites:
             site_n = self.get_site_num((x, y))
-            if axis == "x":
-                sub = x & 1
-            else:
-                sub = y & 1
-            if sub == 0:
+            if (x + y) % 2 == 0:
                 sites_up.append(site_n)
             else:
                 sites_dn.append(site_n)
 
+        dm = np.zeros((2 * self.n_sites, 2 * self.n_sites))
+
+        def spinor(theta, phi):
+            up = np.cos(theta / 2.0)
+            dn = np.exp(1j * phi) * np.sin(theta / 2.0)
+            return np.array([up, dn])
+
+        x_up = spinor(angle, 0.0)
+        x_dn = spinor(angle, np.pi)
+
+        rho_up = np.outer(x_up, x_up.conj())
+        rho_dn = np.outer(x_dn, x_dn.conj())
+
         dm = np.zeros((2 * self.n_sites, 2 * self.n_sites), dtype=complex)
 
+        def put_block(i, rho):
+            dm[i, i] = rho[0, 0]
+            dm[i, i + self.n_sites] = rho[0, 1]
+            dm[i + self.n_sites, i] = rho[1, 0]
+            dm[i + self.n_sites, i + self.n_sites] = rho[1, 1]
+
         for i in sites_up:
-            dm[i, i] = 1.0
+            put_block(i, rho_up)
 
         for i in sites_dn:
-            dm[i + self.n_sites, i + self.n_sites] = 1.0
+            put_block(i, rho_dn)
 
         return dm
+
+    def _build_flux_h1(self, phi=np.pi / 2, t=-1.0):
+        """
+        Single-particle NN Hamiltonian with uniform flux `phi` per triangle.
+
+        H_ij = t * exp(i A_ij), with A_ij depending only on bond direction:
+            vertical (0,±1):  phase 0
+            horizontal (±1,0): phase ±phi
+            diagonal (±1,±1): phase 0
+
+        Works for 'xc' and 'yc' (PBC in x, OBC in y). For other boundaries we
+        just use whatever neighbors exist, same phase rule.
+        """
+        nx, ny = self.l_x, self.l_y
+        N = self.n_sites
+        H = np.zeros((N, N), dtype=complex)
+
+        def idx(pos):
+            return self.get_site_num(pos)
+
+        # helper to get dx with periodicity in x, open in y
+        def bond_phase(pos_i, pos_j):
+            (x1, y1), (x2, y2) = pos_i, pos_j
+            dx = x2 - x1
+            # periodic in x for xc/yc/pbc
+            if self.boundary in ("xc", "oxc", "yc", "pbc"):
+                if dx > nx // 2:
+                    dx -= nx
+                elif dx < -nx // 2:
+                    dx += nx
+            dy = y2 - y1  # y is open for cylinders
+
+            # vertical bonds
+            if dx == 0 and abs(dy) == 1:
+                return 0.0
+
+            # horizontal bonds
+            if dy == 0 and abs(dx) == 1:
+                return phi if dx == 1 else -phi
+
+            # diagonals (±1, ±1) -> no extra phase
+            if abs(dx) == 1 and abs(dy) == 1:
+                return 0.0
+
+            raise ValueError(f"Unexpected bond direction dx={dx}, dy={dy}")
+
+        # loop over all sites and nearest neighbors, build Hermitian H
+        for x, y in self.sites:
+            i = idx((x, y))
+            for xn, yn in self.get_nearest_neighbors((x, y)):
+                # respect open boundaries in y
+                if not (0 <= xn < nx and 0 <= yn < ny):
+                    continue
+                j = idx((xn, yn))
+                if j <= i:
+                    continue  # avoid double counting
+
+                phase = bond_phase((x, y), (xn, yn))
+                hop = t * np.exp(1j * phase)
+                H[i, j] = hop
+                H[j, i] = hop.conjugate()
+
+        return H
+
+    def get_flux_band_dm(self, nelec, phi=np.pi / 2, t=-1.0):
+        """
+        Construct a spinful 1RDM from a flux-phase band Hamiltonian.
+
+        Parameters
+        ----------
+        nelec : int or (int, int)
+            Total number of electrons, or (n_up, n_down).
+            If int, we assume spin-balanced: n_up = n_down = nelec // 2.
+        phi : float
+            Flux per elementary triangle (in radians).
+            phi != 0, pi breaks time reversal.
+        t : float
+            NN hopping amplitude for the auxiliary flux Hamiltonian.
+
+        Returns
+        -------
+        spin_rdm1 : (2N, 2N) complex array
+            1RDM in basis [up(0..N-1), down(N..2N-1)].
+        """
+        N = self.n_sites
+
+        # electron numbers
+        if isinstance(nelec, tuple):
+            n_up, n_dn = nelec
+        else:
+            if nelec % 2 != 0:
+                raise ValueError(
+                    "For scalar nelec, require even nelec for spin-balanced state."
+                )
+            n_up = n_dn = nelec // 2
+
+        if n_up > N or n_dn > N:
+            raise ValueError("Cannot occupy more orbitals than sites.")
+
+        # build flux Hamiltonian and diagonalize
+        H_flux = self._build_flux_h1(phi=phi, t=t)
+        eps, U = np.linalg.eigh(H_flux)  # U[:,n] is eigenvector n
+
+        # projectors for up and down spins
+        P_up = U[:, :n_up] @ U[:, :n_up].conj().T
+        P_dn = U[:, :n_dn] @ U[:, :n_dn].conj().T
+
+        spin_rdm1 = np.zeros((2 * N, 2 * N), dtype=complex)
+        spin_rdm1[:N, :N] = P_up
+        spin_rdm1[N:, N:] = P_dn
+        # no transverse spin in this seed: r_ud = r_du = 0
+
+        return spin_rdm1
 
     def plot_observables(
         self,
         spin_rdm1,
         arrow_scale=1.5,
+        charge_scale=None,
         annotate_sites=True,
         cmap="viridis",
         size=None,
@@ -726,12 +854,18 @@ class triangular_grid(lattice):
         h1=None,
         t=1.0,
         current_color="magenta",
+        show_triangle_currents=False,
+        triangle_cmap="coolwarm",
+        triangle_alpha=0.4,
+        ax=None,
+        show_colorbars=True,
     ):
         """
-        Plot charge density (color) and spin expectation (arrows) on a triangular lattice,
-        and optionally charge currents on bonds.
+        Plot charge density (color) and spin expectation (arrows) on a triangular
+        lattice, optionally with bond currents and triangle loop currents.
         """
         import matplotlib.pyplot as plt
+        from matplotlib.collections import PolyCollection
 
         n_sites = self.n_sites
         nx, ny = self.l_x, self.l_y
@@ -739,7 +873,7 @@ class triangular_grid(lattice):
         boundary = self.boundary
         if boundary not in ("xc", "oxc", "yc"):
             raise ValueError(
-                "plot_spin_charge only implemented for 'xc', 'oxc', or 'yc'."
+                "plot_observables only implemented for 'xc', 'oxc', or 'yc'."
             )
 
         r_uu = spin_rdm1[:n_sites, :n_sites]
@@ -771,15 +905,36 @@ class triangular_grid(lattice):
         ys = np.array(ys)
         cs = np.array(cs)
 
-        def get_figsize(fig_height_pt, ratio):
-            inches_per_pt = 1.0 / 72.0
-            fig_height = fig_height_pt * inches_per_pt
-            fig_width = fig_height / ratio
-            return [fig_width, fig_height]
+        # def get_figsize(fig_height_pt, ratio):
+        #     inches_per_pt = 1.0 / 72.0
+        #     fig_height = fig_height_pt * inches_per_pt
+        #     fig_width = fig_height / ratio
+        #     return [fig_width, fig_height]
 
-        if size is None:
-            size = 100 * nx
-        fig, ax = plt.subplots(figsize=get_figsize(size, ratio=nx / ny))
+        # if size is None:
+        #     size = 100 * nx
+        # fig, ax = plt.subplots(figsize=get_figsize(size, ratio=nx / ny))
+        # --- create / reuse axes ---
+        own_fig = False
+        if ax is None:
+            if size is None:
+                size = 100 * nx
+
+            def get_figsize(fig_height_pt, ratio):
+                inches_per_pt = 1.0 / 72.0
+                fig_height = fig_height_pt * inches_per_pt
+                fig_width = fig_height / ratio
+                return [fig_width, fig_height]
+
+            fig, ax = plt.subplots(figsize=get_figsize(size, ratio=nx / ny))
+            own_fig = True
+        else:
+            fig = ax.figure
+            if size is None:
+                size = 100 * nx
+
+        if charge_scale is None:
+            charge_scale = 30 * (size / 100)
 
         def is_edge_site(x, y):
             if boundary in ("xc", "oxc"):  # PBC in x, open in y
@@ -788,6 +943,12 @@ class triangular_grid(lattice):
                 return (x == 0) or (x == nx - 1)
             else:
                 return False
+
+        need_curr = show_currents or show_triangle_currents
+        has_bond = np.zeros((n_sites, n_sites), dtype=bool)
+        is_pbc_bond = np.zeros((n_sites, n_sites), dtype=bool)
+        Jbond = np.zeros((n_sites, n_sites), dtype=float)
+        neighbors = [[] for _ in range(n_sites)]
 
         for i, (x, y) in enumerate(self.sites):
             Xi, Yi = coords[i]
@@ -802,26 +963,36 @@ class triangular_grid(lattice):
                 Xj, Yj = coords[j]
 
                 is_pbc = (abs(xn - x) > 1) or (abs(yn - y) > 1)
+
+                # store adjacency
+                has_bond[i, j] = has_bond[j, i] = True
+                is_pbc_bond[i, j] = is_pbc_bond[j, i] = is_pbc
+                neighbors[i].append(j)
+                neighbors[j].append(i)
+
+                # bond current (or 0 if not needed)
+                Jij = 0.0
+                if need_curr and not is_pbc:
+                    tij = h1[i, j] if h1 is not None else t
+                    if tij != 0:
+                        Jij = 2.0 * np.imag(tij * P[i, j])
+                    Jbond[i, j] = Jij
+                    Jbond[j, i] = -Jij
+
+                # plot bond line
                 if is_pbc:
-                    ax.plot([Xi, Xj], [Yi, Yj], "k--", lw=0.03, zorder=0)
+                    continue
+                    # ax.plot([Xi, Xj], [Yi, Yj], "k--", lw=0.001, zorder=0)
                 else:
                     ax.plot([Xi, Xj], [Yi, Yj], "k-", lw=0.6, zorder=1)
 
+                # plot bond current arrow
                 if show_currents and not is_pbc:
-                    # bond hopping
-                    tij = h1[i, j] if h1 is not None else t
-                    if tij == 0:
-                        continue
-
-                    Jij = 2.0 * np.imag(tij * P[i, j])  # spin-summed charge current
-
                     if abs(Jij) < current_threshold:
                         continue
-
                     if edge_only and not (is_edge_site(x, y) or is_edge_site(xn, yn)):
                         continue
 
-                    # arrow along the bond, centered at the midpoint
                     xm = 0.5 * (Xi + Xj)
                     ym = 0.5 * (Yi + Yj)
                     dx = Xj - Xi
@@ -839,18 +1010,86 @@ class triangular_grid(lattice):
                         ym,
                         direction * length * ux,
                         direction * length * uy,
-                        head_width=0.08,
+                        head_width=0.1,
                         length_includes_head=True,
+                        linewidth=0.4,
                         zorder=2.5,
                         color=current_color,
                     )
+
+        if show_triangle_currents:
+            tris = []
+            vals = []
+            for i in range(n_sites):
+                ni = neighbors[i]
+                for a in range(len(ni)):
+                    j = ni[a]
+                    if j <= i:
+                        continue
+                    for b in range(a + 1, len(ni)):
+                        k = ni[b]
+                        if k <= i:
+                            continue
+                        if not has_bond[j, k]:
+                            continue
+                        # skip triangles that use any PBC bond (wrap-around)
+                        if is_pbc_bond[i, j] or is_pbc_bond[j, k] or is_pbc_bond[k, i]:
+                            continue
+
+                        xi, yi = coords[i]
+                        xj, yj = coords[j]
+                        xk, yk = coords[k]
+
+                        area2 = (xj - xi) * (yk - yi) - (xk - xi) * (yj - yi)
+                        if np.isclose(area2, 0.0):
+                            continue  # degenerate
+
+                        if area2 > 0:
+                            tri = [(xi, yi), (xj, yj), (xk, yk)]
+                            J_delta = Jbond[i, j] + Jbond[j, k] + Jbond[k, i]
+                        else:
+                            tri = [(xi, yi), (xk, yk), (xj, yj)]
+                            J_delta = Jbond[i, k] + Jbond[k, j] + Jbond[j, i]
+
+                        tris.append(tri)
+                        vals.append(J_delta)
+
+            if tris:
+                pc = PolyCollection(
+                    tris,
+                    array=np.array(vals),
+                    cmap=triangle_cmap,
+                    alpha=triangle_alpha,
+                    edgecolors="none",
+                    zorder=0.5,
+                )
+                ax.add_collection(pc)
+                # cbar2 = plt.colorbar(
+                #     pc, ax=ax, fraction=0.046, pad=0.10, orientation="horizontal"
+                # )
+                # cbar2.set_label(r"$J_\Delta$")
+                from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+                if show_colorbars:
+
+                    cax2 = inset_axes(
+                        ax,
+                        width="50%",  # bar length (relative to main axes width)
+                        height="3%",  # bar thickness (relative to main axes height)
+                        loc="lower center",
+                        bbox_to_anchor=(0.0, -0.05, 1, 1),  # y < 0 pushes it below
+                        bbox_transform=ax.transAxes,
+                        borderpad=0,
+                    )
+                    cbar2 = fig.colorbar(pc, cax=cax2, orientation="horizontal")
+                    cbar2.set_label(r"$J_\Delta$")
 
         sc = ax.scatter(
             xs,
             ys,
             c=cs,
             cmap=cmap,
-            s=30 * (size / 100),
+            s=charge_scale,
             edgecolors="k",
             linewidths=0.3,
             zorder=2,
@@ -865,6 +1104,7 @@ class triangular_grid(lattice):
                 arrow_scale * sz[x, y],  # type: ignore
                 head_width=0.1,
                 length_includes_head=True,
+                linewidth=0.4,
                 zorder=3,
             )
             if annotate_sites:
@@ -876,17 +1116,31 @@ class triangular_grid(lattice):
                     zorder=4,
                 )
 
-        cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label("charge density")
+        # cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+        # cbar.set_label("charge density")
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+        if show_colorbars:
+            cax1 = inset_axes(
+                ax,
+                width="3%",  # bar thickness (relative to main axes width)
+                height="60%",  # bar length (relative to main axes height)
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.0, 1, 1),  # (x, y, w, h) in axes coords
+                bbox_transform=ax.transAxes,
+                borderpad=0.0,  # distance from the main axes
+            )
+            cbar = fig.colorbar(sc, cax=cax1)
+            cbar.set_label(r"$n$")
 
         ax.set_aspect("equal")
         ax.set_xticks([])
         ax.set_yticks([])
         for side in ["top", "right", "bottom", "left"]:
             ax.spines[side].set_visible(False)
-
-        plt.tight_layout()
-        plt.show()
+        if own_fig:
+            plt.tight_layout()
+            plt.show()
 
         return fig, ax
 
