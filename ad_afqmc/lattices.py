@@ -1408,6 +1408,128 @@ class triangular_grid(lattice):
 
         return energies, vecs_sym, ir_labels, parities
 
+    def classify_orbitals_D2_yc(self, tol_e=1e-8, tol_sym=1e-6):
+        """
+        Classify one-electron eigenstates of a YC triangular lattice with
+        according to a D2 subgroup of the full D_{2N} symmetry.
+
+        Each orbital is labelled by its eigenvalues, which
+        we map to string irreps:
+          ( +1, +1 ) -> "A1"
+          ( +1, -1 ) -> "A2"
+          ( -1, +1 ) -> "B1"
+          ( -1, -1 ) -> "B2"
+
+        """
+        nx = self.l_x
+        ny = self.l_y
+        h1 = -1.0 * self.create_adjacency_matrix()
+        n_sites = nx * ny
+        if h1.shape != (n_sites, n_sites):
+            raise ValueError(f"h1 must be of shape {(n_sites, n_sites)}")
+
+        if nx % 2 != 0:
+            raise ValueError("nx must be even for this D_{2N} YC lattice.")
+        if ny % 2 != 0:
+            print(
+                "Warning: ny is odd; C2 may not be an exact symmetry of this YC cluster."
+            )
+
+        def idx(x, y):
+            return x * ny + y
+
+        E = np.eye(n_sites, dtype=float)
+
+        perm_c2 = np.empty(n_sites, dtype=int)
+        for x in range(nx):
+            for y in range(ny):
+                perm_c2[idx(x, y)] = idx(nx - 1 - x, ny - 1 - y)
+        U_c2 = E[:, perm_c2]
+
+        step = nx // 2
+        perm_a = np.empty(n_sites, dtype=int)
+        for x in range(nx):
+            for y in range(ny):
+                x_new = (x + step) % nx
+                y_new = y
+                perm_a[idx(x, y)] = idx(x_new, y_new)
+        U_a = E[:, perm_a]
+
+        if not np.allclose(U_a @ U_a, E):
+            raise RuntimeError("U_a^2 != I; T_half seems not to be order 2.")
+        if not np.allclose(U_c2 @ U_c2, E):
+            raise RuntimeError("U_c2^2 != I; C2 seems not to be order 2.")
+        if not np.allclose(U_a @ U_c2, U_c2 @ U_a):
+            raise RuntimeError("U_a and U_c2 do not commute; D2 construction broken.")
+
+        energies, vecs = np.linalg.eigh(h1)
+
+        blocks = []
+        i = 0
+        while i < n_sites:
+            j = i + 1
+            while j < n_sites and abs(energies[j] - energies[i]) < tol_e:
+                j += 1
+            blocks.append(list(range(i, j)))
+            i = j
+
+        vecs_sym = vecs.copy()
+        ir_labels = [""] * n_sites
+        parities = [tuple()] * n_sites
+
+        parity_to_label = {
+            (+1, +1): "A1",
+            (+1, -1): "A2",
+            (-1, +1): "B1",
+            (-1, -1): "B2",
+        }
+
+        for block in blocks:
+            inds = np.array(block)
+            Vb = vecs_sym[:, inds]
+            d = Vb.shape[1]
+
+            rep_a = Vb.conj().T @ (U_a @ Vb)
+            rep_b = Vb.conj().T @ (U_c2 @ Vb)
+
+            wa, Ua = np.linalg.eigh(rep_a)
+            Vb = Vb @ Ua
+            rep_b = Ua.conj().T @ rep_b @ Ua
+            vecs_sym[:, inds] = Vb
+
+            sub_i = 0
+            while sub_i < d:
+                sub_j = sub_i + 1
+                while sub_j < d and abs(wa[sub_j] - wa[sub_i]) < tol_sym:
+                    sub_j += 1
+                sub = slice(sub_i, sub_j)
+                rep_b_sub = rep_b[sub, sub]
+                wb, Ub = np.linalg.eigh(rep_b_sub)
+                Vb[:, sub] = Vb[:, sub] @ Ub
+                rep_b[sub, :] = Ub.conj().T @ rep_b[sub, :]
+                rep_b[:, sub] = rep_b[:, sub] @ Ub
+                vecs_sym[:, inds] = Vb
+                sub_i = sub_j
+
+            for local_j, global_j in enumerate(inds):
+                phi = vecs_sym[:, global_j]
+                la = np.vdot(phi, U_a @ phi).real
+                lb = np.vdot(phi, U_c2 @ phi).real
+                la = +1 if la >= 0 else -1
+                lb = +1 if lb >= 0 else -1
+                parities[global_j] = (la, lb)
+                ir_labels[global_j] = parity_to_label[(la, lb)]
+
+        return energies, vecs_sym, ir_labels, parities
+
+    def classify_orbitals_D2(self, tol_e=1e-8, tol_sym=1e-6):
+        if self.boundary in "xc":
+            return self.classify_orbitals_D2_xc(tol_e=tol_e, tol_sym=tol_sym)
+        elif self.boundary == "yc":
+            return self.classify_orbitals_D2_yc(tol_e=tol_e, tol_sym=tol_sym)
+        else:
+            raise ValueError("classify_orbitals_D2 only implemented for 'xc' or 'yc'.")
+
     def __hash__(self):
         return hash(
             (
