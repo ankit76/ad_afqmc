@@ -1144,6 +1144,24 @@ class triangular_grid(lattice):
 
         return fig, ax
 
+    def build_pg_ops_oxc(self, parity=1.0):
+        """
+        Full space group ops for triangular XC cylinder (OBC in x, OBC in y)
+        """
+        nx = self.l_x
+        ny = self.l_y
+
+        if nx % 2 != 0:
+            raise ValueError("nx must be even to have a 2-row unit cell along x.")
+
+        n_sites = nx * ny
+        E = np.eye(n_sites, dtype=float)
+        perm_c2 = np.arange(n_sites - 1, -1, -1)
+        U_c2 = E[:, perm_c2]
+        pg_ops = [E, U_c2]
+        pg_chars = [1.0, parity]
+        return pg_ops, pg_chars
+
     def build_pg_ops_xc(self):
         """
         Full space-group ops for triangular XC cylinder (PBC in x, OBC in y)
@@ -1291,6 +1309,8 @@ class triangular_grid(lattice):
             return self.build_pg_ops_xc()
         elif self.boundary == "yc":
             return self.build_pg_ops_yc()
+        elif self.boundary == "oxc":
+            return self.build_pg_ops_oxc(parity=1.0)
         else:
             raise ValueError("build_pg_ops only implemented for 'xc' or 'yc'.")
 
