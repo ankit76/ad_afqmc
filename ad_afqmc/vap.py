@@ -10,6 +10,8 @@ import numpy as np
 import optax
 from jax import jit
 
+print = partial(print, flush=True)
+
 
 def _pack_psi(psi: jnp.ndarray) -> jnp.ndarray:
     """
