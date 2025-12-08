@@ -13,6 +13,39 @@ from jax import jit
 print = partial(print, flush=True)
 
 
+def occ_columns_from_theta(theta: jnp.ndarray) -> jnp.ndarray:
+    """
+    Complex exponential parametrization of a Slater determinant.
+    """
+    theta = jnp.asarray(theta)
+    n_occ = theta.shape[0]
+    U, s, Vh = jnp.linalg.svd(theta, full_matrices=False)
+    V = jnp.conj(Vh.T)
+    c = jnp.cos(s)
+    sn = jnp.sin(s)
+    I_occ = jnp.eye(n_occ, dtype=theta.dtype)
+    U_oo = I_occ + U @ jnp.diag(c - 1.0) @ jnp.conj(U.T)
+    U_vo = V @ jnp.diag(sn) @ jnp.conj(U.T)
+    C = jnp.vstack([U_oo, U_vo])
+    return C
+
+
+def theta_from_occ_columns(C: jnp.ndarray) -> jnp.ndarray:
+    """
+    Recover a complex Thouless matrix theta from a Slater determinant.
+    """
+    C = jnp.asarray(C)
+    n_occ = C.shape[1]
+    C_occ = C[:n_occ, :]
+    C_vir = C[n_occ:, :]
+    X = C_vir @ jnp.linalg.inv(C_occ)
+    Ux, t, Vxh = jnp.linalg.svd(X, full_matrices=False)
+    Vx = jnp.conj(Vxh.T)
+    s = jnp.arctan(t)
+    theta = Vx @ jnp.diag(s) @ jnp.conj(Ux.T)
+    return theta
+
+
 def _pack_psi(psi: jnp.ndarray) -> jnp.ndarray:
     """
     Flatten a complex psi into a real parameter vector
@@ -587,30 +620,30 @@ def _evaluate_projected_energy(
 #     return _evaluate_linear_expansion_energy(psi, kets, coeffs, ham)
 
 
-def make_energy_fn(ham, projectors, psi_shape):
+def make_energy_fn(ham, projectors, theta_shape):
     """
     Returns E(theta), where theta is a real 1D vector encoding complex psi.
     """
 
     def energy_fn(theta: jnp.ndarray) -> jnp.ndarray:
-        psi = _unpack_psi(theta, psi_shape)
+        theta = _unpack_psi(theta, theta_shape)
+        psi = occ_columns_from_theta(theta)
         E = _evaluate_projected_energy(psi, ham, projectors)
         return jnp.real(E)
 
     return energy_fn
 
 
-def calculate_hessian(psi, ham, projectors=tuple()):
+def calculate_hessian(theta, ham, projectors=tuple()):
     """
     Compute the Hessian of the projected energy with respect to the
-    real parameters (Re(psi), Im(psi)) at psi.
+    real parameters (Re(theta), Im(theta)) at theta.
     """
-    psi = jnp.asarray(psi, dtype=jnp.complex128)
-    psi_shape = psi.shape
-    theta = _pack_psi(psi)
+    theta = jnp.asarray(theta, dtype=jnp.complex128)
+    theta_shape = theta.shape
+    theta = _pack_psi(theta)
 
-    energy_fn = make_energy_fn(ham, projectors, psi_shape)
-
+    energy_fn = make_energy_fn(ham, projectors, theta_shape)
     energy_jit = jax.jit(energy_fn)
     grad_jit = jax.jit(jax.grad(energy_fn))
     hess_jit = jax.jit(jax.hessian(energy_fn))
@@ -651,9 +684,11 @@ def optimize(
     ham: hamiltonian,
     projectors: tuple[projector, ...] = tuple(),
     maxiter: int = 100,
+    grad_conv_tol: float = 1e-5,
     step: float = 0.01,
     printQ: bool = True,
     optimizer_name: str = "lbfgs",
+    use_thouless: bool = False,
 ) -> tuple[float, np.ndarray]:
     """
     Variationally optimize a GHF determinant under optional symmetry projections.
@@ -667,12 +702,25 @@ def optimize(
     """
     psi0 = jnp.asarray(psi, dtype=jnp.complex128)
     psi_shape = psi0.shape
-    theta0 = _pack_psi(psi0)
+    if use_thouless:
+        psi0 = jnp.linalg.qr(psi0)[0]
+        theta0 = theta_from_occ_columns(psi0)
+        theta_shape = theta0.shape
+        theta0 = _pack_psi(theta0)
 
-    def objective_function(theta: jnp.ndarray) -> jnp.ndarray:
-        current_psi = _unpack_psi(theta, psi_shape)
-        energy = _evaluate_projected_energy(current_psi, ham, projectors)
-        return jnp.real(energy)
+        def objective_function(theta: jnp.ndarray) -> jnp.ndarray:
+            current_theta = _unpack_psi(theta, theta_shape)
+            current_psi = occ_columns_from_theta(current_theta)
+            energy = _evaluate_projected_energy(current_psi, ham, projectors)
+            return jnp.real(energy)
+
+    else:
+        theta0 = _pack_psi(psi0)
+
+        def objective_function(theta: jnp.ndarray) -> jnp.ndarray:
+            current_psi = _unpack_psi(theta, psi_shape)
+            energy = _evaluate_projected_energy(current_psi, ham, projectors)
+            return jnp.real(energy)
 
     objective_function = jit(objective_function)
     value_and_grad = jit(jax.value_and_grad(objective_function))
@@ -709,10 +757,14 @@ def optimize(
                 f"Iteration {iteration + 1}: Energy = {float(np.array(energy_val))}, "
                 f"Grad norm = {grad_norm}"
             )
-        if grad_norm < 1e-5:
+        if grad_norm < grad_conv_tol:
             print("Converged!")
             break
-    psi_opt = _unpack_psi(jnp.array(theta), psi_shape)
+    if use_thouless:
+        theta_opt = _unpack_psi(jnp.array(theta), theta_shape)
+        psi_opt = occ_columns_from_theta(theta_opt)
+    else:
+        psi_opt = _unpack_psi(jnp.array(theta), psi_shape)
     return float(np.array(energy)), np.array(psi_opt)
 
 
