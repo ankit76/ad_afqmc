@@ -653,6 +653,7 @@ def optimize(
     maxiter: int = 100,
     step: float = 0.01,
     printQ: bool = True,
+    optimizer_name: str = "lbfgs",
 ) -> tuple[float, np.ndarray]:
     """
     Variationally optimize a GHF determinant under optional symmetry projections.
@@ -675,20 +676,32 @@ def optimize(
 
     objective_function = jit(objective_function)
     value_and_grad = jit(jax.value_and_grad(objective_function))
-    optimizer = optax.amsgrad(step, b2=0.99)
+    if optimizer_name == "amsgrad":
+        optimizer = optax.amsgrad(step, b2=0.99)
+    elif optimizer_name == "lbfgs":
+        optimizer = optax.lbfgs(memory_size=10)
+    else:
+        raise ValueError(f"Unknown optimizer name: {optimizer_name}")
     opt_state = optimizer.init(theta0)
 
     theta = theta0
     energy = float(np.array(objective_function(theta)))
     print(f"\n# Initial projected energy = {energy}")
-    print("Starting optimization with Optax AMSGrad...")
+    print(f"Starting optimization with Optax {optimizer_name}...")
 
     for iteration in range(maxiter):
         energy_val, grads = value_and_grad(theta)
         grads_real = jnp.real(grads)
         grad_norm = float(np.array(jnp.linalg.norm(jnp.ravel(grads_real))))
         # grads_typed = grads_real.astype(psi_dtype)
-        updates, opt_state = optimizer.update(grads_real, opt_state, theta)
+        updates, opt_state = optimizer.update(
+            grads_real,
+            opt_state,
+            theta,
+            value=energy_val,
+            grad=grads_real,
+            value_fn=objective_function,
+        )
         theta = optax.apply_updates(theta, updates)
         energy = energy_val
         if printQ:
@@ -696,6 +709,9 @@ def optimize(
                 f"Iteration {iteration + 1}: Energy = {float(np.array(energy_val))}, "
                 f"Grad norm = {grad_norm}"
             )
+        if grad_norm < 1e-5:
+            print("Converged!")
+            break
     psi_opt = _unpack_psi(jnp.array(theta), psi_shape)
     return float(np.array(energy)), np.array(psi_opt)
 
