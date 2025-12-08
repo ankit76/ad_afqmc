@@ -858,7 +858,8 @@ class triangular_grid(lattice):
         triangle_cmap="coolwarm",
         triangle_alpha=0.4,
         ax=None,
-        show_colorbars=True,
+        show_charge_colorbar=True,
+        show_current_colorbar=True,
     ):
         """
         Plot charge density (color) and spin expectation (arrows) on a triangular
@@ -1070,7 +1071,7 @@ class triangular_grid(lattice):
                 # cbar2.set_label(r"$J_\Delta$")
                 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-                if show_colorbars:
+                if show_current_colorbar:
 
                     cax2 = inset_axes(
                         ax,
@@ -1120,7 +1121,7 @@ class triangular_grid(lattice):
         # cbar.set_label("charge density")
         from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-        if show_colorbars:
+        if show_charge_colorbar:
             cax1 = inset_axes(
                 ax,
                 width="3%",  # bar thickness (relative to main axes width)
@@ -1131,7 +1132,9 @@ class triangular_grid(lattice):
                 borderpad=0.0,  # distance from the main axes
             )
             cbar = fig.colorbar(sc, cax=cax1)
-            cbar.set_label(r"$n$")
+            # cbar.set_label(r"$n$")
+            cbar.ax.set_xlabel(r"$n$", labelpad=3)  # text and spacing
+            cbar.ax.xaxis.set_label_position("bottom")  # put it below, not above
 
         ax.set_aspect("equal")
         ax.set_xticks([])
@@ -1541,6 +1544,25 @@ class triangular_grid(lattice):
                 ir_labels[global_j] = parity_to_label[(la, lb)]
 
         return energies, vecs_sym, ir_labels, parities
+
+    def classify_orbitals_C2(self, tol_e=1e-8, tol_sym=1e-6):
+        h1 = -1.0 * self.create_adjacency_matrix()
+        n_sites = self.n_sites
+        if h1.shape != (n_sites, n_sites):
+            raise ValueError(f"h1 must be of shape {(n_sites, n_sites)}")
+        E = np.eye(n_sites, dtype=float)
+        perm_c2 = np.arange(n_sites - 1, -1, -1)
+        U_c2 = E[:, perm_c2]
+        energies, vecs = np.linalg.eigh(h1)
+        ir_labels = [""] * n_sites
+        parities = [0] * n_sites
+        for i in range(n_sites):
+            phi = vecs[:, i]
+            l = np.vdot(phi, U_c2 @ phi).real
+            l = +1 if l >= 0 else -1
+            parities[i] = l
+            ir_labels[i] = "A" if l == +1 else "B"
+        return energies, vecs, ir_labels, parities
 
     def classify_orbitals_D2(self, tol_e=1e-8, tol_sym=1e-6):
         if self.boundary in "xc":
