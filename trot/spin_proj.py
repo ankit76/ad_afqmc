@@ -101,7 +101,8 @@ def make_overlap_u_s2(
             o_i = overlap_g(wg, trial_data)
             return o_i
 
-        o = jax.vmap(_wrapper, (0,))(U)
+        #o = jax.vmap(_wrapper, (0,))(U)
+        o = jax.lax.map(_wrapper, U)
 
         return jnp.sum(o * w_betas)
 
@@ -137,7 +138,8 @@ def make_energy_kernel_uw_rh_s2(
             o_i = overlap_g(wg, trial_data)
             return o_i, e_i
 
-        o, e = jax.vmap(_wrapper, (0,))(U)
+        #o, e = jax.vmap(_wrapper, (0,))(U)
+        o, e = jax.lax.map(_wrapper, U)
 
         return jnp.sum(e * o * w_betas) / jnp.sum(o * w_betas)
 
