@@ -74,16 +74,23 @@ def slice_ham_level(ham: HamChol, *, norb_keep: int | None, nchol_keep: int | No
     h1 = ham.h1
     chol = ham.chol
 
-    new_nchol = ham.nchol
+    norb = ham.h1.shape[0]
+    nchol = ham.chol.shape[0]
 
-    if norb_keep is not None:
-        h1 = h1[:norb_keep, :norb_keep]
-        chol = chol[:, :norb_keep, :norb_keep]
+    norb_keep = norb if norb_keep is None else norb_keep
+    if norb_keep > norb:
+        raise ValueError(f"norb_keep ({norb_keep}) must be <= norb ({norb}).")
 
-    if nchol_keep is not None:
-        chol = chol[:nchol_keep]
-        ham_nchol = ham.nchol
-        assert ham_nchol is not None
-        new_nchol = min(int(ham_nchol), nchol_keep)
+    nchol_keep = nchol if nchol_keep is None else nchol_keep
+    if nchol_keep > nchol:
+        raise ValueError(f"nchol_keep ({nchol_keep}) must be <= nchol ({nchol}).")
 
-    return HamChol(h0=h0, h1=h1, chol=chol, basis=ham.basis, nchol=new_nchol)
+    tr_ham = HamChol(
+        h0=h0,
+        h1=h1[:norb_keep, :norb_keep],
+        chol=chol[:nchol_keep, :norb_keep, :norb_keep],
+        basis=ham.basis,
+        nchol=nchol_keep,
+    )
+
+    return tr_ham

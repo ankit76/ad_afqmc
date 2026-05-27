@@ -73,8 +73,8 @@ class UcisdMeasCtx:
     rot_h1_b: jax.Array  # (nocc[1], norb)
     rot_chol_a: jax.Array  # (n_chol, nocc[0], norb)
     rot_chol_b: jax.Array  # (n_chol, nocc[1], norb)
-    rot_chol_flat_a: jax.Array  # (n_chol, nocc[0]*norb)
-    rot_chol_flat_b: jax.Array  # (n_chol, nocc[1]*norb)
+    # rot_chol_flat_a: jax.Array  # (n_chol, nocc[0]*norb)
+    # rot_chol_flat_b: jax.Array  # (n_chol, nocc[1]*norb)
 
     lci1_a: jax.Array  # (n_chol, norb, nocc[0])
     lci1_b: jax.Array  # (n_chol, norb, nocc[1])
@@ -89,8 +89,8 @@ class UcisdMeasCtx:
             self.rot_h1_b,
             self.rot_chol_a,
             self.rot_chol_b,
-            self.rot_chol_flat_a,
-            self.rot_chol_flat_b,
+            # self.rot_chol_flat_a,
+            # self.rot_chol_flat_b,
             self.lci1_a,
             self.lci1_b,
         )
@@ -107,8 +107,8 @@ class UcisdMeasCtx:
             rot_h1_b,
             rot_chol_a,
             rot_chol_b,
-            rot_chol_flat_a,
-            rot_chol_flat_b,
+            # rot_chol_flat_a,
+            # rot_chol_flat_b,
             lci1_a,
             lci1_b,
         ) = children
@@ -119,8 +119,8 @@ class UcisdMeasCtx:
             rot_h1_b=rot_h1_b,
             rot_chol_a=rot_chol_a,
             rot_chol_b=rot_chol_b,
-            rot_chol_flat_a=rot_chol_flat_a,
-            rot_chol_flat_b=rot_chol_flat_b,
+            # rot_chol_flat_a=rot_chol_flat_a,
+            # rot_chol_flat_b=rot_chol_flat_b,
             lci1_a=lci1_a,
             lci1_b=lci1_b,
             cfg=cfg,
@@ -1247,6 +1247,45 @@ def energy_kernel_gw_rh(
     return e + e0
 
 
+def slice_meas_ctx_chol(
+    ctx: UcisdMeasCtx, norb_keep: int | None, nchol_keep: int | None
+) -> UcisdMeasCtx:
+
+    norb = ctx.h1_b.shape[0]
+    nchol = ctx.chol_b.shape[0]
+
+    norb_keep = norb if norb_keep is None else norb_keep
+    if norb_keep > norb:
+        raise ValueError(f"norb_keep ({norb_keep}) must be <= norb ({norb}).")
+
+    nchol_keep = nchol if nchol_keep is None else nchol_keep
+    if nchol_keep > nchol:
+        raise ValueError(f"nchol_keep ({nchol_keep}) must be <= nchol ({nchol}).")
+
+    h1_b = ctx.h1_b[:norb_keep, :norb_keep]
+    chol_b = ctx.chol_b[:nchol_keep, :norb_keep, :norb_keep]
+    rot_h1_a = ctx.rot_h1_a[:, :norb_keep]
+    rot_h1_b = ctx.rot_h1_b[:, :norb_keep]
+    rot_chol_a = ctx.rot_chol_a[:nchol_keep, :, :norb_keep]
+    rot_chol_b = ctx.rot_chol_b[:nchol_keep, :, :norb_keep]
+    lci1_a = ctx.lci1_a[:nchol_keep, :norb_keep, :]
+    lci1_b = ctx.lci1_b[:nchol_keep, :norb_keep, :]
+
+    tr_ctx = UcisdMeasCtx(
+        h1_b=h1_b,
+        chol_b=chol_b,
+        rot_h1_a=rot_h1_a,
+        rot_h1_b=rot_h1_b,
+        rot_chol_a=rot_chol_a,
+        rot_chol_b=rot_chol_b,
+        lci1_a=lci1_a,
+        lci1_b=lci1_b,
+        cfg=ctx.cfg,
+    )
+
+    return tr_ctx
+
+
 def build_meas_ctx(
     ham_data: HamChol, trial_data: UcisdTrial, cfg: UcisdMeasCfg = UcisdMeasCfg()
 ) -> UcisdMeasCtx:
@@ -1261,8 +1300,8 @@ def build_meas_ctx(
     rot_h1_b = ham_data.h1[:n_ob, :]  # (nocc[1], norb)
     rot_chol_a = ham_data.chol[:, :n_oa, :]
     rot_chol_b = chol_b[:, :n_ob, :]
-    rot_chol_flat_a = rot_chol_a.reshape(rot_chol_a.shape[0], -1)
-    rot_chol_flat_b = rot_chol_b.reshape(rot_chol_b.shape[0], -1)
+    # rot_chol_flat_a = rot_chol_a.reshape(rot_chol_a.shape[0], -1)
+    # rot_chol_flat_b = rot_chol_b.reshape(rot_chol_b.shape[0], -1)
 
     lci1_a = jnp.einsum(
         "git,pt->gip",
@@ -1283,8 +1322,8 @@ def build_meas_ctx(
         rot_h1_b=rot_h1_b,
         rot_chol_a=rot_chol_a,
         rot_chol_b=rot_chol_b,
-        rot_chol_flat_a=rot_chol_flat_a,
-        rot_chol_flat_b=rot_chol_flat_b,
+        # rot_chol_flat_a=rot_chol_flat_a,
+        # rot_chol_flat_b=rot_chol_flat_b,
         lci1_a=lci1_a,
         lci1_b=lci1_b,
         cfg=cfg,
