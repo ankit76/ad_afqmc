@@ -192,8 +192,8 @@ if __name__ == "__main__":
     # import sys
     # import trot
     # trot_path = Path(trot.__file__).resolve().parent
-    # path = trot_path.parent / "examples" / "active_space_fp.py"
-    # sys.path.append(path)
+    # path = trot_path.parent / "examples"
+    # sys.path.append(str(path))
     # from active_space_fp import prep_act_cc, stage_act_cc
 
     from pyscf import gto
@@ -213,12 +213,6 @@ if __name__ == "__main__":
 
     # We want the same core orbitals for alpha and beta MOs
     act_cc = prep_act_cc(mol, n_core=2)
-
-    import dill as pickle
-
-    with open("cc_mo.pkl", "wb") as f:
-        pickle.dump(act_cc, f)
-
     stage_act_cc(act_cc, "n2_afqmc.h5")
 
     from trot.afqmc import AfqmcFp
