@@ -49,12 +49,19 @@ def prep_act_cc(mol, *, n_core, n_act=None):
     mol_as.nelec = (nalpha, nbeta)
 
     act_umf = scf.UHF(mol_as)
-    act_umf._custom_h0 = np.array(e_core)  # type: ignore
+    act_umf._custom_h0 = e_core  # type: ignore
     act_umf._custom_h1 = np.array(h1e_cas)  # type: ignore
     act_umf._custom_ovlp = np.array(np.eye(ncas))  # type: ignore
     act_umf._custom_eri = ao2mo.restore(4, np.array(h2e_cas), ncas)  # type: ignore
-    act_umf.get_hcore = lambda *args: act_umf._custom_h1  # type: ignore
-    act_umf.get_ovlp = lambda *args: act_umf._custom_ovlp  # type: ignore
+
+    def get_hcore(self, *args):
+        return self._custom_h1
+
+    def get_ovlp(self, *args):
+        return self._custom_ovlp
+
+    act_umf.get_hcore = get_hcore.__get__(act_umf)
+    act_umf.get_ovlp = get_ovlp.__get__(act_umf)
     act_umf._eri = ao2mo.restore(8, h2e_cas_full, ncas)
 
     ## Building the guess
@@ -135,7 +142,7 @@ def prep_act_cc(mol, *, n_core, n_act=None):
     #    pickle.dump(mycc, f)
 
 
-def stage_act_cc(act_cc, fname):
+def stage_act_cc(act_cc, fname, chol_cut=1e-5):
     from trot.afqmc import AfqmcFp
     from trot.staging import HamInput
     import trot.staging
@@ -148,7 +155,6 @@ def stage_act_cc(act_cc, fname):
 
     norb = umf.mo_coeff.shape[-1]
     mol.nao = norb
-    chol_cut = 1e-8
 
     h0 = umf._custom_h0
     h1 = umf._custom_h1
