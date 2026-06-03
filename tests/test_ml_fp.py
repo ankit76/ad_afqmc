@@ -51,10 +51,11 @@ def test_ml_fp():
     af.seed = 1000000
 
     af.build_job()
-    af._job._prepare_runtime()
-    trial_data = af._job.trial_data
-    ham_data = af._job.ham_data
-    meas_ctx = af._job._runtime_meas_ctx
+    job = af._job
+    job._prepare_runtime()
+    trial_data = job.trial_data
+    ham_data = job.ham_data
+    meas_ctx = job._runtime_meas_ctx
 
     ## Trucation 1
     level1 = TmpLevelSpec(norb_keep=None, nchol_keep=None)

@@ -41,7 +41,7 @@ def get_cc_no(mycc, *, e_core=0.0):
     mycc_no.frozen = mycc.frozen
     mycc_no.kernel()
 
-    print(f"NO UCCSD energy: {e_core + mycc_no.e_tot}:.8f")
+    print(f"NO UCCSD energy: {e_core + mycc_no.e_tot:.8f}")
     print(f"Difference: {mycc_no.e_tot - mycc.e_tot:.8f}")
     print()
     print("Alpha/Beta NO occupations")

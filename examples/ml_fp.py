@@ -49,17 +49,18 @@ af.mixed_precision = True
 af.seed = 1000000
 
 af.build_job()
-af._job._prepare_runtime()
-trial_data = af._job.trial_data
-ham_data = af._job.ham_data
-meas_ctx = af._job._runtime_meas_ctx
+job = af._job
+job._prepare_runtime()
+trial_data = job.trial_data
+ham_data = job.ham_data
+meas_ctx = job._runtime_meas_ctx
 
 # Spin projection
 ## Data for the quadrature
 target_spin = 0.0
 betas, w_betas = quadrature_s2(
     target_spin,
-    (mycc.t1[0].shape[0], mycc.t1[1].shape[0]),
+    (job.sys.nup, job.sys.ndn),
     4,
 )
 
@@ -102,11 +103,9 @@ af.build_job(force=True, block_fn=block_fn)
 
 job = af._job
 
-
 # Avoid computing the energy at 0 a.u. since it does not use the ml scheme
 def always_zero(*args, **kwargs) -> jax.Array:
     return jnp.array(0.0)
-
 
 job.meas_ops = dataclasses.replace(
     job.meas_ops,
