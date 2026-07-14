@@ -13,13 +13,15 @@ from ..core.system import System
 @tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class CisdModeTrial:
-    """Restricted CISD trial stored as the full eigendecomposition of its K matrix.
+    """Restricted CISD trial stored as a spectral representation of its K matrix.
 
     The spin-adapted doubles kernel is
 
         K_(ia,jb) = 2 c_(ia,jb) - c_(ib,ja) = V diag(eigenvalues) V.T.
 
-    ``modes[r, i, a]`` stores row ``r`` of ``V.T``.
+    ``modes[r, i, a]`` stores row ``r`` of ``V.T``. Retaining every pair-space
+    mode gives the exact K matrix; retaining a prefix defines a truncated
+    approximation.
     """
 
     ci1: jax.Array
@@ -42,16 +44,18 @@ class CisdModeTrial:
         if self.modes.ndim != 3:
             raise ValueError(f"modes must have rank 3, got shape {self.modes.shape}.")
 
-        expected_mode_shape = (self.nocc * self.nvir, self.nocc, self.nvir)
-        if self.modes.shape != expected_mode_shape:
+        pair_dim = self.nocc * self.nvir
+        mode_rank = int(self.modes.shape[0])
+        if not 0 < mode_rank <= pair_dim:
+            raise ValueError(f"mode rank must lie in [1, {pair_dim}], got {mode_rank}.")
+        expected_pair_shape = (self.nocc, self.nvir)
+        if self.modes.shape[1:] != expected_pair_shape:
             raise ValueError(
-                f"full-rank modes must have shape {expected_mode_shape}, "
-                f"got {self.modes.shape}."
+                f"each mode must have shape {expected_pair_shape}, got {self.modes.shape[1:]}."
             )
-        if self.eigenvalues.shape != (expected_mode_shape[0],):
+        if self.eigenvalues.shape != (mode_rank,):
             raise ValueError(
-                f"eigenvalues must have shape {(expected_mode_shape[0],)}, "
-                f"got {self.eigenvalues.shape}."
+                f"eigenvalues must have shape {(mode_rank,)}, got {self.eigenvalues.shape}."
             )
         if self.nocc_t_core < 0 or self.nvir_t_outer < 0:
             raise ValueError("nocc_t_core and nvir_t_outer must be nonnegative.")
@@ -127,7 +131,7 @@ def mode_projections(trial_data: CisdModeTrial, matrix: jax.Array) -> jax.Array:
     """Return ``V.T @ matrix``"""
     if matrix.shape != (trial_data.nocc, trial_data.nvir):
         raise ValueError(
-            f"matrix must have shape {(trial_data.nocc, trial_data.nvir)}, " f"got {matrix.shape}."
+            f"matrix must have shape {(trial_data.nocc, trial_data.nvir)}, got {matrix.shape}."
         )
 
     modes = trial_data.modes
@@ -207,28 +211,33 @@ def make_cisd_mode_trial_data(
     *,
     mixed_precision: bool = True,
 ) -> CisdModeTrial:
-    """data stores ``modes`` with shape ``(rank, nocc, nvir)``.
-    For compatibility with eigensolver output, ``eigenvectors`` with shape
-    ``(pair_dim, pair_dim)`` is also accepted and interpreted as eigenvectors
-    stored in columns.
+    """Build a full-rank or truncated mode-native restricted CISD trial.
+
+    ``modes`` has shape ``(rank, nocc, nvir)``. For compatibility with
+    eigensolver output, ``eigenvectors`` with shape ``(pair_dim, rank)`` is
+    also accepted and interpreted as eigenvectors stored in columns.
     """
     del sys
 
     ci1 = jnp.asarray(data["ci1"], dtype=jnp.float64)
     eigenvalues = jnp.asarray(data["eigenvalues"], dtype=jnp.float64)
+    if eigenvalues.ndim != 1:
+        raise ValueError(f"eigenvalues must have rank 1, got shape {eigenvalues.shape}.")
     nocc, nvir = ci1.shape
     pair_dim = int(nocc * nvir)
+    mode_rank = int(eigenvalues.shape[0])
 
     if "modes" in data:
         modes_input = jnp.asarray(data["modes"])
     elif "eigenvectors" in data:
         eigenvectors = jnp.asarray(data["eigenvectors"])
-        if eigenvectors.shape != (pair_dim, pair_dim):
+        expected_eigenvector_shape = (pair_dim, mode_rank)
+        if eigenvectors.shape != expected_eigenvector_shape:
             raise ValueError(
-                f"eigenvectors must have shape {(pair_dim, pair_dim)}, "
+                f"eigenvectors must have shape {expected_eigenvector_shape}, "
                 f"got {eigenvectors.shape}."
             )
-        modes_input = eigenvectors.T.reshape(pair_dim, nocc, nvir)
+        modes_input = eigenvectors.T.reshape(mode_rank, nocc, nvir)
     else:
         raise KeyError("mode-native CISD trial data requires 'modes' or 'eigenvectors'.")
 
@@ -250,6 +259,6 @@ def make_cisd_mode_trial_ops(sys: System) -> TrialOps:
         raise ValueError("Restricted CISD mode trial requires nup == ndn.")
     if sys.walker_kind.lower() != "restricted":
         raise ValueError(
-            "CISD mode trial currently supports only restricted walkers, " f"got: {sys.walker_kind}"
+            f"CISD mode trial currently supports only restricted walkers, got: {sys.walker_kind}"
         )
     return TrialOps(overlap=overlap_r, get_rdm1=get_rdm1)

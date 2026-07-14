@@ -77,7 +77,7 @@ def build_meas_ctx(
 
     ``n_mode_chunks=1`` evaluates the complete mode axis in one batch. Larger
     values reduce mode-dependent temporary memory by scanning over that many
-    partitions; the requested count is capped at the full mode rank.
+    partitions; the requested count is capped at the retained mode rank.
     """
     if n_mode_chunks <= 0:
         raise ValueError("n_mode_chunks must be positive.")
@@ -342,15 +342,16 @@ def make_cisd_mode_meas_ops(
     mixed_precision: bool = True,
     n_mode_chunks: int = 1,
 ) -> MeasOps:
-    """Build exact full-rank mode measurements with batched Cholesky terms.
+    """Build retained-mode CISD measurements with batched Cholesky terms.
 
     Only the mode axis is optionally partitioned. All Cholesky vectors remain
-    batched, matching the dense CISD high-memory measurement policy.
+    batched, matching the dense CISD high-memory measurement policy. The
+    result is exact when all pair-space modes are retained and is the
+    consistent truncated-K approximation otherwise.
     """
     if sys.walker_kind.lower() != "restricted":
         raise ValueError(
-            "CISD mode MeasOps currently supports only restricted walkers, "
-            f"got: {sys.walker_kind}"
+            f"CISD mode MeasOps currently supports only restricted walkers, got: {sys.walker_kind}"
         )
     if n_mode_chunks <= 0:
         raise ValueError("n_mode_chunks must be positive.")

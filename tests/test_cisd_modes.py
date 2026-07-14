@@ -159,19 +159,71 @@ def test_mixed_trial_data_uses_lambda64_vectors32_and_dp_reductions():
     assert relative_error < 1.0e-5
 
 
-def test_mode_trial_is_a_pytree_and_rejects_truncated_storage():
-    _, trial, _, _ = _make_dense_and_mode_trials(nocc_t_core=1, nvir_t_outer=2)
+def test_mode_trial_is_a_pytree_and_accepts_consistent_truncated_storage():
+    dense_trial, trial, kernel, eigenvectors = _make_dense_and_mode_trials(
+        nocc_t_core=1, nvir_t_outer=2
+    )
     leaves, treedef = jax.tree_util.tree_flatten(trial)
     restored = jax.tree_util.tree_unflatten(treedef, leaves)
     assert restored.nocc_t_core == 1
     assert restored.nvir_t_outer == 2
     np.testing.assert_array_equal(restored.eigenvalues, trial.eigenvalues)
 
-    with pytest.raises(ValueError, match="full-rank modes"):
+    mode_rank = trial.mode_rank - 2
+    truncated = CisdModeTrial(
+        ci1=trial.ci1,
+        eigenvalues=trial.eigenvalues[:mode_rank],
+        modes=trial.modes[:mode_rank],
+        nocc_t_core=trial.nocc_t_core,
+        nvir_t_outer=trial.nvir_t_outer,
+    )
+    assert truncated.mode_rank == mode_rank
+
+    sys = System(
+        norb=dense_trial.norb,
+        nelec=(dense_trial.nocc_full, dense_trial.nocc_full),
+        walker_kind="restricted",
+    )
+    loaded = make_cisd_mode_trial_data(
+        {
+            "ci1": np.asarray(trial.ci1),
+            "eigenvalues": np.asarray(trial.eigenvalues[:mode_rank]),
+            "eigenvectors": eigenvectors[:, :mode_rank],
+            "nocc_t_core": trial.nocc_t_core,
+            "nvir_t_outer": trial.nvir_t_outer,
+        },
+        sys,
+        mixed_precision=False,
+    )
+    assert loaded.modes.shape == (mode_rank, trial.nocc, trial.nvir)
+    np.testing.assert_allclose(loaded.eigenvalues, truncated.eigenvalues)
+    np.testing.assert_allclose(loaded.modes, truncated.modes)
+
+    matrix = np.random.default_rng(863).standard_normal((trial.nocc, trial.nvir))
+    matrix = jnp.asarray(matrix, dtype=jnp.complex128)
+    truncated_modes = np.asarray(truncated.modes).reshape(mode_rank, -1)
+    truncated_kernel = (
+        truncated_modes.T @ np.diag(np.asarray(truncated.eigenvalues)) @ truncated_modes
+    )
+    expected_applied = (truncated_kernel @ np.asarray(matrix).reshape(-1)).reshape(matrix.shape)
+    _, applied = mode_apply(truncated, matrix)
+    expected_quadratic = (
+        np.asarray(matrix).reshape(-1) @ truncated_kernel @ np.asarray(matrix).reshape(-1)
+    )
+    np.testing.assert_allclose(applied, expected_applied, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(
+        mode_quadratic(truncated, matrix),
+        expected_quadratic,
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+    assert kernel.shape == (trial.mode_rank, trial.mode_rank)
+
+    with pytest.raises(ValueError, match="eigenvalues must have shape"):
         CisdModeTrial(
             ci1=trial.ci1,
-            eigenvalues=trial.eigenvalues[:-1],
-            modes=trial.modes[:-1],
+            eigenvalues=trial.eigenvalues[: mode_rank - 1],
+            modes=trial.modes[:mode_rank],
         )
 
 
@@ -184,6 +236,53 @@ def test_mode_trial_ops_require_restricted_closed_shell_walkers():
         make_cisd_mode_trial_ops(System(norb=7, nelec=(3, 2), walker_kind="restricted"))
     with pytest.raises(ValueError, match="restricted walkers"):
         make_cisd_mode_trial_ops(System(norb=7, nelec=(2, 2), walker_kind="unrestricted"))
+
+
+def test_truncated_overlap_force_bias_and_energy_match_zero_padded_modes():
+    _, full_trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    mode_rank = 3
+    truncated_trial = CisdModeTrial(
+        ci1=full_trial.ci1,
+        eigenvalues=full_trial.eigenvalues[:mode_rank],
+        modes=full_trial.modes[:mode_rank],
+    )
+    zero_padded_trial = CisdModeTrial(
+        ci1=full_trial.ci1,
+        eigenvalues=full_trial.eigenvalues.at[mode_rank:].set(0.0),
+        modes=full_trial.modes,
+    )
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(869),
+        norb=full_trial.norb,
+        n_chol=7,
+        basis="restricted",
+    )
+    cfg = CisdMeasCfg(
+        memory_mode="high",
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+    truncated_ctx = build_mode_meas_ctx(ham, truncated_trial, cfg=cfg, n_mode_chunks=2)
+    padded_ctx = build_mode_meas_ctx(ham, zero_padded_trial, cfg=cfg, n_mode_chunks=2)
+    walker = testing.make_restricted_walker_near_ref(
+        jax.random.PRNGKey(871),
+        full_trial.norb,
+        full_trial.nocc_full,
+        mix=0.25,
+    )
+
+    truncated_overlap = jax.jit(mode_overlap_r)(walker, truncated_trial)
+    padded_overlap = jax.jit(mode_overlap_r)(walker, zero_padded_trial)
+    truncated_fb = jax.jit(mode_force_bias_kernel)(walker, ham, truncated_ctx, truncated_trial)
+    padded_fb = jax.jit(mode_force_bias_kernel)(walker, ham, padded_ctx, zero_padded_trial)
+    truncated_energy = jax.jit(mode_energy_kernel)(walker, ham, truncated_ctx, truncated_trial)
+    padded_energy = jax.jit(mode_energy_kernel)(walker, ham, padded_ctx, zero_padded_trial)
+
+    np.testing.assert_allclose(truncated_overlap, padded_overlap, rtol=2.0e-12, atol=2.0e-12)
+    np.testing.assert_allclose(truncated_fb, padded_fb, rtol=2.0e-12, atol=2.0e-12)
+    np.testing.assert_allclose(truncated_energy, padded_energy, rtol=2.0e-12, atol=2.0e-12)
 
 
 @pytest.mark.parametrize("nocc_t_core,nvir_t_outer", [(0, 0), (1, 2)])
