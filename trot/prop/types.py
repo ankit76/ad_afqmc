@@ -40,6 +40,10 @@ class QmcParamsBase:
 
 @dataclass(frozen=True)
 class QmcParams(QmcParamsBase):
+    # When enabled, the driver compiles the full block starting from
+    # ``n_chunks`` and increases it only if the compiler-reported peak memory
+    # does not fit conservatively in the device allocator limit.
+    auto_n_chunks: bool = False
     pop_control_damping: float = 0.1
     weight_floor: float = 1.0e-3
     weight_cap: float = 100.0

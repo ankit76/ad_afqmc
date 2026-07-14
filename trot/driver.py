@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import time
 from functools import partial
-from typing import Any, Callable, NamedTuple
+from typing import Any, Callable, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp
@@ -13,20 +14,22 @@ from jax.sharding import PartitionSpec as P
 
 from .core.ops import MeasOps, TrialOps
 from .core.system import System
+from .meas.pt2ccsd import get_init_pt2trial_energy
 from .prop.blocks import BlockFn, MixedBlockFn
-from .prop.types import PropOps, PropState, QmcParamsBase, QmcParams, QmcParamsFp
+from .prop.types import PropOps, PropState, QmcParams, QmcParamsBase, QmcParamsFp
 from .stat_utils import (
     blocking_analysis_ratio,
+    clean_pt2ccsd,
     jackknife_ratios,
+    pt2ccsd_blocking,
     rebin_observable,
     reject_outliers,
-    pt2ccsd_blocking,
-    clean_pt2ccsd,
 )
 from .walkers import stochastic_reconfiguration
-from .meas.pt2ccsd import get_init_pt2trial_energy
 
 print = partial(print, flush=True)
+
+_AUTO_CHUNK_MEMORY_FRACTION = 0.8
 
 
 class QmcResult(NamedTuple):
@@ -108,6 +111,188 @@ def make_run_blocks(
         return stateN, scalars, obs
 
     return run_blocks
+
+
+def _auto_chunk_probe_n_blocks(params: QmcParams) -> int:
+    """Largest static block batch used by the standard progress loops."""
+
+    eql_chunk = params.n_eql_blocks // 5 if params.n_eql_blocks >= 5 else 1
+    sampling_chunk = params.n_blocks // 10 if params.n_blocks >= 10 else 1
+    return max(1, eql_chunk, sampling_chunk)
+
+
+def _state_devices(state: PropState) -> tuple[jax.Device, ...]:  # pyright: ignore
+    devices: set[jax.Device] = set()  # pyright: ignore
+    for leaf in jax.tree_util.tree_leaves(state):
+        leaf_devices = getattr(leaf, "devices", None)
+        if callable(leaf_devices):
+            devices.update(cast(Any, leaf_devices)())
+    if not devices:
+        devices.update(jax.devices())  # pyright: ignore
+    return tuple(devices)
+
+
+def _device_memory_limit_bytes(state: PropState) -> int | None:
+    """Return the smallest reported allocator limit across state devices."""
+
+    limits: list[int] = []
+    for device in _state_devices(state):
+        try:
+            stats = cast(dict[str, int] | None, device.memory_stats())
+        except (RuntimeError, NotImplementedError):
+            stats = None
+        if not stats:
+            return None
+
+        # ``bytes_limit`` is reported by current GPU backends. Keep the
+        # fallbacks because memory-stat keys are explicitly backend-dependent.
+        value = next(
+            (stats[key] for key in ("bytes_limit", "memory_limit", "total_memory") if key in stats),
+            None,
+        )
+        if value is None or int(value) <= 0:
+            return None
+        limits.append(int(value))
+    return min(limits) if limits else None
+
+
+def _compiled_memory_bytes(compiled: Any) -> int | None:
+    """Total compiler-estimated bytes, avoiding aliased double-counting."""
+
+    stats = compiled.memory_analysis()
+    if stats is None:
+        return None
+
+    names = (
+        "temp_size_in_bytes",
+        "argument_size_in_bytes",
+        "output_size_in_bytes",
+    )
+    values = tuple(getattr(stats, name, None) for name in names)
+    if any(value is None for value in values):
+        return None
+    alias = getattr(stats, "alias_size_in_bytes", 0)
+    return max(0, sum(int(cast(Any, value)) for value in values) - int(alias))
+
+
+def _next_auto_n_chunks(
+    current: int,
+    estimated_bytes: int,
+    budget_bytes: int,
+    n_walkers: int,
+) -> int:
+    """Increase chunks using the observed memory excess as a lower bound."""
+
+    scaled = math.ceil(current * estimated_bytes / budget_bytes)
+    return min(n_walkers, max(current + 1, scaled))
+
+
+def _format_mib(n_bytes: int) -> str:
+    return f"{n_bytes / 1024**2:.1f} MiB"
+
+
+def _make_run_blocks_with_auto_chunks(
+    *,
+    block_fn: BlockFn,
+    sys: System,
+    params: QmcParams,
+    trial_ops: TrialOps,
+    meas_ops: MeasOps,
+    prop_ops: PropOps,
+    state: PropState,
+    ham_data: Any,
+    trial_data: Any,
+    meas_ctx: Any,
+    prop_ctx: Any,
+    observable_names: tuple[str, ...],
+) -> tuple[QmcParams, Any]:
+    """Build ``run_blocks`` and optionally select a safe walker chunk count.
+
+    The accepted candidate is the same jitted callable returned to the QMC
+    loop, so its ahead-of-time compilation is reused during execution.
+    """
+
+    def build(candidate_params: QmcParams) -> Any:
+        return make_run_blocks(
+            block_fn=block_fn,
+            sys=sys,
+            params=candidate_params,
+            trial_ops=trial_ops,
+            meas_ops=meas_ops,
+            prop_ops=prop_ops,
+            observable_names=observable_names,
+        )
+
+    if not params.auto_n_chunks:
+        return params, build(params)
+    if params.n_chunks <= 0:
+        raise ValueError("QmcParams.n_chunks must be positive.")
+
+    memory_limit = _device_memory_limit_bytes(state)
+    if memory_limit is None:
+        print(
+            "[chunks] automatic selection unavailable: the backend did not "
+            "report a device memory limit; using "
+            f"n_chunks={params.n_chunks}."
+        )
+        return params, build(params)
+
+    budget = int(_AUTO_CHUNK_MEMORY_FRACTION * memory_limit)
+    if budget <= 0:
+        raise RuntimeError("Automatic chunk memory budget is not positive.")
+
+    n_walkers = max(1, int(params.n_walkers))
+    candidate = min(int(params.n_chunks), n_walkers)
+    probe_n_blocks = _auto_chunk_probe_n_blocks(params)
+    print(
+        "[chunks] selecting n_chunks automatically: "
+        f"allocator_limit={_format_mib(memory_limit)}, "
+        f"budget={_format_mib(budget)}, probe_blocks={probe_n_blocks}."
+    )
+
+    while True:
+        candidate_params = dataclasses.replace(params, n_chunks=candidate)
+        run_blocks = build(candidate_params)
+        start = time.perf_counter()
+        compiled = run_blocks.lower(
+            state,
+            ham_data=ham_data,
+            trial_data=trial_data,
+            meas_ctx=meas_ctx,
+            prop_ctx=prop_ctx,
+            n_blocks=probe_n_blocks,
+        ).compile()
+        compile_seconds = time.perf_counter() - start
+        estimated_bytes = _compiled_memory_bytes(compiled)
+        if estimated_bytes is None:
+            print(
+                "[chunks] compiler memory analysis unavailable; using "
+                f"n_chunks={candidate} (compiled in {compile_seconds:.1f} s)."
+            )
+            return candidate_params, run_blocks
+
+        print(
+            f"[chunks] n_chunks={candidate}: compiler estimate "
+            f"{_format_mib(estimated_bytes)} "
+            f"(compiled in {compile_seconds:.1f} s)."
+        )
+        if estimated_bytes <= budget:
+            print(f"[chunks] selected n_chunks={candidate}.")
+            return candidate_params, run_blocks
+
+        if candidate >= n_walkers:
+            raise MemoryError(
+                "The compiler estimates that a one-walker chunk requires "
+                f"{_format_mib(estimated_bytes)}, exceeding the automatic "
+                f"budget of {_format_mib(budget)}. Increase internal estimator "
+                "chunking or use a device with more memory."
+            )
+        candidate = _next_auto_n_chunks(
+            candidate,
+            estimated_bytes,
+            budget,
+            n_walkers,
+        )
 
 
 def make_run_mixed_blocks(
@@ -214,13 +399,18 @@ def run_qmc(
         sr_sharded = partial(stochastic_reconfiguration, data_sharding=data_sh)
         block_fn_sr = partial(block_fn, sr_fn=sr_sharded)
 
-    run_blocks = make_run_blocks(
+    params, run_blocks = _make_run_blocks_with_auto_chunks(
         block_fn=block_fn_sr,
         sys=sys,
         params=params,
         trial_ops=trial_ops,
         meas_ops=meas_ops,
         prop_ops=prop_ops,
+        state=state,
+        ham_data=ham_data,
+        trial_data=trial_data,
+        meas_ctx=meas_ctx,
+        prop_ctx=prop_ctx,
         observable_names=observable_names,
     )
 
