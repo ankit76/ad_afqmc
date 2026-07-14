@@ -29,6 +29,12 @@ class CisdModeTrial:
     nvir_t_outer: int = 0
 
     def __post_init__(self) -> None:
+        # Transformations such as ``vmap(..., in_axes=(0, None))`` may rebuild
+        # a registered PyTree once with opaque placeholder leaves while
+        # inferring axes. Shape validation applies only to actual array leaves.
+        if not all(hasattr(value, "ndim") for value in (self.ci1, self.eigenvalues, self.modes)):
+            return
+
         if self.ci1.ndim != 2:
             raise ValueError(f"ci1 must have rank 2, got shape {self.ci1.shape}.")
         if self.eigenvalues.ndim != 1:

@@ -91,8 +91,17 @@ def test_full_rank_double_mode_overlap_matches_dense_cisd(nocc_t_core, nvir_t_ou
     dense_overlap = dense_overlap_r(walker, dense_trial)
     mode_overlap = mode_overlap_r(walker, mode_trial)
     mode_overlap_jit = jax.jit(mode_overlap_r)(walker, mode_trial)
+    mode_overlap_batch = jax.vmap(mode_overlap_r, in_axes=(0, None))(
+        jnp.stack((walker, walker)), mode_trial
+    )
     np.testing.assert_allclose(mode_overlap, dense_overlap, rtol=1.0e-12, atol=1.0e-12)
     np.testing.assert_allclose(mode_overlap_jit, dense_overlap, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(
+        mode_overlap_batch,
+        jnp.stack((dense_overlap, dense_overlap)),
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
 
 
 def test_mode_helpers_match_explicit_k_contractions():
