@@ -5,6 +5,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax, tree_util
 
 from .. import walkers as wk
@@ -47,15 +48,21 @@ class CisdModeMeasCtx:
     cfg: CisdMeasCfg
     n_mode_chunks: int
     energy_sampling: CisdModePairSamplingCfg | None
+    pair_sampling_recommendation: CisdModePairSamplingRecommendation | None
 
     def tree_flatten(self):
         children = (self.rot_chol, self.lci1, self.chol_tail_prob)
-        aux = (self.cfg, self.n_mode_chunks, self.energy_sampling)
+        aux = (
+            self.cfg,
+            self.n_mode_chunks,
+            self.energy_sampling,
+            self.pair_sampling_recommendation,
+        )
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        cfg, n_mode_chunks, energy_sampling = aux
+        cfg, n_mode_chunks, energy_sampling, pair_sampling_recommendation = aux
         rot_chol, lci1, chol_tail_prob = children
         return cls(
             rot_chol=rot_chol,
@@ -64,6 +71,7 @@ class CisdModeMeasCtx:
             cfg=cfg,
             n_mode_chunks=n_mode_chunks,
             energy_sampling=energy_sampling,
+            pair_sampling_recommendation=pair_sampling_recommendation,
         )
 
 
@@ -85,6 +93,139 @@ class CisdModePairSamplingCfg:
             raise ValueError("chol_head_size must be nonnegative.")
         if self.pair_sample_size <= 0:
             raise ValueError("pair_sample_size must be positive.")
+
+
+@dataclass(frozen=True)
+class CisdModePairSamplingRecommendationCfg:
+    """Reference-walker heuristic for suggesting pair-sampling settings.
+
+    The heuristic scans the requested head fractions and sample sizes. It
+    chooses the least estimated work that keeps the safety-factor-inflated
+    reference tail standard deviation below ``target_tail_std_ha``. The
+    resulting setting is diagnostic only and never replaces an explicit
+    :class:`CisdModePairSamplingCfg`.
+    """
+
+    n_walkers: int
+    target_tail_std_ha: float = 4.0e-3
+    safety_factor: float = 2.0
+    candidate_head_fractions: tuple[float, ...] = (
+        0.0,
+        1.0 / 32.0,
+        1.0 / 16.0,
+        1.0 / 8.0,
+        1.0 / 4.0,
+        1.0 / 2.0,
+        1.0,
+    )
+    candidate_sample_sizes: tuple[int, ...] = (256, 512, 1024, 2048, 4096, 8192)
+
+    def __post_init__(self) -> None:
+        if self.n_walkers <= 0:
+            raise ValueError("n_walkers must be positive.")
+        if self.target_tail_std_ha <= 0.0:
+            raise ValueError("target_tail_std_ha must be positive.")
+        if self.safety_factor <= 0.0:
+            raise ValueError("safety_factor must be positive.")
+        if not self.candidate_head_fractions:
+            raise ValueError("candidate_head_fractions must not be empty.")
+        if any(not 0.0 <= fraction <= 1.0 for fraction in self.candidate_head_fractions):
+            raise ValueError("candidate_head_fractions must lie in [0, 1].")
+        if not self.candidate_sample_sizes or any(
+            sample_size <= 0 for sample_size in self.candidate_sample_sizes
+        ):
+            raise ValueError("candidate_sample_sizes must contain positive integers.")
+
+
+@dataclass(frozen=True)
+class CisdModePairSamplingRecommendation:
+    """One reference-walker pair-sampling recommendation."""
+
+    sampling: CisdModePairSamplingCfg
+    chol_head_fraction: float
+    estimated_single_sample_std_ha: float
+    estimated_reference_tail_std_ha: float
+    estimated_guarded_tail_std_ha: float
+    target_tail_std_ha: float
+    safety_factor: float
+    estimated_pair_evaluations: int
+    target_met: bool
+
+
+def recommend_cisd_mode_pair_sampling(
+    reference_terms: jax.Array,
+    cfg: CisdModePairSamplingRecommendationCfg,
+) -> CisdModePairSamplingRecommendation:
+    """Suggest a head and sample count from reference Cholesky terms.
+
+    For each candidate head, the sampling probabilities are proportional to
+    the magnitudes of the complex reference terms, exactly as in the runtime
+    estimator. The variance calculation uses their real parts because the
+    block energy is real. The work proxy counts ``n_walkers * head_size``
+    exact pairs plus the requested sampled tail pairs.
+    """
+
+    terms = np.asarray(jax.device_get(reference_terms))
+    if terms.ndim != 1 or terms.size <= 0:
+        raise ValueError("reference_terms must be a nonempty one-dimensional array.")
+
+    n_chol = int(terms.size)
+    real_terms = np.real(terms).astype(np.float64, copy=False)
+    scores = np.maximum(np.abs(terms).astype(np.float64, copy=False), 1.0e-300)
+    head_sizes = sorted(
+        {
+            max(0, min(int(round(fraction * n_chol)), n_chol))
+            for fraction in cfg.candidate_head_fractions
+        }
+    )
+    sample_sizes = sorted({int(value) for value in cfg.candidate_sample_sizes})
+
+    candidates: list[CisdModePairSamplingRecommendation] = []
+    for head_size in head_sizes:
+        tail_real = real_terms[head_size:]
+        if tail_real.size == 0:
+            single_sample_variance = 0.0
+        else:
+            tail_scores = scores[head_size:]
+            probabilities = tail_scores / np.sum(tail_scores, dtype=np.float64)
+            tail_mean = float(np.sum(tail_real, dtype=np.float64))
+            second_moment = float(np.sum(tail_real * tail_real / probabilities, dtype=np.float64))
+            single_sample_variance = max(0.0, second_moment - tail_mean * tail_mean)
+
+        single_sample_std = float(np.sqrt(single_sample_variance))
+        for sample_size in sample_sizes:
+            reference_std = single_sample_std / np.sqrt(sample_size)
+            guarded_std = cfg.safety_factor * reference_std
+            has_tail = head_size < n_chol
+            pair_evaluations = cfg.n_walkers * head_size + (sample_size if has_tail else 0)
+            candidates.append(
+                CisdModePairSamplingRecommendation(
+                    sampling=CisdModePairSamplingCfg(
+                        chol_head_size=head_size,
+                        pair_sample_size=sample_size,
+                    ),
+                    chol_head_fraction=head_size / n_chol,
+                    estimated_single_sample_std_ha=single_sample_std,
+                    estimated_reference_tail_std_ha=reference_std,
+                    estimated_guarded_tail_std_ha=guarded_std,
+                    target_tail_std_ha=cfg.target_tail_std_ha,
+                    safety_factor=cfg.safety_factor,
+                    estimated_pair_evaluations=pair_evaluations,
+                    target_met=guarded_std <= cfg.target_tail_std_ha,
+                )
+            )
+
+    feasible = [candidate for candidate in candidates if candidate.target_met]
+    pool = feasible if feasible else candidates
+    return min(
+        pool,
+        key=lambda candidate: (
+            candidate.estimated_pair_evaluations,
+            candidate.estimated_guarded_tail_std_ha,
+            candidate.sampling.chol_head_size,
+            candidate.sampling.pair_sample_size,
+        ),
+    )
 
 
 class CisdModeEnergyCommon(NamedTuple):
@@ -110,6 +251,7 @@ def build_meas_ctx(
     cfg: CisdMeasCfg = CisdMeasCfg(memory_mode="high"),
     n_mode_chunks: int = 1,
     energy_sampling: CisdModePairSamplingCfg | None = None,
+    sampling_recommendation_cfg: CisdModePairSamplingRecommendationCfg | None = None,
 ) -> CisdModeMeasCtx:
     """Build full-Cholesky measurement intermediates.
 
@@ -145,10 +287,44 @@ def build_meas_ctx(
         cfg=cfg,
         n_mode_chunks=min(int(n_mode_chunks), trial_data.mode_rank),
         energy_sampling=energy_sampling,
+        pair_sampling_recommendation=None,
     )
+    reference_terms = None
+    if energy_sampling is not None or sampling_recommendation_cfg is not None:
+        reference_terms = _reference_chol_terms(ham_data, meas_ctx, trial_data)
+
     if energy_sampling is not None:
-        chol_tail_prob = _build_chol_tail_prob(ham_data, meas_ctx, trial_data)
+        assert reference_terms is not None
+        chol_tail_prob = _build_chol_tail_prob(reference_terms, energy_sampling.chol_head_size)
         meas_ctx = replace(meas_ctx, chol_tail_prob=chol_tail_prob)
+        print(
+            "[sampling] configured CISD-mode pair estimator: "
+            f"chol_head_size={energy_sampling.chol_head_size}/{n_chol} "
+            f"({energy_sampling.chol_head_size / n_chol:.3%}), "
+            f"pair_sample_size={energy_sampling.pair_sample_size}."
+        )
+
+    if sampling_recommendation_cfg is not None:
+        assert reference_terms is not None
+        recommendation = recommend_cisd_mode_pair_sampling(
+            reference_terms,
+            sampling_recommendation_cfg,
+        )
+        meas_ctx = replace(meas_ctx, pair_sampling_recommendation=recommendation)
+        suggested = recommendation.sampling
+        target_status = "met" if recommendation.target_met else "not met"
+        print(
+            "[sampling] reference recommendation: "
+            f"chol_head_size={suggested.chol_head_size}/{n_chol} "
+            f"({recommendation.chol_head_fraction:.3%}), "
+            f"pair_sample_size={suggested.pair_sample_size}, "
+            "estimated_tail_std="
+            f"{recommendation.estimated_reference_tail_std_ha:.3e} Ha, "
+            "guarded_tail_std="
+            f"{recommendation.estimated_guarded_tail_std_ha:.3e} Ha, "
+            f"target={recommendation.target_tail_std_ha:.3e} Ha ({target_status}), "
+            f"work_proxy={recommendation.estimated_pair_evaluations} pairs."
+        )
     return meas_ctx
 
 
@@ -398,20 +574,12 @@ def energy_kernel_rw_rh(
     return common.base + jnp.sum(chol_terms, dtype=jnp.complex128)
 
 
-def _build_chol_tail_prob(
+def _reference_chol_terms(
     ham_data: HamChol,
     meas_ctx: CisdModeMeasCtx,
     trial_data: CisdModeTrial,
 ) -> jax.Array:
-    """Build a static importance guide from the reference determinant."""
-    sampling = meas_ctx.energy_sampling
-    if sampling is None:
-        return jnp.empty((0,), dtype=jnp.float64)
-
-    n_chol = int(ham_data.chol.shape[0])
-    if sampling.chol_head_size == n_chol:
-        return jnp.empty((0,), dtype=jnp.float64)
-
+    """Return per-Cholesky CISD-mode terms on the reference determinant."""
     reference_walker = jnp.eye(
         trial_data.norb,
         trial_data.nocc_full,
@@ -423,14 +591,22 @@ def _build_chol_tail_prob(
         meas_ctx,
         trial_data,
     )
-    terms = _cisd_mode_chol_terms(
+    return _cisd_mode_chol_terms(
         common,
-        ham_data.chol[sampling.chol_head_size :],
-        meas_ctx.rot_chol[sampling.chol_head_size :],
-        meas_ctx.lci1[sampling.chol_head_size :],
+        ham_data.chol,
+        meas_ctx.rot_chol,
+        meas_ctx.lci1,
         meas_ctx,
         trial_data,
     )
+
+
+def _build_chol_tail_prob(reference_terms: jax.Array, chol_head_size: int) -> jax.Array:
+    """Build the static tail guide from reference-determinant terms."""
+    terms = reference_terms[chol_head_size:]
+    if int(terms.shape[0]) == 0:
+        return jnp.empty((0,), dtype=jnp.float64)
+
     scores = jnp.maximum(jnp.abs(terms).astype(jnp.float64), 1.0e-300)
     return scores / jnp.sum(scores, dtype=jnp.float64)
 
@@ -530,13 +706,16 @@ def make_cisd_mode_meas_ops(
     mixed_precision: bool = True,
     n_mode_chunks: int = 1,
     energy_sampling: CisdModePairSamplingCfg | None = None,
+    sampling_recommendation_cfg: CisdModePairSamplingRecommendationCfg | None = None,
 ) -> MeasOps:
     """Build retained-mode CISD measurements.
 
     The deterministic default batches every Cholesky vector. Passing
     ``energy_sampling`` instead evaluates its Cholesky head exactly and uses
-    unbiased weighted walker--Cholesky sampling for the tail. All retained
-    modes remain deterministic in either case. The result is exact when all
+    unbiased weighted walker--Cholesky sampling for the tail. Passing
+    ``sampling_recommendation_cfg`` additionally reports a reference-walker
+    heuristic without changing the configured estimator. All retained modes
+    remain deterministic in either case. The result is exact when all
     pair-space modes are retained and is the consistent truncated-K
     approximation otherwise.
     """
@@ -562,6 +741,7 @@ def make_cisd_mode_meas_ops(
             cfg=cfg,
             n_mode_chunks=n_mode_chunks,
             energy_sampling=energy_sampling,
+            sampling_recommendation_cfg=sampling_recommendation_cfg,
         ),
         kernels={k_force_bias: force_bias_kernel_rw_rh, k_energy: energy_kernel_rw_rh},
         observables={},
