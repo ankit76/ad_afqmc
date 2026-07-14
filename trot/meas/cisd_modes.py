@@ -42,22 +42,22 @@ class CisdModeMeasCtx:
     rot_chol: jax.Array
     lci1: jax.Array
     cfg: CisdMeasCfg
-    mode_chunk_size: int
+    n_mode_chunks: int
 
     def tree_flatten(self):
         children = (self.rot_chol, self.lci1)
-        aux = (self.cfg, self.mode_chunk_size)
+        aux = (self.cfg, self.n_mode_chunks)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        cfg, mode_chunk_size = aux
+        cfg, n_mode_chunks = aux
         rot_chol, lci1 = children
         return cls(
             rot_chol=rot_chol,
             lci1=lci1,
             cfg=cfg,
-            mode_chunk_size=mode_chunk_size,
+            n_mode_chunks=n_mode_chunks,
         )
 
 
@@ -71,10 +71,16 @@ def build_meas_ctx(
     trial_data: CisdModeTrial,
     *,
     cfg: CisdMeasCfg = CisdMeasCfg(memory_mode="high"),
-    mode_chunk_size: int = 128,
+    n_mode_chunks: int = 1,
 ) -> CisdModeMeasCtx:
-    if mode_chunk_size <= 0:
-        raise ValueError("mode_chunk_size must be positive.")
+    """Build full-Cholesky measurement intermediates.
+
+    ``n_mode_chunks=1`` evaluates the complete mode axis in one batch. Larger
+    values reduce mode-dependent temporary memory by scanning over that many
+    partitions; the requested count is capped at the full mode rank.
+    """
+    if n_mode_chunks <= 0:
+        raise ValueError("n_mode_chunks must be positive.")
     if cfg.memory_mode != "high":
         raise ValueError("Mode-native CISD measurements currently require memory_mode='high'.")
 
@@ -93,7 +99,7 @@ def build_meas_ctx(
         rot_chol=rot_chol,
         lci1=lci1,
         cfg=cfg,
-        mode_chunk_size=int(mode_chunk_size),
+        n_mode_chunks=min(int(n_mode_chunks), trial_data.mode_rank),
     )
 
 
@@ -162,7 +168,11 @@ def _mode_energy_chunk(
     hg: jax.Array,
     e20: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
-    """Return the energy numerator and overlap doubles for one mode chunk."""
+    """Return one mode batch's energy numerator and overlap doubles.
+
+    The complete Cholesky axis is evaluated at once. Only the mode axis is
+    partitioned when ``n_mode_chunks > 1``.
+    """
     amplitudes = _mode_project_pair_batch(modes, green_occ)
     h_modes = _mode_project_pair_batch(modes, h_projector)
     chol_modes = _mode_project_pair_batch(modes, chol_projector)
@@ -202,15 +212,11 @@ def _mode_energy_numerator_and_doubles(
     hg: jax.Array,
     e20: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
-    """Accumulate all modes without padding or copying the complete mode tensor."""
+    """Accumulate all modes, optionally scanning over mode-only partitions."""
     rank = trial_data.mode_rank
     zero = jnp.asarray(0.0, dtype=jnp.complex128)
     if rank == 0:
         return zero, zero
-
-    chunk_size = min(meas_ctx.mode_chunk_size, rank)
-    n_full_chunks = rank // chunk_size
-    remainder_start = n_full_chunks * chunk_size
 
     def evaluate_chunk(eigenvalues, modes):
         return _mode_energy_chunk(
@@ -226,10 +232,27 @@ def _mode_energy_numerator_and_doubles(
             e20=e20,
         )
 
+    n_mode_chunks = min(meas_ctx.n_mode_chunks, rank)
+    if n_mode_chunks == 1:
+        return evaluate_chunk(trial_data.eigenvalues, trial_data.modes)
+
+    # Scan over exactly n_mode_chunks contiguous, balanced partitions. Shorter
+    # partitions have one masked entry, avoiding a padded copy of the complete
+    # mode tensor while keeping one static batch shape inside lax.scan.
+    base_chunk_size = rank // n_mode_chunks
+    n_larger_chunks = rank % n_mode_chunks
+    chunk_size = base_chunk_size + int(n_larger_chunks > 0)
+    chunk_offsets = jnp.arange(chunk_size, dtype=jnp.int32)
+
     def scan_body(carry, chunk_index):
-        start = chunk_index * chunk_size
-        eigenvalues = lax.dynamic_slice_in_dim(trial_data.eigenvalues, start, chunk_size, axis=0)
-        modes = lax.dynamic_slice_in_dim(trial_data.modes, start, chunk_size, axis=0)
+        is_larger = chunk_index < n_larger_chunks
+        chunk_length = base_chunk_size + is_larger.astype(jnp.int32)
+        start = chunk_index * base_chunk_size + jnp.minimum(chunk_index, n_larger_chunks)
+        indices = start + chunk_offsets
+        valid = chunk_offsets < chunk_length
+        indices = jnp.minimum(indices, rank - 1)
+        eigenvalues = jnp.where(valid, trial_data.eigenvalues[indices], 0.0)
+        modes = trial_data.modes[indices]
         numerator_i, doubles_i = evaluate_chunk(eigenvalues, modes)
         numerator, doubles = carry
         return (numerator + numerator_i, doubles + doubles_i), None
@@ -237,16 +260,8 @@ def _mode_energy_numerator_and_doubles(
     (numerator, doubles), _ = lax.scan(
         scan_body,
         (zero, zero),
-        jnp.arange(n_full_chunks, dtype=jnp.int32),
+        jnp.arange(n_mode_chunks, dtype=jnp.int32),
     )
-
-    if remainder_start < rank:
-        numerator_i, doubles_i = evaluate_chunk(
-            trial_data.eigenvalues[remainder_start:],
-            trial_data.modes[remainder_start:],
-        )
-        numerator = numerator + numerator_i
-        doubles = doubles + doubles_i
     return numerator, doubles
 
 
@@ -325,15 +340,20 @@ def make_cisd_mode_meas_ops(
     sys: System,
     *,
     mixed_precision: bool = True,
-    mode_chunk_size: int = 128,
+    n_mode_chunks: int = 1,
 ) -> MeasOps:
+    """Build exact full-rank mode measurements with batched Cholesky terms.
+
+    Only the mode axis is optionally partitioned. All Cholesky vectors remain
+    batched, matching the dense CISD high-memory measurement policy.
+    """
     if sys.walker_kind.lower() != "restricted":
         raise ValueError(
             "CISD mode MeasOps currently supports only restricted walkers, "
             f"got: {sys.walker_kind}"
         )
-    if mode_chunk_size <= 0:
-        raise ValueError("mode_chunk_size must be positive.")
+    if n_mode_chunks <= 0:
+        raise ValueError("n_mode_chunks must be positive.")
 
     cfg = CisdMeasCfg(
         memory_mode="high",
@@ -348,7 +368,7 @@ def make_cisd_mode_meas_ops(
             ham_data,
             trial_data,
             cfg=cfg,
-            mode_chunk_size=mode_chunk_size,
+            n_mode_chunks=n_mode_chunks,
         ),
         kernels={k_force_bias: force_bias_kernel_rw_rh, k_energy: energy_kernel_rw_rh},
         observables={},

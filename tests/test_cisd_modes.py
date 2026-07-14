@@ -215,7 +215,7 @@ def test_full_rank_double_mode_force_bias_and_energy_match_dense(
         ham,
         mode_trial,
         cfg=dp_cfg,
-        mode_chunk_size=4,
+        n_mode_chunks=1,
     )
     walker = testing.make_restricted_walker_near_ref(
         jax.random.PRNGKey(881),
@@ -259,7 +259,7 @@ def test_mode_measurement_mixed_precision_policy_and_accuracy():
         mixed_complex_dtype_testing=jnp.complex128,
     )
     dense_ctx = build_dense_meas_ctx(ham, dense_trial, cfg=dp_cfg)
-    mode_ops = make_cisd_mode_meas_ops(sys, mixed_precision=True, mode_chunk_size=4)
+    mode_ops = make_cisd_mode_meas_ops(sys, mixed_precision=True, n_mode_chunks=2)
     mode_ctx = mode_ops.build_meas_ctx(ham, mode_mixed)
     cfg = get_cisd_mode_meas_cfg(mode_ops)
     assert cfg is not None
@@ -280,7 +280,23 @@ def test_mode_measurement_mixed_precision_policy_and_accuracy():
     assert energy_absolute_error < 1.0e-4
 
 
-def test_mode_energy_is_independent_of_chunk_partition_in_double_precision():
+def test_n_mode_chunks_validation_and_rank_cap():
+    _, mode_trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(899),
+        norb=mode_trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+
+    with pytest.raises(ValueError, match="n_mode_chunks must be positive"):
+        build_mode_meas_ctx(ham, mode_trial, n_mode_chunks=0)
+
+    mode_ctx = build_mode_meas_ctx(ham, mode_trial, n_mode_chunks=100)
+    assert mode_ctx.n_mode_chunks == mode_trial.mode_rank
+
+
+def test_mode_energy_is_independent_of_n_mode_chunks_in_double_precision():
     dense_trial, mode_trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
     ham = testing.make_random_ham_chol(
         jax.random.PRNGKey(907),
@@ -301,12 +317,12 @@ def test_mode_energy_is_independent_of_chunk_partition_in_double_precision():
     )
     reference = dense_energy_kernel(walker, ham, dense_ctx, dense_trial)
 
-    for chunk_size in (1, 4, 32):
+    for n_mode_chunks in (1, 2, 4, 32):
         mode_ctx = build_mode_meas_ctx(
             ham,
             mode_trial,
             cfg=cfg,
-            mode_chunk_size=chunk_size,
+            n_mode_chunks=n_mode_chunks,
         )
         candidate = jax.jit(mode_energy_kernel)(walker, ham, mode_ctx, mode_trial)
         np.testing.assert_allclose(candidate, reference, rtol=2.0e-12, atol=2.0e-12)
