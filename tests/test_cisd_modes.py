@@ -18,7 +18,6 @@ from trot.meas.cisd import (
 )
 from trot.meas.cisd_modes import (
     CisdModePairSamplingCfg,
-    CisdModePairSamplingRecommendationCfg,
     _cisd_mode_chol_terms_for_walkers,
     _cisd_mode_energy_common,
     build_meas_ctx as build_mode_meas_ctx,
@@ -27,7 +26,6 @@ from trot.meas.cisd_modes import (
     get_cisd_mode_meas_cfg,
     make_cisd_mode_meas_ops,
     pair_sampled_block_energy,
-    recommend_cisd_mode_pair_sampling,
 )
 from trot.trial.cisd import CisdTrial, overlap_r as dense_overlap_r
 from trot.trial.cisd_modes import (
@@ -438,15 +436,6 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
         CisdModePairSamplingCfg(chol_head_size=-1, pair_sample_size=8)
     with pytest.raises(ValueError, match="pair_sample_size must be positive"):
         CisdModePairSamplingCfg(chol_head_size=0, pair_sample_size=0)
-    with pytest.raises(ValueError, match="n_walkers must be positive"):
-        CisdModePairSamplingRecommendationCfg(n_walkers=0)
-    with pytest.raises(ValueError, match="target_tail_std_ha must be positive"):
-        CisdModePairSamplingRecommendationCfg(n_walkers=1, target_tail_std_ha=0.0)
-    with pytest.raises(ValueError, match=r"must lie in \[0, 1\]"):
-        CisdModePairSamplingRecommendationCfg(
-            n_walkers=1,
-            candidate_head_fractions=(-0.1,),
-        )
 
     _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
     sys = System(
@@ -466,20 +455,12 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
         sys,
         mixed_precision=False,
         energy_sampling=sampling,
-        sampling_recommendation_cfg=CisdModePairSamplingRecommendationCfg(
-            n_walkers=3,
-            target_tail_std_ha=1.0,
-            safety_factor=1.0,
-            candidate_head_fractions=(0.0, 0.5, 1.0),
-            candidate_sample_sizes=(4, 16),
-        ),
     )
     assert deterministic_ops.block_energy is None
     assert sampled_ops.block_energy is pair_sampled_block_energy
 
     sampled_ctx = sampled_ops.build_meas_ctx(ham, trial)
     assert sampled_ctx.energy_sampling == sampling
-    assert sampled_ctx.pair_sampling_recommendation is not None
     assert sampled_ctx.chol_tail_prob.shape == (3,)
     np.testing.assert_allclose(jnp.sum(sampled_ctx.chol_tail_prob), 1.0, atol=1.0e-14)
     assert bool(jnp.all(sampled_ctx.chol_tail_prob > 0.0))
@@ -487,36 +468,6 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
     invalid_sampling = CisdModePairSamplingCfg(chol_head_size=6, pair_sample_size=16)
     with pytest.raises(ValueError, match="must not exceed"):
         build_mode_meas_ctx(ham, trial, energy_sampling=invalid_sampling)
-
-
-def test_reference_pair_sampling_recommendation_minimizes_feasible_work():
-    reference_terms = jnp.asarray([3.0, -1.0, 0.5, -0.25], dtype=jnp.complex128)
-    cfg = CisdModePairSamplingRecommendationCfg(
-        n_walkers=10,
-        target_tail_std_ha=0.4,
-        safety_factor=1.0,
-        candidate_head_fractions=(0.0, 0.5, 1.0),
-        candidate_sample_sizes=(1, 4, 16),
-    )
-
-    recommendation = recommend_cisd_mode_pair_sampling(reference_terms, cfg)
-
-    assert recommendation.sampling == CisdModePairSamplingCfg(
-        chol_head_size=2,
-        pair_sample_size=4,
-    )
-    assert recommendation.target_met
-    assert recommendation.estimated_pair_evaluations == 24
-    np.testing.assert_allclose(
-        recommendation.estimated_single_sample_std_ha,
-        np.sqrt(0.5),
-        rtol=1.0e-14,
-    )
-    np.testing.assert_allclose(
-        recommendation.estimated_reference_tail_std_ha,
-        np.sqrt(0.5 / 4.0),
-        rtol=1.0e-14,
-    )
 
 
 def test_pair_sampled_block_energy_full_head_matches_weighted_deterministic_energy():
