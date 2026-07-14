@@ -18,6 +18,7 @@ from trot.meas.cisd import (
 )
 from trot.meas.cisd_modes import (
     CisdModePairSamplingCfg,
+    _cisd_mode_chol_pair_terms,
     _cisd_mode_chol_terms_for_walkers,
     _cisd_mode_energy_common,
     build_meas_ctx as build_mode_meas_ctx,
@@ -468,6 +469,62 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
     invalid_sampling = CisdModePairSamplingCfg(chol_head_size=6, pair_sample_size=16)
     with pytest.raises(ValueError, match="must not exceed"):
         build_mode_meas_ctx(ham, trial, energy_sampling=invalid_sampling)
+
+
+def test_sampled_pair_terms_gather_inside_chunks_matches_full_pair_matrix():
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(923),
+        norb=trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    ctx = build_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=CisdMeasCfg(memory_mode="high"),
+        n_mode_chunks=2,
+    )
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed),
+                trial.norb,
+                trial.nocc_full,
+                mix=0.25,
+            )
+            for seed in (927, 929, 937)
+        ]
+    )
+    common = jax.vmap(
+        _cisd_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(walkers, ham, ctx, trial)
+    all_terms = _cisd_mode_chol_terms_for_walkers(
+        common,
+        ham.chol,
+        ctx.rot_chol,
+        ctx.lci1,
+        ctx,
+        trial,
+    )
+    sample_walker = jnp.asarray([2, 0, 1, 2, 1, 0, 2], dtype=jnp.int32)
+    sample_chol = jnp.asarray([4, 1, 3, 0, 2, 4, 2], dtype=jnp.int32)
+    expected = all_terms[sample_walker, sample_chol]
+
+    candidate = jax.jit(
+        lambda walker_indices, chol_indices: _cisd_mode_chol_pair_terms(
+            common,
+            walker_indices,
+            chol_indices,
+            ham,
+            ctx,
+            trial,
+            n_chunks=3,
+        )
+    )(sample_walker, sample_chol)
+
+    np.testing.assert_allclose(candidate, expected, rtol=2.0e-12, atol=2.0e-12)
 
 
 def test_pair_sampled_block_energy_full_head_matches_weighted_deterministic_energy():

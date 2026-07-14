@@ -357,26 +357,26 @@ def _cisd_mode_chol_terms_for_walkers(
 
 def _cisd_mode_chol_pair_terms(
     common: CisdModeEnergyCommon,
-    chol: jax.Array,
-    rot_chol: jax.Array,
-    lci1: jax.Array,
+    sample_walker: jax.Array,
+    sample_chol: jax.Array,
+    ham_data: HamChol,
     meas_ctx: CisdModeMeasCtx,
     trial_data: CisdModeTrial,
     n_chunks: int = 1,
 ) -> jax.Array:
-    """Return residual terms for aligned walker--Cholesky pairs."""
+    """Return sampled pair terms while gathering only one microbatch at a time."""
     return wk.vmap_chunked(
-        lambda common_i, chol_i, rot_chol_i, lci1_i: _cisd_mode_chol_terms(
-            common_i,
-            chol_i[None, ...],
-            rot_chol_i[None, ...],
-            lci1_i[None, ...],
+        lambda walker_i, chol_i: _cisd_mode_chol_terms(
+            tree_util.tree_map(lambda value: value[walker_i], common),
+            ham_data.chol[chol_i][None, ...],
+            meas_ctx.rot_chol[chol_i][None, ...],
+            meas_ctx.lci1[chol_i][None, ...],
             meas_ctx,
             trial_data,
         )[0],
         n_chunks=n_chunks,
-        in_axes=(0, 0, 0, 0),
-    )(common, chol, rot_chol, lci1)
+        in_axes=(0, 0),
+    )(sample_walker, sample_chol)
 
 
 def energy_kernel_rw_rh(
@@ -505,14 +505,13 @@ def pair_sampled_block_energy(
         p=meas_ctx.chol_tail_prob,
     )
     sample_chol = sample_chol_rel + sampling.chol_head_size
-    sample_common = tree_util.tree_map(lambda value: value[sample_walker], common)
     walker_batch_size = (int(weights_real.shape[0]) + n_chunks - 1) // n_chunks
     pair_n_chunks = (sampling.pair_sample_size + walker_batch_size - 1) // walker_batch_size
     sample_terms = _cisd_mode_chol_pair_terms(
-        sample_common,
-        ham_data.chol[sample_chol],
-        meas_ctx.rot_chol[sample_chol],
-        meas_ctx.lci1[sample_chol],
+        common,
+        sample_walker,
+        sample_chol,
+        ham_data,
         meas_ctx,
         trial_data,
         n_chunks=pair_n_chunks,
