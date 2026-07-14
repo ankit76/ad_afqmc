@@ -113,6 +113,28 @@ class MeasKernel(Protocol):
     def __call__(self, walker: Any, ham_data: Any, meas_ctx: Any, trial_data: Any) -> jax.Array: ...
 
 
+class BlockEnergyFn(Protocol):
+    """Population-level block-energy estimator.
+
+    Unlike a :class:`MeasKernel`, this estimator acts jointly on the full
+    walker population.  This supports estimators that sample walkers or
+    Hamiltonian terms while keeping their random stream independent of
+    propagation and stochastic reconfiguration.
+    """
+
+    def __call__(
+        self,
+        walkers: Any,
+        weights: jax.Array,
+        overlaps: jax.Array,
+        rng_key: jax.Array,
+        n_chunks: int,
+        ham_data: Any,
+        meas_ctx: Any,
+        trial_data: Any,
+    ) -> jax.Array: ...
+
+
 # usual kernel names
 k_energy = "energy"
 k_force_bias = "force_bias"
@@ -138,6 +160,10 @@ class MeasOps:
 
     # optional observables (e.g. "rdm1", "density_corr", ...)
     observables: Mapping[str, MeasKernel] = field(default_factory=dict)
+
+    # optional population-level energy estimator. When absent, the standard
+    # block vmaps kernels["energy"] over walkers and forms a weighted mean.
+    block_energy: BlockEnergyFn | None = None
 
     def has_kernel(self, name: str) -> bool:
         return name in self.kernels

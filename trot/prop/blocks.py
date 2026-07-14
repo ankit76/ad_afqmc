@@ -233,22 +233,51 @@ def block(
     )
     state = state._replace(walkers=walkers_new, overlaps=overlaps_new)
 
-    e_kernel = meas_ops.require_kernel(k_energy)
-    e_samples = wk.vmap_chunked(e_kernel, n_chunks=params.n_chunks, in_axes=(0, None, None, None))(
-        state.walkers, ham_data, meas_ctx, trial_data
-    )
-    e_samples = jnp.real(e_samples)
-
     thresh = jnp.sqrt(2.0 / jnp.asarray(params.dt))
     e_ref = state.e_estimate
-    is_nan = ~jnp.isfinite(e_samples)
-    e_samples = jnp.where(is_nan | (jnp.abs(e_samples - e_ref) > thresh), e_ref, e_samples)
+    if meas_ops.block_energy is None:
+        e_kernel = meas_ops.require_kernel(k_energy)
+        e_samples = wk.vmap_chunked(
+            e_kernel,
+            n_chunks=params.n_chunks,
+            in_axes=(0, None, None, None),
+        )(state.walkers, ham_data, meas_ctx, trial_data)
+        e_samples = jnp.real(e_samples)
 
-    weights = jnp.where(is_nan, 0.0, state.weights)
-    w_sum = jnp.sum(weights)
-    w_sum_safe = jnp.where(w_sum == 0, 1.0, w_sum)
-    e_block = jnp.sum(weights * e_samples) / w_sum_safe
-    e_block = jnp.where(w_sum == 0, e_ref, e_block)
+        is_nan = ~jnp.isfinite(e_samples)
+        e_samples = jnp.where(
+            is_nan | (jnp.abs(e_samples - e_ref) > thresh),
+            e_ref,
+            e_samples,
+        )
+
+        weights = jnp.where(is_nan, 0.0, state.weights)
+        w_sum = jnp.sum(weights)
+        w_sum_safe = jnp.where(w_sum == 0, 1.0, w_sum)
+        e_block = jnp.sum(weights * e_samples) / w_sum_safe
+        e_block = jnp.where(w_sum == 0, e_ref, e_block)
+
+        # Preserve the established random stream exactly for existing trials.
+        key_next, key_sr = jax.random.split(state.rng_key)
+    else:
+        key_next, key_energy, key_sr = jax.random.split(state.rng_key, 3)
+        weights = state.weights
+        w_sum = jnp.sum(weights)
+        w_sum_safe = jnp.where(w_sum == 0, 1.0, w_sum)
+        e_block = jnp.real(
+            meas_ops.block_energy(
+                state.walkers,
+                weights,
+                state.overlaps,
+                key_energy,
+                params.n_chunks,
+                ham_data,
+                meas_ctx,
+                trial_data,
+            )
+        )
+        is_bad = (~jnp.isfinite(e_block)) | (jnp.abs(e_block - e_ref) > thresh)
+        e_block = jnp.where((w_sum == 0) | is_bad, e_ref, e_block)
 
     alpha = jnp.asarray(params.shift_ema, dtype=jnp.result_type(e_block))
     state = state._replace(
@@ -267,8 +296,7 @@ def block(
         zero = jnp.zeros_like(num)
         obs_samples[name] = jnp.where(w_sum == 0, zero, num / w_sum_safe)
 
-    key, subkey = jax.random.split(state.rng_key)
-    zeta = jax.random.uniform(subkey)
+    zeta = jax.random.uniform(key_sr)
     w_sr, weights_sr = sr_fn(state.walkers, state.weights, zeta, sys.walker_kind)
     overlaps_sr = wk.vmap_chunked(meas_ops.overlap, n_chunks=params.n_chunks, in_axes=(0, None))(
         w_sr, trial_data
@@ -277,7 +305,7 @@ def block(
         walkers=w_sr,
         weights=weights_sr,
         overlaps=overlaps_sr,
-        rng_key=key,
+        rng_key=key_next,
     )
 
     obs = BlockObs(

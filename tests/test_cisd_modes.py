@@ -17,11 +17,15 @@ from trot.meas.cisd import (
     force_bias_kernel_rw_rh_high as dense_force_bias_kernel,
 )
 from trot.meas.cisd_modes import (
+    CisdModePairSamplingCfg,
+    _cisd_mode_chol_terms_for_walkers,
+    _cisd_mode_energy_common,
     build_meas_ctx as build_mode_meas_ctx,
     energy_kernel_rw_rh as mode_energy_kernel,
     force_bias_kernel_rw_rh as mode_force_bias_kernel,
     get_cisd_mode_meas_cfg,
     make_cisd_mode_meas_ops,
+    pair_sampled_block_energy,
 )
 from trot.trial.cisd import CisdTrial, overlap_r as dense_overlap_r
 from trot.trial.cisd_modes import (
@@ -425,3 +429,164 @@ def test_mode_energy_is_independent_of_n_mode_chunks_in_double_precision():
         )
         candidate = jax.jit(mode_energy_kernel)(walker, ham, mode_ctx, mode_trial)
         np.testing.assert_allclose(candidate, reference, rtol=2.0e-12, atol=2.0e-12)
+
+
+def test_pair_sampling_config_validation_and_factory_opt_in():
+    with pytest.raises(ValueError, match="chol_head_size must be nonnegative"):
+        CisdModePairSamplingCfg(chol_head_size=-1, pair_sample_size=8)
+    with pytest.raises(ValueError, match="pair_sample_size must be positive"):
+        CisdModePairSamplingCfg(chol_head_size=0, pair_sample_size=0)
+
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    sys = System(
+        norb=trial.norb,
+        nelec=(trial.nocc_full, trial.nocc_full),
+        walker_kind="restricted",
+    )
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(919),
+        norb=trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    sampling = CisdModePairSamplingCfg(chol_head_size=2, pair_sample_size=16)
+    deterministic_ops = make_cisd_mode_meas_ops(sys, mixed_precision=False)
+    sampled_ops = make_cisd_mode_meas_ops(
+        sys,
+        mixed_precision=False,
+        energy_sampling=sampling,
+    )
+    assert deterministic_ops.block_energy is None
+    assert sampled_ops.block_energy is pair_sampled_block_energy
+
+    sampled_ctx = sampled_ops.build_meas_ctx(ham, trial)
+    assert sampled_ctx.energy_sampling == sampling
+    assert sampled_ctx.chol_tail_prob.shape == (3,)
+    np.testing.assert_allclose(jnp.sum(sampled_ctx.chol_tail_prob), 1.0, atol=1.0e-14)
+    assert bool(jnp.all(sampled_ctx.chol_tail_prob > 0.0))
+
+    invalid_sampling = CisdModePairSamplingCfg(chol_head_size=6, pair_sample_size=16)
+    with pytest.raises(ValueError, match="must not exceed"):
+        build_mode_meas_ctx(ham, trial, energy_sampling=invalid_sampling)
+
+
+def test_pair_sampled_block_energy_full_head_matches_weighted_deterministic_energy():
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(929),
+        norb=trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    sampling = CisdModePairSamplingCfg(chol_head_size=5, pair_sample_size=8)
+    ctx = build_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=CisdMeasCfg(memory_mode="high"),
+        n_mode_chunks=2,
+        energy_sampling=sampling,
+    )
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed),
+                trial.norb,
+                trial.nocc_full,
+                mix=0.25,
+            )
+            for seed in (937, 941, 947)
+        ]
+    )
+    weights = jnp.asarray([1.0, 2.0, 4.0], dtype=jnp.float64)
+    exact = jax.vmap(mode_energy_kernel, in_axes=(0, None, None, None))(
+        walkers,
+        ham,
+        ctx,
+        trial,
+    )
+    expected = jnp.sum(weights * jnp.real(exact)) / jnp.sum(weights)
+    candidate = jax.jit(pair_sampled_block_energy, static_argnums=4)(
+        walkers,
+        weights,
+        jnp.ones_like(weights, dtype=jnp.complex128),
+        jax.random.PRNGKey(953),
+        2,
+        ham,
+        ctx,
+        trial,
+    )
+    assert ctx.chol_tail_prob.shape == (0,)
+    np.testing.assert_allclose(candidate, expected, rtol=2.0e-12, atol=2.0e-12)
+
+
+def test_pair_sampled_tail_matches_exact_energy_within_analytic_sampling_error():
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(967),
+        norb=trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    pair_sample_size = 8192
+    sampling = CisdModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=pair_sample_size,
+    )
+    ctx = build_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=CisdMeasCfg(memory_mode="high"),
+        n_mode_chunks=2,
+        energy_sampling=sampling,
+    )
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed),
+                trial.norb,
+                trial.nocc_full,
+                mix=0.25,
+            )
+            for seed in (971, 977, 983)
+        ]
+    )
+    weights = jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float64)
+    norm_weights = weights / jnp.sum(weights)
+    common = jax.vmap(
+        _cisd_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(walkers, ham, ctx, trial)
+    all_terms = _cisd_mode_chol_terms_for_walkers(
+        common,
+        ham.chol,
+        ctx.rot_chol,
+        ctx.lci1,
+        ctx,
+        trial,
+    )
+    exact_per_walker = jnp.real(common.base + jnp.sum(all_terms, axis=1))
+    exact_block = jnp.sum(norm_weights * exact_per_walker)
+
+    tail_terms = jnp.real(all_terms[:, sampling.chol_head_size :])
+    importance_values = tail_terms / ctx.chol_tail_prob[None, :]
+    joint_prob = norm_weights[:, None] * ctx.chol_tail_prob[None, :]
+    tail_mean = jnp.sum(joint_prob * importance_values)
+    tail_variance = jnp.sum(joint_prob * (importance_values - tail_mean) ** 2)
+    standard_error = jnp.sqrt(tail_variance / pair_sample_size)
+
+    candidate = jax.jit(pair_sampled_block_energy, static_argnums=4)(
+        walkers,
+        weights,
+        jnp.ones_like(weights, dtype=jnp.complex128),
+        jax.random.PRNGKey(991),
+        2,
+        ham,
+        ctx,
+        trial,
+    )
+    np.testing.assert_allclose(
+        candidate,
+        exact_block,
+        rtol=0.0,
+        atol=float(6.0 * standard_error + 1.0e-12),
+    )
