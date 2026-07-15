@@ -30,6 +30,15 @@ from .walkers import stochastic_reconfiguration
 print = partial(print, flush=True)
 
 _AUTO_CHUNK_MEMORY_FRACTION = 0.8
+_COMPILER_MEMORY_ERROR_MARKERS = (
+    "resource_exhausted",
+    "resource exhausted",
+    "out of memory",
+    "failed to allocate",
+    # GPU GEMM autotuning can report this after every candidate kernel fails
+    # to produce a reference result because its buffers could not be allocated.
+    "no reference output found",
+)
 
 
 class QmcResult(NamedTuple):
@@ -191,6 +200,13 @@ def _format_mib(n_bytes: int) -> str:
     return f"{n_bytes / 1024**2:.1f} MiB"
 
 
+def _is_compiler_memory_error(exc: jax.errors.JaxRuntimeError) -> bool:
+    """Recognize recoverable compiler/autotuner memory failures."""
+
+    message = str(exc).lower()
+    return any(marker in message for marker in _COMPILER_MEMORY_ERROR_MARKERS)
+
+
 def _make_run_blocks_with_auto_chunks(
     *,
     block_fn: BlockFn,
@@ -254,14 +270,33 @@ def _make_run_blocks_with_auto_chunks(
         candidate_params = dataclasses.replace(params, n_chunks=candidate)
         run_blocks = build(candidate_params)
         start = time.perf_counter()
-        compiled = run_blocks.lower(
-            state,
-            ham_data=ham_data,
-            trial_data=trial_data,
-            meas_ctx=meas_ctx,
-            prop_ctx=prop_ctx,
-            n_blocks=probe_n_blocks,
-        ).compile()
+        try:
+            compiled = run_blocks.lower(
+                state,
+                ham_data=ham_data,
+                trial_data=trial_data,
+                meas_ctx=meas_ctx,
+                prop_ctx=prop_ctx,
+                n_blocks=probe_n_blocks,
+            ).compile()
+        except jax.errors.JaxRuntimeError as exc:
+            if not _is_compiler_memory_error(exc):
+                raise
+            compile_seconds = time.perf_counter() - start
+            if candidate >= n_walkers:
+                raise MemoryError(
+                    "The one-walker chunk failed to compile because the GPU "
+                    "compiler or autotuner ran out of memory. Increase internal "
+                    "estimator chunking or use a device with more memory."
+                ) from exc
+            next_candidate = min(n_walkers, 2 * candidate)
+            print(
+                f"[chunks] n_chunks={candidate}: compiler/autotuner memory failure "
+                f"after {compile_seconds:.1f} s; retrying with "
+                f"n_chunks={next_candidate}."
+            )
+            candidate = next_candidate
+            continue
         compile_seconds = time.perf_counter() - start
         estimated_bytes = _compiled_memory_bytes(compiled)
         if estimated_bytes is None:

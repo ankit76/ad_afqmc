@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import jax
 import pytest
 
 from trot import driver
@@ -28,9 +29,15 @@ class _FakeCompiled:
 
 
 class _FakeRunBlocks:
-    def __init__(self, n_chunks: int, estimated_bytes: int | None):
+    def __init__(
+        self,
+        n_chunks: int,
+        estimated_bytes: int | None,
+        compile_error: Exception | None = None,
+    ):
         self.n_chunks = n_chunks
         self.estimated_bytes = estimated_bytes
+        self.compile_error = compile_error
         self.lower_kwargs: dict[str, Any] | None = None
 
     def lower(self, state, **kwargs):
@@ -39,15 +46,27 @@ class _FakeRunBlocks:
         return self
 
     def compile(self):
+        if self.compile_error is not None:
+            raise self.compile_error
         return _FakeCompiled(self.estimated_bytes)
 
 
-def _select(monkeypatch, params: QmcParams, estimates: dict[int, int | None]):
+def _select(
+    monkeypatch,
+    params: QmcParams,
+    estimates: dict[int, int | None],
+    compile_errors: dict[int, Exception] | None = None,
+):
     built: list[_FakeRunBlocks] = []
+    compile_errors = {} if compile_errors is None else compile_errors
 
     def fake_make_run_blocks(*, params, **kwargs):
         del kwargs
-        run_blocks = _FakeRunBlocks(params.n_chunks, estimates[params.n_chunks])
+        run_blocks = _FakeRunBlocks(
+            params.n_chunks,
+            estimates[params.n_chunks],
+            compile_errors.get(params.n_chunks),
+        )
         built.append(run_blocks)
         return run_blocks
 
@@ -105,6 +124,34 @@ def test_auto_chunks_increases_until_compiler_estimate_fits(monkeypatch):
     assert [candidate.n_chunks for candidate in built] == [1, 2]
     assert selected.n_chunks == 2
     assert run_blocks is built[-1]
+
+
+def test_auto_chunks_retries_compiler_memory_failure_with_twice_the_chunks(monkeypatch):
+    params = QmcParams(n_walkers=8, n_chunks=1, auto_n_chunks=True)
+    compile_error = jax.errors.JaxRuntimeError("INTERNAL: No reference output found!")
+    selected, run_blocks, built = _select(
+        monkeypatch,
+        params,
+        {1: 0, 2: 700},
+        compile_errors={1: compile_error},
+    )
+
+    assert [candidate.n_chunks for candidate in built] == [1, 2]
+    assert selected.n_chunks == 2
+    assert run_blocks is built[-1]
+
+
+def test_auto_chunks_reraises_unrecognized_compiler_failure(monkeypatch):
+    params = QmcParams(n_walkers=8, n_chunks=1, auto_n_chunks=True)
+    compile_error = jax.errors.JaxRuntimeError("INTERNAL: invalid compiler IR")
+
+    with pytest.raises(jax.errors.JaxRuntimeError, match="invalid compiler IR"):
+        _select(
+            monkeypatch,
+            params,
+            {1: 0},
+            compile_errors={1: compile_error},
+        )
 
 
 def test_auto_chunks_keeps_compiled_candidate_without_memory_analysis(monkeypatch):
