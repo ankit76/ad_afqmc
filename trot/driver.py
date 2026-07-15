@@ -514,6 +514,17 @@ def run_qmc(
         )
     if meas_ops.retune_block_energy is not None:
         print("\nRetuning block-energy sampling after equilibration:")
+
+        def advance_equilibration_blocks(state, *, n_blocks: int):
+            return run_blocks(
+                state,
+                ham_data=ham_data,
+                trial_data=trial_data,
+                meas_ctx=meas_ctx,
+                prop_ctx=prop_ctx,
+                n_blocks=n_blocks,
+            )
+
         retuned = meas_ops.retune_block_energy(
             state,
             jnp.asarray(block_e_eq[1:]),
@@ -522,6 +533,7 @@ def run_qmc(
             ham_data,
             meas_ctx,
             trial_data,
+            advance_blocks=advance_equilibration_blocks,
         )
         if retuned.initial_n_chunks <= 0:
             raise ValueError("retuned initial_n_chunks must be positive.")

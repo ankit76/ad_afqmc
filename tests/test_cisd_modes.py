@@ -26,6 +26,7 @@ from trot.meas.cisd_modes import (
     _cisd_mode_chol_pair_terms,
     _cisd_mode_chol_terms_for_walkers,
     _cisd_mode_energy_common,
+    average_cisd_mode_population_statistics,
     build_meas_ctx as build_mode_meas_ctx,
     configure_cisd_mode_pair_sampling,
     energy_kernel_rw_rh as mode_energy_kernel,
@@ -33,9 +34,11 @@ from trot.meas.cisd_modes import (
     get_cisd_mode_meas_cfg,
     make_cisd_mode_meas_ops,
     pair_sampled_block_energy,
+    retune_cisd_mode_pair_sampling,
     select_cisd_mode_pair_sampling,
     stream_cisd_mode_population_statistics,
 )
+from trot.prop.types import PropState
 from trot.trial.cisd import CisdTrial, overlap_r as dense_overlap_r
 from trot.trial.cisd_modes import (
     CisdModeTrial,
@@ -461,6 +464,10 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
         CisdModePairTuningCfg(target_tail_std_fraction=0.0)
     with pytest.raises(ValueError, match="guide_policy"):
         CisdModePairTuningCfg(guide_policy="invalid")  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="tuning_population_count"):
+        CisdModePairTuningCfg(tuning_population_count=0)
+    with pytest.raises(ValueError, match="tuning_population_spacing_blocks"):
+        CisdModePairTuningCfg(tuning_population_spacing_blocks=0)
 
     _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
     sys = System(
@@ -915,6 +922,50 @@ def test_population_tuner_selects_least_work_candidate_meeting_noise_target():
     np.testing.assert_allclose(selected.calibration_std_ha, 0.16)
 
 
+def test_population_tuner_averages_temporal_second_moments_and_conditional_variances():
+    def make_stats(means: list[float]) -> CisdModePopulationStats:
+        return CisdModePopulationStats(
+            term_means=np.asarray(means, dtype=np.float64),
+            term_second_moments=np.asarray([2.0, 2.0]),
+            rms_scores=np.sqrt(np.asarray([2.0, 2.0])),
+            local_energies=np.zeros(2, dtype=np.float64),
+            exact_block_energy_ha=float(means[0]),
+            independent_population_std_ha=0.2,
+            wall_seconds=1.0,
+        )
+
+    averaged = average_cisd_mode_population_statistics(
+        [make_stats([1.0, 0.0]), make_stats([-1.0, 0.0])]
+    )
+    np.testing.assert_allclose(averaged.term_means, np.zeros(2))
+    np.testing.assert_allclose(averaged.term_second_moments, np.asarray([2.0, 2.0]))
+    np.testing.assert_allclose(averaged.rms_scores, np.sqrt(np.asarray([2.0, 2.0])))
+    assert averaged.population_term_means is not None
+    np.testing.assert_allclose(
+        averaged.population_term_means,
+        np.asarray([[1.0, 0.0], [-1.0, 0.0]]),
+    )
+    assert averaged.exact_block_energy_ha == -1.0
+    assert averaged.wall_seconds == 2.0
+
+    selected = select_cisd_mode_pair_sampling(
+        averaged,
+        CisdModePairTuningCfg(
+            guide_policy="population_rms",
+            target_tail_std_ha=1.0,
+            safety_factor=1.0,
+            candidate_sample_sizes=(100,),
+            maximum_head_fraction=0.0,
+            tail_probability_uniform_mix=0.0,
+            track_half_sample_diagnostic=False,
+        ),
+        n_walkers=10,
+    )
+    # q=(1/2, 1/2), so E[X^2]=2/(1/2)+2/(1/2)=8. The
+    # population-conditional tail means are +1 and -1, hence E[E[X|b]^2]=1.
+    assert selected.estimated_single_pair_variance_ha2 == 7.0
+
+
 def test_hf_guide_tuner_uses_population_moments_to_select_ranked_estimator():
     stats = CisdModePopulationStats(
         term_means=np.zeros(4, dtype=np.float64),
@@ -968,3 +1019,80 @@ def test_hf_guide_tuner_uses_population_moments_to_select_ranked_estimator():
     np.testing.assert_array_equal(configured.chol_head_indices, np.asarray([1, 2]))
     np.testing.assert_array_equal(configured.chol_tail_indices, np.asarray([0, 3]))
     np.testing.assert_allclose(configured.chol_tail_prob, np.asarray([2.0 / 3.0, 1.0 / 3.0]))
+
+
+def test_retune_collects_temporally_separated_populations():
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(927),
+        norb=trial.norb,
+        n_chol=4,
+        basis="restricted",
+    )
+    equil_sampling = CisdModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=16,
+        rank_head_by_guide=True,
+    )
+    ctx = build_mode_meas_ctx(ham, trial, energy_sampling=equil_sampling)
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed),
+                trial.norb,
+                trial.nocc_full,
+                mix=0.1,
+            )
+            for seed in (931, 933)
+        ]
+    )
+    state = PropState(
+        walkers=walkers,
+        weights=jnp.ones(2, dtype=jnp.float64),
+        overlaps=jnp.ones(2, dtype=jnp.complex128),
+        rng_key=jax.random.PRNGKey(935),
+        pop_control_ene_shift=jnp.asarray(0.0),
+        e_estimate=jnp.asarray(0.0),
+        node_encounters=jnp.asarray(0),
+    )
+    advance_calls = []
+
+    def advance_blocks(state, *, n_blocks: int):
+        advance_calls.append(n_blocks)
+        return (
+            state,
+            {
+                "energy": jnp.zeros(n_blocks, dtype=jnp.float64),
+                "weight": jnp.ones(n_blocks, dtype=jnp.float64),
+            },
+            (),
+        )
+
+    retuned = retune_cisd_mode_pair_sampling(
+        state,
+        jnp.zeros(4, dtype=jnp.float64),
+        jnp.ones(4, dtype=jnp.float64),
+        None,
+        ham,
+        ctx,
+        trial,
+        advance_blocks=advance_blocks,
+        tuning_cfg=CisdModePairTuningCfg(
+            guide_policy="population_rms",
+            target_tail_std_ha=1.0e6,
+            safety_factor=1.0,
+            candidate_sample_sizes=(16,),
+            tuning_n_chunks=1,
+            tuning_chol_batch_size=2,
+            tuning_population_count=3,
+            tuning_population_spacing_blocks=2,
+            tail_probability_uniform_mix=0.0,
+            track_half_sample_diagnostic=False,
+            settling_blocks=0,
+        ),
+    )
+
+    assert advance_calls == [2, 2]
+    assert retuned.meas_ctx.energy_sampling.chol_head_size == 4
+    assert retuned.meas_ctx.energy_sampling.pair_sample_size == 16
+    assert retuned.settling_blocks == 0

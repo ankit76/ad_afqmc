@@ -231,8 +231,11 @@ def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
         ham_data,
         meas_ctx,
         trial_data,
+        *,
+        advance_blocks,
     ):
         del params, ham_data, trial_data
+        assert callable(advance_blocks)
         retune_calls.append(
             (
                 np.asarray(equilibration_energies),

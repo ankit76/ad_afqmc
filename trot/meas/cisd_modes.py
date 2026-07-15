@@ -13,6 +13,7 @@ from jax import lax, tree_util
 
 from .. import walkers as wk
 from ..core.ops import (
+    BlockEnergyAdvanceFn,
     BlockEnergyEstimate,
     BlockEnergyRetuneResult,
     MeasOps,
@@ -140,7 +141,9 @@ class CisdModePairTuningCfg:
 
     The equilibrated population always supplies the moments used to predict
     the variance of candidate estimators. ``guide_policy`` controls only the
-    Cholesky head ranking and tail sampling probabilities.
+    Cholesky head ranking and tail sampling probabilities. Multiple tuning
+    populations are collected sequentially and discarded, with
+    ``tuning_population_spacing_blocks`` propagation blocks between them.
     """
 
     guide_policy: Literal["population_rms", "hf"] = "population_rms"
@@ -162,6 +165,8 @@ class CisdModePairTuningCfg:
     head_size_stride: int = 1
     tuning_n_chunks: int = 10
     tuning_chol_batch_size: int = 16
+    tuning_population_count: int = 1
+    tuning_population_spacing_blocks: int = 2
     production_initial_n_chunks: int = 1
     production_head_chol_batch_size: int = 0
     tail_probability_uniform_mix: float = 0.01
@@ -195,6 +200,10 @@ class CisdModePairTuningCfg:
             raise ValueError("tuning_n_chunks must be positive.")
         if self.tuning_chol_batch_size <= 0:
             raise ValueError("tuning_chol_batch_size must be positive.")
+        if self.tuning_population_count <= 0:
+            raise ValueError("tuning_population_count must be positive.")
+        if self.tuning_population_spacing_blocks <= 0:
+            raise ValueError("tuning_population_spacing_blocks must be positive.")
         if self.production_initial_n_chunks <= 0:
             raise ValueError("production_initial_n_chunks must be positive.")
         if self.production_head_chol_batch_size < 0:
@@ -216,6 +225,7 @@ class CisdModePopulationStats:
     exact_block_energy_ha: float
     independent_population_std_ha: float
     wall_seconds: float
+    population_term_means: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -808,6 +818,33 @@ def pair_sampled_block_energy(
     )
 
 
+@jax.jit
+def _cisd_mode_population_common_batch(walkers, ham_data, meas_ctx, trial_data):
+    return jax.vmap(
+        _cisd_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(walkers, ham_data, meas_ctx, trial_data)
+
+
+@jax.jit
+def _cisd_mode_population_term_batch(
+    common,
+    chol_indices,
+    ham_data,
+    meas_ctx,
+    trial_data,
+):
+    return _cisd_mode_chol_terms_for_walkers(
+        common,
+        ham_data.chol[chol_indices],
+        meas_ctx.rot_chol[chol_indices],
+        meas_ctx.lci1[chol_indices],
+        meas_ctx,
+        trial_data,
+        n_chunks=1,
+    )
+
+
 def stream_cisd_mode_population_statistics(
     walkers: jax.Array,
     weights: jax.Array,
@@ -841,25 +878,6 @@ def stream_cisd_mode_population_statistics(
         else np.full(n_walkers, 1.0 / n_walkers, dtype=np.float64)
     )
 
-    @jax.jit
-    def build_common_batch(walkers_i, ham_i, ctx_i, trial_i):
-        return jax.vmap(
-            _cisd_mode_energy_common,
-            in_axes=(0, None, None, None),
-        )(walkers_i, ham_i, ctx_i, trial_i)
-
-    @jax.jit
-    def evaluate_term_batch(common_i, chol_indices_i, ham_i, ctx_i, trial_i):
-        return _cisd_mode_chol_terms_for_walkers(
-            common_i,
-            ham_i.chol[chol_indices_i],
-            ctx_i.rot_chol[chol_indices_i],
-            ctx_i.lci1[chol_indices_i],
-            ctx_i,
-            trial_i,
-            n_chunks=1,
-        )
-
     term_means = np.zeros(n_chol, dtype=np.float64)
     term_second_moments = np.zeros(n_chol, dtype=np.float64)
     local_energies = np.empty(n_walkers, dtype=np.float64)
@@ -871,7 +889,7 @@ def stream_cisd_mode_population_statistics(
             walker_start + np.arange(walker_batch_size, dtype=np.int32),
             n_walkers - 1,
         )
-        common = build_common_batch(
+        common = _cisd_mode_population_common_batch(
             walkers[jnp.asarray(walker_indices)],
             ham_data,
             meas_ctx,
@@ -889,7 +907,7 @@ def stream_cisd_mode_population_statistics(
                 chol_start + np.arange(chol_batch_size, dtype=np.int32),
                 n_chol - 1,
             )
-            terms = evaluate_term_batch(
+            terms = _cisd_mode_population_term_batch(
                 common,
                 jnp.asarray(chol_indices),
                 ham_data,
@@ -929,6 +947,63 @@ def stream_cisd_mode_population_statistics(
         exact_block_energy_ha=exact_block_energy,
         independent_population_std_ha=independent_population_std,
         wall_seconds=time.perf_counter() - start_time,
+        population_term_means=term_means[None, :],
+    )
+
+
+def average_cisd_mode_population_statistics(
+    population_stats: list[CisdModePopulationStats],
+) -> CisdModePopulationStats:
+    """Average guide moments while retaining temporal means for variance tuning."""
+
+    if not population_stats:
+        raise ValueError("population_stats must be nonempty.")
+    n_chol = population_stats[0].term_means.size
+    if any(
+        stats.term_means.shape != (n_chol,) or stats.term_second_moments.shape != (n_chol,)
+        for stats in population_stats
+    ):
+        raise ValueError("all population statistics must have matching Cholesky shapes.")
+
+    population_means = np.stack(
+        [np.asarray(stats.term_means, dtype=np.float64) for stats in population_stats]
+    )
+    mean_term_means = np.asarray(
+        np.mean(population_means, axis=0, dtype=np.float64),
+        dtype=np.float64,
+    )
+    second_moments = np.asarray(
+        np.mean(
+            np.stack(
+                [
+                    np.asarray(stats.term_second_moments, dtype=np.float64)
+                    for stats in population_stats
+                ]
+            ),
+            axis=0,
+            dtype=np.float64,
+        ),
+        dtype=np.float64,
+    )
+    last = population_stats[-1]
+    return CisdModePopulationStats(
+        term_means=mean_term_means,
+        term_second_moments=second_moments,
+        rms_scores=np.sqrt(np.maximum(second_moments, 0.0)),
+        local_energies=last.local_energies,
+        exact_block_energy_ha=last.exact_block_energy_ha,
+        independent_population_std_ha=float(
+            np.sqrt(
+                np.mean(
+                    np.asarray(
+                        [stats.independent_population_std_ha**2 for stats in population_stats],
+                        dtype=np.float64,
+                    )
+                )
+            )
+        ),
+        wall_seconds=float(sum(stats.wall_seconds for stats in population_stats)),
+        population_term_means=population_means,
     )
 
 
@@ -948,10 +1023,18 @@ def select_cisd_mode_pair_sampling(
     rms_scores = np.asarray(stats.rms_scores, dtype=np.float64)
     means = np.asarray(stats.term_means, dtype=np.float64)
     second_moments = np.asarray(stats.term_second_moments, dtype=np.float64)
+    population_means = (
+        means[None, :]
+        if stats.population_term_means is None
+        else np.asarray(stats.population_term_means, dtype=np.float64)
+    )
     if (
         rms_scores.ndim != 1
         or means.shape != rms_scores.shape
         or second_moments.shape != rms_scores.shape
+        or population_means.ndim != 2
+        or population_means.shape[1:] != rms_scores.shape
+        or population_means.shape[0] == 0
         or rms_scores.size == 0
     ):
         raise ValueError("population statistics must contain matching nonempty Cholesky arrays.")
@@ -959,6 +1042,7 @@ def select_cisd_mode_pair_sampling(
         not np.all(np.isfinite(rms_scores))
         or not np.all(np.isfinite(means))
         or not np.all(np.isfinite(second_moments))
+        or not np.all(np.isfinite(population_means))
         or np.any(second_moments < 0.0)
     ):
         raise ValueError("population Cholesky statistics must be finite.")
@@ -996,9 +1080,17 @@ def select_cisd_mode_pair_sampling(
     order = np.argsort(-guide_scores, kind="stable")
     ordered_guide_scores = guide_scores[order]
     ordered_second_moments = second_moments[order]
-    ordered_means = means[order]
-    tail_mean_sum = np.concatenate(
-        (np.cumsum(ordered_means[::-1], dtype=np.float64)[::-1], np.zeros(1))
+    ordered_population_means = population_means[:, order]
+    tail_mean_sums = np.concatenate(
+        (
+            np.cumsum(ordered_population_means[:, ::-1], axis=1, dtype=np.float64)[:, ::-1],
+            np.zeros((population_means.shape[0], 1), dtype=np.float64),
+        ),
+        axis=1,
+    )
+    tail_mean_squares = np.asarray(
+        np.mean(tail_mean_sums**2, axis=0, dtype=np.float64),
+        dtype=np.float64,
     )
 
     minimum_head = max(0, min(n_chol, int(round(cfg.minimum_head_fraction * n_chol))))
@@ -1023,7 +1115,7 @@ def select_cisd_mode_pair_sampling(
             )
             variance = max(
                 0.0,
-                float(second_moment - tail_mean_sum[head_size] ** 2),
+                float(second_moment - tail_mean_squares[head_size]),
             )
         for sample_size in sample_sizes:
             tail_std = math.sqrt(variance / sample_size) if head_size < n_chol else 0.0
@@ -1081,29 +1173,66 @@ def retune_cisd_mode_pair_sampling(
     meas_ctx: CisdModeMeasCtx,
     trial_data: CisdModeTrial,
     *,
+    advance_blocks: BlockEnergyAdvanceFn,
     tuning_cfg: CisdModePairTuningCfg,
 ) -> BlockEnergyRetuneResult:
     """Tune and install the requested production guide after equilibration."""
 
     del equilibration_weights, params
-    print(
-        "[sampling] streaming population statistics: "
-        f"walker_chunks={min(tuning_cfg.tuning_n_chunks, int(state.walkers.shape[0]))}, "
-        f"chol_batch_size={tuning_cfg.tuning_chol_batch_size}."
-    )
-    stats = stream_cisd_mode_population_statistics(
-        state.walkers,
-        state.weights,
-        ham_data,
-        meas_ctx,
-        trial_data,
-        n_walker_chunks=tuning_cfg.tuning_n_chunks,
-        chol_batch_size=tuning_cfg.tuning_chol_batch_size,
-    )
+    population_stats = []
+    additional_equilibration_energies = []
+    for population_index in range(tuning_cfg.tuning_population_count):
+        if population_index > 0:
+            spacing = tuning_cfg.tuning_population_spacing_blocks
+            print(
+                f"[sampling] advancing {spacing} calibration blocks before "
+                f"population {population_index + 1}/{tuning_cfg.tuning_population_count}."
+            )
+            state, scalars, _ = advance_blocks(state, n_blocks=spacing)
+            jax.block_until_ready(state)
+            additional_equilibration_energies.extend(
+                np.asarray(jax.device_get(scalars["energy"]), dtype=np.float64).tolist()
+            )
+
+        print(
+            "[sampling] streaming population statistics: "
+            f"population={population_index + 1}/{tuning_cfg.tuning_population_count}, "
+            f"walker_chunks={min(tuning_cfg.tuning_n_chunks, int(state.walkers.shape[0]))}, "
+            f"chol_batch_size={tuning_cfg.tuning_chol_batch_size}."
+        )
+        stats_i = stream_cisd_mode_population_statistics(
+            state.walkers,
+            state.weights,
+            ham_data,
+            meas_ctx,
+            trial_data,
+            n_walker_chunks=tuning_cfg.tuning_n_chunks,
+            chol_batch_size=tuning_cfg.tuning_chol_batch_size,
+        )
+        population_stats.append(stats_i)
+        state = state._replace(
+            e_estimate=jnp.asarray(
+                stats_i.exact_block_energy_ha,
+                dtype=jnp.result_type(state.e_estimate),
+            )
+        )
+        print(
+            f"[sampling] population {population_index + 1} exact energy="
+            f"{stats_i.exact_block_energy_ha:.10f} Ha, "
+            f"statistics_seconds={stats_i.wall_seconds:.1f}."
+        )
+    stats = average_cisd_mode_population_statistics(population_stats)
     equilibration_values = np.asarray(
         jax.device_get(equilibration_energies),
         dtype=np.float64,
     )
+    if additional_equilibration_energies:
+        equilibration_values = np.concatenate(
+            (
+                equilibration_values,
+                np.asarray(additional_equilibration_energies, dtype=np.float64),
+            )
+        )
     late_equilibration_values = equilibration_values[equilibration_values.size // 2 :]
     late_equilibration_std = (
         float(np.std(late_equilibration_values, ddof=1))
@@ -1148,8 +1277,9 @@ def retune_cisd_mode_pair_sampling(
     )
     print(
         "[sampling] population-moment tuning sweep complete: "
+        f"populations={tuning_cfg.tuning_population_count}, "
         f"seconds={stats.wall_seconds:.1f}, "
-        f"exact_snapshot_energy={stats.exact_block_energy_ha:.10f} Ha, "
+        f"final_exact_snapshot_energy={stats.exact_block_energy_ha:.10f} Ha, "
         f"independent_population_std={stats.independent_population_std_ha:.3e} Ha, "
         f"late_equilibration_block_std={late_equilibration_std:.3e} Ha."
     )
@@ -1193,8 +1323,9 @@ def make_cisd_mode_meas_ops(
     ``energy_tuning`` is also supplied, that estimator is used during
     equilibration, then a bounded-memory deterministic sweep builds the
     population moments needed to choose the production head and sample count.
-    The configured tuning guide controls the production head ranking and tail
-    probabilities.
+    When requested, several temporally separated populations are averaged
+    without retaining multiple walker populations. The configured tuning guide
+    controls the production head ranking and tail probabilities.
     All retained modes remain deterministic in either case. The result is
     exact when all pair-space modes are retained and is the consistent
     truncated-K approximation otherwise.

@@ -151,6 +151,17 @@ class BlockEnergyRetuneResult(NamedTuple):
     settling_blocks: int = 0
 
 
+class BlockEnergyAdvanceFn(Protocol):
+    """Advance the current equilibration estimator by a bounded block count."""
+
+    def __call__(
+        self,
+        state: Any,
+        *,
+        n_blocks: int,
+    ) -> tuple[Any, Mapping[str, jax.Array], Any]: ...
+
+
 class BlockEnergyRetuneFn(Protocol):
     """Host-side hook for adapting a block-energy estimator after equilibration."""
 
@@ -163,6 +174,8 @@ class BlockEnergyRetuneFn(Protocol):
         ham_data: Any,
         meas_ctx: Any,
         trial_data: Any,
+        *,
+        advance_blocks: BlockEnergyAdvanceFn,
     ) -> BlockEnergyRetuneResult: ...
 
 
