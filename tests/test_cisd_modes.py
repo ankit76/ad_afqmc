@@ -459,6 +459,8 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
         )
     with pytest.raises(ValueError, match="target_tail_std_fraction"):
         CisdModePairTuningCfg(target_tail_std_fraction=0.0)
+    with pytest.raises(ValueError, match="guide_policy"):
+        CisdModePairTuningCfg(guide_policy="invalid")  # pyright: ignore[reportArgumentType]
 
     _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
     sys = System(
@@ -497,6 +499,7 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
 
     sampled_ctx = sampled_ops.build_meas_ctx(ham, trial)
     assert sampled_ctx.energy_sampling == sampling
+    assert sampled_ctx.reference_chol_scores.shape == (5,)
     assert sampled_ctx.chol_tail_prob.shape == (3,)
     np.testing.assert_allclose(jnp.sum(sampled_ctx.chol_tail_prob), 1.0, atol=1.0e-14)
     assert bool(jnp.all(sampled_ctx.chol_tail_prob > 0.0))
@@ -910,3 +913,58 @@ def test_population_tuner_selects_least_work_candidate_meeting_noise_target():
         "0.500 x late equilibration block standard deviation"
     )
     np.testing.assert_allclose(selected.calibration_std_ha, 0.16)
+
+
+def test_hf_guide_tuner_uses_population_moments_to_select_ranked_estimator():
+    stats = CisdModePopulationStats(
+        term_means=np.zeros(4, dtype=np.float64),
+        term_second_moments=np.asarray([16.0, 4.0, 1.0, 0.25]),
+        rms_scores=np.asarray([4.0, 2.0, 1.0, 0.5]),
+        local_energies=np.zeros(2, dtype=np.float64),
+        exact_block_energy_ha=0.0,
+        independent_population_std_ha=1.0,
+        wall_seconds=0.0,
+    )
+    hf_scores = np.asarray([1.0, 4.0, 2.0, 0.5])
+    cfg = CisdModePairTuningCfg(
+        guide_policy="hf",
+        target_tail_std_ha=0.5,
+        safety_factor=1.0,
+        candidate_sample_sizes=(100,),
+        minimum_head_fraction=0.5,
+        maximum_head_fraction=0.5,
+        tail_probability_uniform_mix=0.0,
+        track_half_sample_diagnostic=False,
+    )
+    selected = select_cisd_mode_pair_sampling(
+        stats,
+        cfg,
+        n_walkers=10,
+        reference_guide_scores=hf_scores,
+    )
+
+    # HF ranks indices (1, 2) into the exact head. The remaining probabilities
+    # for indices (0, 3) are (2/3, 1/3), while the variance uses their measured
+    # population second moments: 16/(2/3) + 0.25/(1/3) = 24.75.
+    assert selected.guide_policy == "hf"
+    assert selected.sampling.chol_head_size == 2
+    assert selected.sampling.pair_sample_size == 100
+    np.testing.assert_allclose(selected.estimated_single_pair_variance_ha2, 24.75)
+    np.testing.assert_allclose(selected.estimated_tail_std_ha, np.sqrt(24.75 / 100.0))
+
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(925),
+        norb=trial.norb,
+        n_chol=4,
+        basis="restricted",
+    )
+    ctx = build_mode_meas_ctx(ham, trial)
+    configured = configure_cisd_mode_pair_sampling(
+        ctx,
+        selected.sampling,
+        jnp.asarray(hf_scores),
+    )
+    np.testing.assert_array_equal(configured.chol_head_indices, np.asarray([1, 2]))
+    np.testing.assert_array_equal(configured.chol_tail_indices, np.asarray([0, 3]))
+    np.testing.assert_allclose(configured.chol_tail_prob, np.asarray([2.0 / 3.0, 1.0 / 3.0]))

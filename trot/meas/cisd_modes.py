@@ -4,7 +4,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -54,6 +54,7 @@ def _active_green_blocks(
 class CisdModeMeasCtx:
     rot_chol: jax.Array
     lci1: jax.Array
+    reference_chol_scores: jax.Array
     chol_head_indices: jax.Array
     chol_tail_indices: jax.Array
     chol_tail_prob: jax.Array
@@ -65,6 +66,7 @@ class CisdModeMeasCtx:
         children = (
             self.rot_chol,
             self.lci1,
+            self.reference_chol_scores,
             self.chol_head_indices,
             self.chol_tail_indices,
             self.chol_tail_prob,
@@ -75,10 +77,18 @@ class CisdModeMeasCtx:
     @classmethod
     def tree_unflatten(cls, aux, children):
         cfg, n_mode_chunks, energy_sampling = aux
-        rot_chol, lci1, chol_head_indices, chol_tail_indices, chol_tail_prob = children
+        (
+            rot_chol,
+            lci1,
+            reference_chol_scores,
+            chol_head_indices,
+            chol_tail_indices,
+            chol_tail_prob,
+        ) = children
         return cls(
             rot_chol=rot_chol,
             lci1=lci1,
+            reference_chol_scores=reference_chol_scores,
             chol_head_indices=chol_head_indices,
             chol_tail_indices=chol_tail_indices,
             chol_tail_prob=chol_tail_prob,
@@ -126,8 +136,14 @@ class CisdModePairSamplingCfg:
 
 @dataclass(frozen=True)
 class CisdModePairTuningCfg:
-    """Post-equilibration population-RMS pair-sampling policy."""
+    """Post-equilibration pair-sampling tuning policy.
 
+    The equilibrated population always supplies the moments used to predict
+    the variance of candidate estimators. ``guide_policy`` controls only the
+    Cholesky head ranking and tail sampling probabilities.
+    """
+
+    guide_policy: Literal["population_rms", "hf"] = "population_rms"
     target_tail_std_fraction: float = 0.35
     target_tail_std_ha: float | None = None
     safety_factor: float = 1.25
@@ -153,6 +169,8 @@ class CisdModePairTuningCfg:
     settling_blocks: int = 5
 
     def __post_init__(self) -> None:
+        if self.guide_policy not in ("population_rms", "hf"):
+            raise ValueError("guide_policy must be 'population_rms' or 'hf'.")
         if self.target_tail_std_fraction <= 0.0:
             raise ValueError("target_tail_std_fraction must be positive.")
         if self.target_tail_std_ha is not None and self.target_tail_std_ha <= 0.0:
@@ -202,9 +220,10 @@ class CisdModePopulationStats:
 
 @dataclass(frozen=True)
 class CisdModePairTuningResult:
-    """Selected population-RMS estimator and its predicted cost/noise."""
+    """Selected estimator and its predicted cost/noise."""
 
     sampling: CisdModePairSamplingCfg
+    guide_policy: Literal["population_rms", "hf"]
     chol_head_fraction: float
     estimated_single_pair_variance_ha2: float
     estimated_tail_std_ha: float
@@ -269,6 +288,7 @@ def build_meas_ctx(
     meas_ctx = CisdModeMeasCtx(
         rot_chol=rot_chol,
         lci1=lci1,
+        reference_chol_scores=jnp.empty((0,), dtype=jnp.float64),
         chol_head_indices=jnp.empty((0,), dtype=jnp.int32),
         chol_tail_indices=jnp.empty((0,), dtype=jnp.int32),
         chol_tail_prob=jnp.empty((0,), dtype=jnp.float64),
@@ -283,6 +303,7 @@ def build_meas_ctx(
             trial_data,
             chol_batch_size=energy_sampling.guide_chol_batch_size,
         )
+        meas_ctx = replace(meas_ctx, reference_chol_scores=guide_scores)
         meas_ctx = configure_cisd_mode_pair_sampling(
             meas_ctx,
             energy_sampling,
@@ -916,6 +937,7 @@ def select_cisd_mode_pair_sampling(
     cfg: CisdModePairTuningCfg,
     *,
     n_walkers: int,
+    reference_guide_scores: np.ndarray | None = None,
     calibration_std_ha: float | None = None,
     calibration_source: str = "independent population standard deviation",
 ) -> CisdModePairTuningResult:
@@ -923,15 +945,39 @@ def select_cisd_mode_pair_sampling(
 
     if n_walkers <= 0:
         raise ValueError("n_walkers must be positive.")
-    scores = np.asarray(stats.rms_scores, dtype=np.float64)
+    rms_scores = np.asarray(stats.rms_scores, dtype=np.float64)
     means = np.asarray(stats.term_means, dtype=np.float64)
-    if scores.ndim != 1 or means.shape != scores.shape or scores.size == 0:
+    second_moments = np.asarray(stats.term_second_moments, dtype=np.float64)
+    if (
+        rms_scores.ndim != 1
+        or means.shape != rms_scores.shape
+        or second_moments.shape != rms_scores.shape
+        or rms_scores.size == 0
+    ):
         raise ValueError("population statistics must contain matching nonempty Cholesky arrays.")
-    if not np.all(np.isfinite(scores)) or not np.all(np.isfinite(means)):
+    if (
+        not np.all(np.isfinite(rms_scores))
+        or not np.all(np.isfinite(means))
+        or not np.all(np.isfinite(second_moments))
+        or np.any(second_moments < 0.0)
+    ):
         raise ValueError("population Cholesky statistics must be finite.")
-    scores = np.maximum(scores, 1.0e-300)
+    if cfg.guide_policy == "population_rms":
+        guide_scores = rms_scores
+    else:
+        if reference_guide_scores is None:
+            raise ValueError("reference_guide_scores are required for guide_policy='hf'.")
+        guide_scores = np.asarray(reference_guide_scores, dtype=np.float64)
+        if guide_scores.shape != rms_scores.shape:
+            raise ValueError(
+                f"reference_guide_scores must have shape {rms_scores.shape}, "
+                f"got {guide_scores.shape}."
+            )
+        if not np.all(np.isfinite(guide_scores)) or np.any(guide_scores < 0.0):
+            raise ValueError("reference_guide_scores must be finite and nonnegative.")
+    guide_scores = np.maximum(guide_scores, 1.0e-300)
 
-    n_chol = int(scores.size)
+    n_chol = int(guide_scores.size)
     calibration_std = float(
         stats.independent_population_std_ha if calibration_std_ha is None else calibration_std_ha
     )
@@ -947,8 +993,9 @@ def select_cisd_mode_pair_sampling(
         target_tail_std = cfg.target_tail_std_ha
         target_source = "absolute override"
 
-    order = np.argsort(-scores, kind="stable")
-    ordered_scores = scores[order]
+    order = np.argsort(-guide_scores, kind="stable")
+    ordered_guide_scores = guide_scores[order]
+    ordered_second_moments = second_moments[order]
     ordered_means = means[order]
     tail_mean_sum = np.concatenate(
         (np.cumsum(ordered_means[::-1], dtype=np.float64)[::-1], np.zeros(1))
@@ -963,14 +1010,17 @@ def select_cisd_mode_pair_sampling(
 
     candidates: list[CisdModePairTuningResult] = []
     for head_size in head_sizes:
-        tail_scores = ordered_scores[head_size:]
-        if tail_scores.size == 0:
+        tail_guide_scores = ordered_guide_scores[head_size:]
+        if tail_guide_scores.size == 0:
             variance = 0.0
         else:
-            guide_prob = tail_scores / np.sum(tail_scores, dtype=np.float64)
+            guide_prob = tail_guide_scores / np.sum(tail_guide_scores, dtype=np.float64)
             uniform_mix = cfg.tail_probability_uniform_mix
-            probabilities = (1.0 - uniform_mix) * guide_prob + uniform_mix / tail_scores.size
-            second_moment = np.sum(tail_scores**2 / probabilities, dtype=np.float64)
+            probabilities = (1.0 - uniform_mix) * guide_prob + uniform_mix / tail_guide_scores.size
+            second_moment = np.sum(
+                ordered_second_moments[head_size:] / probabilities,
+                dtype=np.float64,
+            )
             variance = max(
                 0.0,
                 float(second_moment - tail_mean_sum[head_size] ** 2),
@@ -994,6 +1044,7 @@ def select_cisd_mode_pair_sampling(
                         tail_probability_uniform_mix=cfg.tail_probability_uniform_mix,
                         track_half_sample_diagnostic=cfg.track_half_sample_diagnostic,
                     ),
+                    guide_policy=cfg.guide_policy,
                     chol_head_fraction=head_size / n_chol,
                     estimated_single_pair_variance_ha2=variance,
                     estimated_tail_std_ha=tail_std,
@@ -1032,7 +1083,7 @@ def retune_cisd_mode_pair_sampling(
     *,
     tuning_cfg: CisdModePairTuningCfg,
 ) -> BlockEnergyRetuneResult:
-    """Build and install a population-RMS guide after equilibration."""
+    """Tune and install the requested production guide after equilibration."""
 
     del equilibration_weights, params
     print(
@@ -1074,23 +1125,36 @@ def retune_cisd_mode_pair_sampling(
         stats,
         tuning_cfg,
         n_walkers=int(state.walkers.shape[0]),
+        reference_guide_scores=np.asarray(
+            jax.device_get(meas_ctx.reference_chol_scores),
+            dtype=np.float64,
+        ),
         calibration_std_ha=calibration_std,
         calibration_source=calibration_source,
     )
+    if tuning_cfg.guide_policy == "population_rms":
+        production_guide_scores = stats.rms_scores
+        guide_label = "population-RMS"
+    else:
+        production_guide_scores = np.asarray(
+            jax.device_get(meas_ctx.reference_chol_scores),
+            dtype=np.float64,
+        )
+        guide_label = "HF-reference"
     production_ctx = configure_cisd_mode_pair_sampling(
         meas_ctx,
         selected.sampling,
-        jnp.asarray(stats.rms_scores, dtype=jnp.float64),
+        jnp.asarray(production_guide_scores, dtype=jnp.float64),
     )
     print(
-        "[sampling] population tuning complete: "
+        "[sampling] population-moment tuning sweep complete: "
         f"seconds={stats.wall_seconds:.1f}, "
         f"exact_snapshot_energy={stats.exact_block_energy_ha:.10f} Ha, "
         f"independent_population_std={stats.independent_population_std_ha:.3e} Ha, "
         f"late_equilibration_block_std={late_equilibration_std:.3e} Ha."
     )
     print(
-        "[sampling] selected population-RMS estimator: "
+        f"[sampling] selected {guide_label} estimator: "
         f"chol_head_size={selected.sampling.chol_head_size}/{stats.rms_scores.size} "
         f"({selected.chol_head_fraction:.3%}), "
         f"pair_sample_size={selected.sampling.pair_sample_size}, "
@@ -1127,8 +1191,10 @@ def make_cisd_mode_meas_ops(
     ``energy_sampling`` instead evaluates its Cholesky head exactly and uses
     unbiased weighted walker--Cholesky sampling for the tail. When
     ``energy_tuning`` is also supplied, that estimator is used during
-    equilibration, then a bounded-memory deterministic sweep builds a
-    population-RMS guide and chooses the production head and sample count.
+    equilibration, then a bounded-memory deterministic sweep builds the
+    population moments needed to choose the production head and sample count.
+    The configured tuning guide controls the production head ranking and tail
+    probabilities.
     All retained modes remain deterministic in either case. The result is
     exact when all pair-space modes are retained and is the consistent
     truncated-K approximation otherwise.
