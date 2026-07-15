@@ -200,7 +200,9 @@ def _format_mib(n_bytes: int) -> str:
     return f"{n_bytes / 1024**2:.1f} MiB"
 
 
-def _is_compiler_memory_error(exc: jax.errors.JaxRuntimeError) -> bool:
+def _is_compiler_memory_error(
+    exc: jax.errors.JaxRuntimeError,  # pyright: ignore[reportInvalidTypeForm]
+) -> bool:
     """Recognize recoverable compiler/autotuner memory failures."""
 
     message = str(exc).lower()
@@ -502,6 +504,68 @@ def run_qmc(
             f"{int(state.node_encounters):10d}  "
             f"{elapsed:8.1f}"
         )
+    if meas_ops.retune_block_energy is not None:
+        print("\nRetuning block-energy sampling after equilibration:")
+        retuned = meas_ops.retune_block_energy(
+            state,
+            jnp.asarray(block_e_eq[1:]),
+            jnp.asarray(block_w_eq[1:]),
+            params,
+            ham_data,
+            meas_ctx,
+            trial_data,
+        )
+        if retuned.initial_n_chunks <= 0:
+            raise ValueError("retuned initial_n_chunks must be positive.")
+        if retuned.settling_blocks < 0:
+            raise ValueError("retuned settling_blocks must be nonnegative.")
+
+        state = cast(PropState, retuned.state)
+        meas_ctx = retuned.meas_ctx
+        production_params = dataclasses.replace(
+            params,
+            n_chunks=retuned.initial_n_chunks,
+            n_eql_blocks=retuned.settling_blocks,
+        )
+        params, run_blocks = _make_run_blocks_with_auto_chunks(
+            block_fn=block_fn_sr,
+            sys=sys,
+            params=production_params,
+            trial_ops=trial_ops,
+            meas_ops=meas_ops,
+            prop_ops=prop_ops,
+            state=state,
+            ham_data=ham_data,
+            trial_data=trial_data,
+            meas_ctx=meas_ctx,
+            prop_ctx=prop_ctx,
+            observable_names=observable_names,
+        )
+
+        if retuned.settling_blocks > 0:
+            print(f"\nPost-tuning settling: {retuned.settling_blocks} blocks")
+            settling_chunk = max(1, retuned.settling_blocks // 5)
+            for start in range(0, retuned.settling_blocks, settling_chunk):
+                n = min(settling_chunk, retuned.settling_blocks - start)
+                start_batch = time.perf_counter()
+                state, scalars_chunk, obs_chunk = run_blocks(
+                    state,
+                    ham_data=ham_data,
+                    trial_data=trial_data,
+                    meas_ctx=meas_ctx,
+                    prop_ctx=prop_ctx,
+                    n_blocks=n,
+                )
+                block_e_eq.extend(scalars_chunk["energy"].tolist())
+                block_w_eq.extend(scalars_chunk["weight"].tolist())
+                for i, name in enumerate(observable_names):
+                    block_obs_eq[name].append(obs_chunk[i])
+                print(
+                    f"[settle {start + n:4d}/{retuned.settling_blocks}]  "
+                    f"E={float(jnp.mean(scalars_chunk['energy'])):14.10f}  "
+                    f"dt={(time.perf_counter() - start_batch) / n:.3f} s/block"
+                )
+
     block_e_eq = jnp.asarray(block_e_eq)
     block_w_eq = jnp.asarray(block_w_eq)
     block_obs_eq = {
@@ -510,6 +574,7 @@ def run_qmc(
     }
 
     # sampling
+    t_mark = time.perf_counter()
     print("\nSampling:\n")
     if target_error is None:
         target_error = 0.0

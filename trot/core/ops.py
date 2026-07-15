@@ -135,6 +135,30 @@ class BlockEnergyFn(Protocol):
     ) -> jax.Array: ...
 
 
+class BlockEnergyRetuneResult(NamedTuple):
+    """Replacement state and measurement context after equilibration."""
+
+    state: Any
+    meas_ctx: Any
+    initial_n_chunks: int = 1
+    settling_blocks: int = 0
+
+
+class BlockEnergyRetuneFn(Protocol):
+    """Host-side hook for adapting a block-energy estimator after equilibration."""
+
+    def __call__(
+        self,
+        state: Any,
+        equilibration_energies: jax.Array,
+        equilibration_weights: jax.Array,
+        params: Any,
+        ham_data: Any,
+        meas_ctx: Any,
+        trial_data: Any,
+    ) -> BlockEnergyRetuneResult: ...
+
+
 # usual kernel names
 k_energy = "energy"
 k_force_bias = "force_bias"
@@ -164,6 +188,10 @@ class MeasOps:
     # optional population-level energy estimator. When absent, the standard
     # block vmaps kernels["energy"] over walkers and forms a weighted mean.
     block_energy: BlockEnergyFn | None = None
+
+    # optional host-side transition between equilibration and production.
+    # Existing measurements leave this unset and retain one context/executable.
+    retune_block_energy: BlockEnergyRetuneFn | None = None
 
     def has_kernel(self, name: str) -> bool:
         return name in self.kernels

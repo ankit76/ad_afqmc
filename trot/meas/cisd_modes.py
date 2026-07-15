@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import math
+import time
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax, tree_util
 
 from .. import walkers as wk
-from ..core.ops import MeasOps, k_energy, k_force_bias
+from ..core.ops import BlockEnergyRetuneResult, MeasOps, k_energy, k_force_bias
 from ..core.system import System
 from ..ham.chol import HamChol
 from ..trial.cisd_modes import CisdModeTrial, mode_apply, mode_quadratic
@@ -43,23 +47,33 @@ def _active_green_blocks(
 class CisdModeMeasCtx:
     rot_chol: jax.Array
     lci1: jax.Array
+    chol_head_indices: jax.Array
+    chol_tail_indices: jax.Array
     chol_tail_prob: jax.Array
     cfg: CisdMeasCfg
     n_mode_chunks: int
     energy_sampling: CisdModePairSamplingCfg | None
 
     def tree_flatten(self):
-        children = (self.rot_chol, self.lci1, self.chol_tail_prob)
+        children = (
+            self.rot_chol,
+            self.lci1,
+            self.chol_head_indices,
+            self.chol_tail_indices,
+            self.chol_tail_prob,
+        )
         aux = (self.cfg, self.n_mode_chunks, self.energy_sampling)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
         cfg, n_mode_chunks, energy_sampling = aux
-        rot_chol, lci1, chol_tail_prob = children
+        rot_chol, lci1, chol_head_indices, chol_tail_indices, chol_tail_prob = children
         return cls(
             rot_chol=rot_chol,
             lci1=lci1,
+            chol_head_indices=chol_head_indices,
+            chol_tail_indices=chol_tail_indices,
             chol_tail_prob=chol_tail_prob,
             cfg=cfg,
             n_mode_chunks=n_mode_chunks,
@@ -71,20 +85,104 @@ class CisdModeMeasCtx:
 class CisdModePairSamplingCfg:
     """Walker--Cholesky pair sampling for the block energy.
 
-    The first ``chol_head_size`` Cholesky contributions are evaluated exactly
-    for every walker. ``pair_sample_size`` weighted walker--Cholesky pairs are
-    drawn from the remaining tail. Every retained K mode is evaluated
-    deterministically in both the head and tail.
+    ``chol_head_size`` contributions are evaluated exactly for every walker.
+    By default they are the original Cholesky prefix. When
+    ``rank_head_by_guide`` is true, they are the largest reference- or
+    population-guide scores. ``pair_sample_size`` weighted walker--Cholesky
+    pairs are drawn from the remaining tail.
     """
 
     chol_head_size: int
     pair_sample_size: int
+    rank_head_by_guide: bool = False
+    guide_chol_batch_size: int = 16
+    head_chol_batch_size: int = 0
 
     def __post_init__(self) -> None:
         if self.chol_head_size < 0:
             raise ValueError("chol_head_size must be nonnegative.")
         if self.pair_sample_size <= 0:
             raise ValueError("pair_sample_size must be positive.")
+        if self.guide_chol_batch_size <= 0:
+            raise ValueError("guide_chol_batch_size must be positive.")
+        if self.head_chol_batch_size < 0:
+            raise ValueError("head_chol_batch_size must be nonnegative.")
+
+
+@dataclass(frozen=True)
+class CisdModePairTuningCfg:
+    """Post-equilibration population-RMS pair-sampling policy."""
+
+    target_tail_std_ha: float = 4.0e-3
+    safety_factor: float = 1.25
+    candidate_sample_sizes: tuple[int, ...] = (
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192,
+        16384,
+        32768,
+    )
+    minimum_head_fraction: float = 0.0
+    maximum_head_fraction: float = 1.0
+    head_size_stride: int = 1
+    tuning_n_chunks: int = 10
+    tuning_chol_batch_size: int = 16
+    production_initial_n_chunks: int = 1
+    production_head_chol_batch_size: int = 0
+    settling_blocks: int = 5
+
+    def __post_init__(self) -> None:
+        if self.target_tail_std_ha <= 0.0:
+            raise ValueError("target_tail_std_ha must be positive.")
+        if self.safety_factor <= 0.0:
+            raise ValueError("safety_factor must be positive.")
+        if not self.candidate_sample_sizes or any(
+            sample_size <= 0 for sample_size in self.candidate_sample_sizes
+        ):
+            raise ValueError("candidate_sample_sizes must contain positive integers.")
+        if not 0.0 <= self.minimum_head_fraction <= self.maximum_head_fraction <= 1.0:
+            raise ValueError("head fractions must satisfy 0 <= minimum <= maximum <= 1.")
+        if self.head_size_stride <= 0:
+            raise ValueError("head_size_stride must be positive.")
+        if self.tuning_n_chunks <= 0:
+            raise ValueError("tuning_n_chunks must be positive.")
+        if self.tuning_chol_batch_size <= 0:
+            raise ValueError("tuning_chol_batch_size must be positive.")
+        if self.production_initial_n_chunks <= 0:
+            raise ValueError("production_initial_n_chunks must be positive.")
+        if self.production_head_chol_batch_size < 0:
+            raise ValueError("production_head_chol_batch_size must be nonnegative.")
+        if self.settling_blocks < 0:
+            raise ValueError("settling_blocks must be nonnegative.")
+
+
+@dataclass(frozen=True)
+class CisdModePopulationStats:
+    """Streaming sufficient statistics for population pair sampling."""
+
+    term_means: np.ndarray
+    term_second_moments: np.ndarray
+    rms_scores: np.ndarray
+    local_energies: np.ndarray
+    exact_block_energy_ha: float
+    independent_population_std_ha: float
+    wall_seconds: float
+
+
+@dataclass(frozen=True)
+class CisdModePairTuningResult:
+    """Selected population-RMS estimator and its predicted cost/noise."""
+
+    sampling: CisdModePairSamplingCfg
+    chol_head_fraction: float
+    estimated_single_pair_variance_ha2: float
+    estimated_tail_std_ha: float
+    guarded_tail_std_ha: float
+    target_tail_std_ha: float
+    estimated_pair_evaluations: int
 
 
 class CisdModeEnergyCommon(NamedTuple):
@@ -141,14 +239,32 @@ def build_meas_ctx(
     meas_ctx = CisdModeMeasCtx(
         rot_chol=rot_chol,
         lci1=lci1,
+        chol_head_indices=jnp.empty((0,), dtype=jnp.int32),
+        chol_tail_indices=jnp.empty((0,), dtype=jnp.int32),
         chol_tail_prob=jnp.empty((0,), dtype=jnp.float64),
         cfg=cfg,
         n_mode_chunks=min(int(n_mode_chunks), trial_data.mode_rank),
         energy_sampling=energy_sampling,
     )
     if energy_sampling is not None:
-        chol_tail_prob = _build_chol_tail_prob(ham_data, meas_ctx, trial_data)
-        meas_ctx = replace(meas_ctx, chol_tail_prob=chol_tail_prob)
+        guide_scores = _build_reference_chol_scores(
+            ham_data,
+            meas_ctx,
+            trial_data,
+            chol_batch_size=energy_sampling.guide_chol_batch_size,
+        )
+        meas_ctx = configure_cisd_mode_pair_sampling(
+            meas_ctx,
+            energy_sampling,
+            guide_scores,
+        )
+        print(
+            "[sampling] configured HF-guide CISD-mode pair estimator: "
+            f"chol_head_size={energy_sampling.chol_head_size}/{n_chol} "
+            f"({energy_sampling.chol_head_size / n_chol:.3%}), "
+            f"pair_sample_size={energy_sampling.pair_sample_size}, "
+            f"ranked_head={energy_sampling.rank_head_by_guide}."
+        )
     return meas_ctx
 
 
@@ -355,6 +471,73 @@ def _cisd_mode_chol_terms_for_walkers(
     )(common)
 
 
+def _cisd_mode_chol_index_terms(
+    common: CisdModeEnergyCommon,
+    chol_indices: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: CisdModeMeasCtx,
+    trial_data: CisdModeTrial,
+    *,
+    n_chunks: int,
+) -> jax.Array:
+    """Return one walker's terms at arbitrary Cholesky indices."""
+
+    return wk.vmap_chunked(
+        lambda chol_i: _cisd_mode_chol_terms(
+            common,
+            ham_data.chol[chol_i][None, ...],
+            meas_ctx.rot_chol[chol_i][None, ...],
+            meas_ctx.lci1[chol_i][None, ...],
+            meas_ctx,
+            trial_data,
+        )[0],
+        n_chunks=n_chunks,
+    )(chol_indices)
+
+
+def _cisd_mode_chol_index_sum_for_walkers(
+    common: CisdModeEnergyCommon,
+    chol_indices: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: CisdModeMeasCtx,
+    trial_data: CisdModeTrial,
+    *,
+    n_walker_chunks: int,
+    chol_batch_size: int,
+) -> jax.Array:
+    """Sum arbitrary head terms while bounding the gathered Cholesky batch."""
+
+    head_size = int(chol_indices.shape[0])
+    if head_size == 0:
+        return jnp.zeros_like(common.base, dtype=jnp.complex128)
+
+    batch_size = head_size if chol_batch_size <= 0 else min(chol_batch_size, head_size)
+    n_batches = math.ceil(head_size / batch_size)
+    padded_size = n_batches * batch_size
+    padded_indices = jnp.pad(chol_indices, (0, padded_size - head_size)).reshape(
+        n_batches, batch_size
+    )
+    valid = (jnp.arange(padded_size) < head_size).reshape(n_batches, batch_size)
+
+    def scan_body(total, xs):
+        indices_i, valid_i = xs
+        terms_i = _cisd_mode_chol_terms_for_walkers(
+            common,
+            ham_data.chol[indices_i],
+            meas_ctx.rot_chol[indices_i],
+            meas_ctx.lci1[indices_i],
+            meas_ctx,
+            trial_data,
+            n_chunks=n_walker_chunks,
+        )
+        terms_i = jnp.where(valid_i[None, :], terms_i, 0.0)
+        return total + jnp.sum(terms_i, axis=1, dtype=jnp.complex128), None
+
+    zero = jnp.zeros_like(common.base, dtype=jnp.complex128)
+    total, _ = lax.scan(scan_body, zero, (padded_indices, valid))
+    return total
+
+
 def _cisd_mode_chol_pair_terms(
     common: CisdModeEnergyCommon,
     sample_walker: jax.Array,
@@ -398,20 +581,15 @@ def energy_kernel_rw_rh(
     return common.base + jnp.sum(chol_terms, dtype=jnp.complex128)
 
 
-def _build_chol_tail_prob(
+def _build_reference_chol_scores(
     ham_data: HamChol,
     meas_ctx: CisdModeMeasCtx,
     trial_data: CisdModeTrial,
+    *,
+    chol_batch_size: int,
 ) -> jax.Array:
-    """Build a static importance guide from the reference determinant."""
-    sampling = meas_ctx.energy_sampling
-    if sampling is None:
-        return jnp.empty((0,), dtype=jnp.float64)
-
+    """Build bounded-memory HF-reference scores for every Cholesky vector."""
     n_chol = int(ham_data.chol.shape[0])
-    if sampling.chol_head_size == n_chol:
-        return jnp.empty((0,), dtype=jnp.float64)
-
     reference_walker = jnp.eye(
         trial_data.norb,
         trial_data.nocc_full,
@@ -423,16 +601,53 @@ def _build_chol_tail_prob(
         meas_ctx,
         trial_data,
     )
-    terms = _cisd_mode_chol_terms(
+    indices = jnp.arange(n_chol, dtype=jnp.int32)
+    n_chunks = max(1, math.ceil(n_chol / chol_batch_size))
+    terms = _cisd_mode_chol_index_terms(
         common,
-        ham_data.chol[sampling.chol_head_size :],
-        meas_ctx.rot_chol[sampling.chol_head_size :],
-        meas_ctx.lci1[sampling.chol_head_size :],
+        indices,
+        ham_data,
         meas_ctx,
         trial_data,
+        n_chunks=n_chunks,
     )
-    scores = jnp.maximum(jnp.abs(terms).astype(jnp.float64), 1.0e-300)
-    return scores / jnp.sum(scores, dtype=jnp.float64)
+    return jnp.maximum(jnp.abs(terms).astype(jnp.float64), 1.0e-300)
+
+
+def configure_cisd_mode_pair_sampling(
+    meas_ctx: CisdModeMeasCtx,
+    sampling: CisdModePairSamplingCfg,
+    guide_scores: jax.Array,
+) -> CisdModeMeasCtx:
+    """Attach a prefix or guide-ranked head and normalized tail probabilities."""
+
+    scores = jnp.asarray(guide_scores, dtype=jnp.float64)
+    n_chol = int(meas_ctx.rot_chol.shape[0])
+    if scores.shape != (n_chol,):
+        raise ValueError(f"guide_scores must have shape {(n_chol,)}, got {scores.shape}.")
+    if sampling.chol_head_size > n_chol:
+        raise ValueError(
+            f"chol_head_size must not exceed the number of Cholesky vectors ({n_chol})."
+        )
+
+    if sampling.rank_head_by_guide:
+        order = jnp.argsort(-scores)
+    else:
+        order = jnp.arange(n_chol, dtype=jnp.int32)
+    head_indices = jnp.sort(order[: sampling.chol_head_size]).astype(jnp.int32)
+    tail_indices = jnp.sort(order[sampling.chol_head_size :]).astype(jnp.int32)
+    if int(tail_indices.shape[0]) == 0:
+        tail_prob = jnp.empty((0,), dtype=jnp.float64)
+    else:
+        tail_scores = jnp.maximum(scores[tail_indices], 1.0e-300)
+        tail_prob = tail_scores / jnp.sum(tail_scores, dtype=jnp.float64)
+    return replace(
+        meas_ctx,
+        chol_head_indices=head_indices,
+        chol_tail_indices=tail_indices,
+        chol_tail_prob=tail_prob,
+        energy_sampling=sampling,
+    )
 
 
 def pair_sampled_block_energy(
@@ -448,9 +663,8 @@ def pair_sampled_block_energy(
     """Exact Cholesky head plus sampled walker--Cholesky tail energy.
 
     Walkers are sampled according to their normalized phaseless weights and
-    tail Cholesky vectors according to the reference-determinant importance
-    guide stored in ``meas_ctx``. All retained K modes are summed exactly for
-    every evaluated pair.
+    tail Cholesky vectors according to the guide stored in ``meas_ctx``. All
+    retained K modes are summed exactly for every evaluated pair.
     """
     del overlaps
     sampling = meas_ctx.energy_sampling
@@ -471,16 +685,16 @@ def pair_sampled_block_energy(
     sample_weights = jnp.where(weight_sum == 0.0, uniform_weights, norm_weights)
 
     if sampling.chol_head_size > 0:
-        head_terms = _cisd_mode_chol_terms_for_walkers(
+        head_sum = _cisd_mode_chol_index_sum_for_walkers(
             common,
-            ham_data.chol[: sampling.chol_head_size],
-            meas_ctx.rot_chol[: sampling.chol_head_size],
-            meas_ctx.lci1[: sampling.chol_head_size],
+            meas_ctx.chol_head_indices,
+            ham_data,
             meas_ctx,
             trial_data,
-            n_chunks=n_chunks,
+            n_walker_chunks=n_chunks,
+            chol_batch_size=sampling.head_chol_batch_size,
         )
-        head_energy = jnp.real(common.base + jnp.sum(head_terms, axis=1))
+        head_energy = jnp.real(common.base + head_sum)
     else:
         head_energy = jnp.real(common.base)
     block_head = jnp.sum(norm_weights * head_energy, dtype=jnp.float64)
@@ -504,7 +718,7 @@ def pair_sampled_block_energy(
         replace=True,
         p=meas_ctx.chol_tail_prob,
     )
-    sample_chol = sample_chol_rel + sampling.chol_head_size
+    sample_chol = meas_ctx.chol_tail_indices[sample_chol_rel]
     walker_batch_size = (int(weights_real.shape[0]) + n_chunks - 1) // n_chunks
     pair_n_chunks = (sampling.pair_sample_size + walker_batch_size - 1) // walker_batch_size
     sample_terms = _cisd_mode_chol_pair_terms(
@@ -523,21 +737,302 @@ def pair_sampled_block_energy(
     return block_head + tail_estimate
 
 
+def stream_cisd_mode_population_statistics(
+    walkers: jax.Array,
+    weights: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: CisdModeMeasCtx,
+    trial_data: CisdModeTrial,
+    *,
+    n_walker_chunks: int = 10,
+    chol_batch_size: int = 16,
+) -> CisdModePopulationStats:
+    """Accumulate population statistics without forming ``Nw x Nchol`` terms."""
+
+    if n_walker_chunks <= 0:
+        raise ValueError("n_walker_chunks must be positive.")
+    if chol_batch_size <= 0:
+        raise ValueError("chol_batch_size must be positive.")
+
+    start_time = time.perf_counter()
+    n_walkers = int(walkers.shape[0])
+    n_chol = int(ham_data.chol.shape[0])
+    walker_batch_size = math.ceil(n_walkers / min(n_walker_chunks, n_walkers))
+
+    weights_np = np.maximum(
+        np.real(np.asarray(jax.device_get(weights), dtype=np.complex128)),
+        0.0,
+    ).astype(np.float64)
+    weight_sum = float(np.sum(weights_np, dtype=np.float64))
+    norm_weights = (
+        weights_np / weight_sum
+        if np.isfinite(weight_sum) and weight_sum > 0.0
+        else np.full(n_walkers, 1.0 / n_walkers, dtype=np.float64)
+    )
+
+    @jax.jit
+    def build_common_batch(walkers_i, ham_i, ctx_i, trial_i):
+        return jax.vmap(
+            _cisd_mode_energy_common,
+            in_axes=(0, None, None, None),
+        )(walkers_i, ham_i, ctx_i, trial_i)
+
+    @jax.jit
+    def evaluate_term_batch(common_i, chol_indices_i, ham_i, ctx_i, trial_i):
+        return _cisd_mode_chol_terms_for_walkers(
+            common_i,
+            ham_i.chol[chol_indices_i],
+            ctx_i.rot_chol[chol_indices_i],
+            ctx_i.lci1[chol_indices_i],
+            ctx_i,
+            trial_i,
+            n_chunks=1,
+        )
+
+    term_means = np.zeros(n_chol, dtype=np.float64)
+    term_second_moments = np.zeros(n_chol, dtype=np.float64)
+    local_energies = np.empty(n_walkers, dtype=np.float64)
+
+    for walker_start in range(0, n_walkers, walker_batch_size):
+        walker_stop = min(walker_start + walker_batch_size, n_walkers)
+        valid_walkers = walker_stop - walker_start
+        walker_indices = np.minimum(
+            walker_start + np.arange(walker_batch_size, dtype=np.int32),
+            n_walkers - 1,
+        )
+        common = build_common_batch(
+            walkers[jnp.asarray(walker_indices)],
+            ham_data,
+            meas_ctx,
+            trial_data,
+        )
+        base = np.real(np.asarray(jax.device_get(common.base), dtype=np.complex128))
+        term_sum = np.zeros(walker_batch_size, dtype=np.float64)
+        batch_weights = np.zeros(walker_batch_size, dtype=np.float64)
+        batch_weights[:valid_walkers] = norm_weights[walker_start:walker_stop]
+
+        for chol_start in range(0, n_chol, chol_batch_size):
+            chol_stop = min(chol_start + chol_batch_size, n_chol)
+            valid_chol = chol_stop - chol_start
+            chol_indices = np.minimum(
+                chol_start + np.arange(chol_batch_size, dtype=np.int32),
+                n_chol - 1,
+            )
+            terms = evaluate_term_batch(
+                common,
+                jnp.asarray(chol_indices),
+                ham_data,
+                meas_ctx,
+                trial_data,
+            )
+            terms_np = np.real(np.asarray(jax.device_get(terms), dtype=np.complex128))
+            valid_terms = terms_np[:, :valid_chol]
+            term_sum += np.sum(valid_terms, axis=1, dtype=np.float64)
+            term_means[chol_start:chol_stop] += np.sum(
+                batch_weights[:, None] * valid_terms,
+                axis=0,
+                dtype=np.float64,
+            )
+            term_second_moments[chol_start:chol_stop] += np.sum(
+                batch_weights[:, None] * valid_terms**2,
+                axis=0,
+                dtype=np.float64,
+            )
+
+        local_energies[walker_start:walker_stop] = base[:valid_walkers] + term_sum[:valid_walkers]
+
+    exact_block_energy = float(np.sum(norm_weights * local_energies, dtype=np.float64))
+    sum_weight_squared = float(np.sum(norm_weights**2, dtype=np.float64))
+    correction = max(1.0e-300, 1.0 - sum_weight_squared)
+    individual_variance = float(
+        np.sum(norm_weights * (local_energies - exact_block_energy) ** 2, dtype=np.float64)
+        / correction
+    )
+    independent_population_std = math.sqrt(max(0.0, individual_variance * sum_weight_squared))
+    rms_scores = np.sqrt(np.maximum(term_second_moments, 0.0))
+    return CisdModePopulationStats(
+        term_means=term_means,
+        term_second_moments=term_second_moments,
+        rms_scores=rms_scores,
+        local_energies=local_energies,
+        exact_block_energy_ha=exact_block_energy,
+        independent_population_std_ha=independent_population_std,
+        wall_seconds=time.perf_counter() - start_time,
+    )
+
+
+def select_cisd_mode_pair_sampling(
+    stats: CisdModePopulationStats,
+    cfg: CisdModePairTuningCfg,
+    *,
+    n_walkers: int,
+) -> CisdModePairTuningResult:
+    """Choose the least pair work that meets the guarded tail-noise target."""
+
+    if n_walkers <= 0:
+        raise ValueError("n_walkers must be positive.")
+    scores = np.asarray(stats.rms_scores, dtype=np.float64)
+    means = np.asarray(stats.term_means, dtype=np.float64)
+    if scores.ndim != 1 or means.shape != scores.shape or scores.size == 0:
+        raise ValueError("population statistics must contain matching nonempty Cholesky arrays.")
+
+    n_chol = int(scores.size)
+    order = np.argsort(-scores, kind="stable")
+    ordered_scores = scores[order]
+    ordered_means = means[order]
+    tail_score_sum = np.concatenate(
+        (np.cumsum(ordered_scores[::-1], dtype=np.float64)[::-1], np.zeros(1))
+    )
+    tail_mean_sum = np.concatenate(
+        (np.cumsum(ordered_means[::-1], dtype=np.float64)[::-1], np.zeros(1))
+    )
+
+    minimum_head = max(0, min(n_chol, int(round(cfg.minimum_head_fraction * n_chol))))
+    maximum_head = max(0, min(n_chol, int(round(cfg.maximum_head_fraction * n_chol))))
+    head_sizes = list(range(minimum_head, maximum_head + 1, cfg.head_size_stride))
+    if not head_sizes or head_sizes[-1] != maximum_head:
+        head_sizes.append(maximum_head)
+    sample_sizes = sorted({int(value) for value in cfg.candidate_sample_sizes})
+
+    candidates: list[CisdModePairTuningResult] = []
+    for head_size in head_sizes:
+        variance = max(
+            0.0,
+            float(tail_score_sum[head_size] ** 2 - tail_mean_sum[head_size] ** 2),
+        )
+        for sample_size in sample_sizes:
+            tail_std = math.sqrt(variance / sample_size) if head_size < n_chol else 0.0
+            guarded_std = cfg.safety_factor * tail_std
+            if guarded_std > cfg.target_tail_std_ha:
+                continue
+            pair_evaluations = n_walkers * head_size
+            if head_size < n_chol:
+                pair_evaluations += sample_size
+            candidates.append(
+                CisdModePairTuningResult(
+                    sampling=CisdModePairSamplingCfg(
+                        chol_head_size=head_size,
+                        pair_sample_size=sample_size,
+                        rank_head_by_guide=True,
+                        guide_chol_batch_size=cfg.tuning_chol_batch_size,
+                        head_chol_batch_size=cfg.production_head_chol_batch_size,
+                    ),
+                    chol_head_fraction=head_size / n_chol,
+                    estimated_single_pair_variance_ha2=variance,
+                    estimated_tail_std_ha=tail_std,
+                    guarded_tail_std_ha=guarded_std,
+                    target_tail_std_ha=cfg.target_tail_std_ha,
+                    estimated_pair_evaluations=pair_evaluations,
+                )
+            )
+
+    if not candidates:
+        raise ValueError(
+            "No population pair-sampling candidate meets the requested tail-noise target. "
+            "Increase maximum_head_fraction or the candidate sample sizes."
+        )
+    return min(
+        candidates,
+        key=lambda candidate: (
+            candidate.estimated_pair_evaluations,
+            candidate.guarded_tail_std_ha,
+            candidate.sampling.chol_head_size,
+            candidate.sampling.pair_sample_size,
+        ),
+    )
+
+
+def retune_cisd_mode_pair_sampling(
+    state,
+    equilibration_energies: jax.Array,
+    equilibration_weights: jax.Array,
+    params,
+    ham_data: HamChol,
+    meas_ctx: CisdModeMeasCtx,
+    trial_data: CisdModeTrial,
+    *,
+    tuning_cfg: CisdModePairTuningCfg,
+) -> BlockEnergyRetuneResult:
+    """Build and install a population-RMS guide after equilibration."""
+
+    del equilibration_weights, params
+    print(
+        "[sampling] streaming population statistics: "
+        f"walker_chunks={min(tuning_cfg.tuning_n_chunks, int(state.walkers.shape[0]))}, "
+        f"chol_batch_size={tuning_cfg.tuning_chol_batch_size}."
+    )
+    stats = stream_cisd_mode_population_statistics(
+        state.walkers,
+        state.weights,
+        ham_data,
+        meas_ctx,
+        trial_data,
+        n_walker_chunks=tuning_cfg.tuning_n_chunks,
+        chol_batch_size=tuning_cfg.tuning_chol_batch_size,
+    )
+    selected = select_cisd_mode_pair_sampling(
+        stats,
+        tuning_cfg,
+        n_walkers=int(state.walkers.shape[0]),
+    )
+    production_ctx = configure_cisd_mode_pair_sampling(
+        meas_ctx,
+        selected.sampling,
+        jnp.asarray(stats.rms_scores, dtype=jnp.float64),
+    )
+    equilibration_std = (
+        float(np.std(np.asarray(jax.device_get(equilibration_energies)), ddof=1))
+        if int(equilibration_energies.shape[0]) > 1
+        else float("nan")
+    )
+    print(
+        "[sampling] population tuning complete: "
+        f"seconds={stats.wall_seconds:.1f}, "
+        f"exact_snapshot_energy={stats.exact_block_energy_ha:.10f} Ha, "
+        f"independent_population_std={stats.independent_population_std_ha:.3e} Ha, "
+        f"equilibration_block_std={equilibration_std:.3e} Ha."
+    )
+    print(
+        "[sampling] selected population-RMS estimator: "
+        f"chol_head_size={selected.sampling.chol_head_size}/{stats.rms_scores.size} "
+        f"({selected.chol_head_fraction:.3%}), "
+        f"pair_sample_size={selected.sampling.pair_sample_size}, "
+        f"tail_std={selected.estimated_tail_std_ha:.3e} Ha, "
+        f"guarded_tail_std={selected.guarded_tail_std_ha:.3e} Ha, "
+        f"target={selected.target_tail_std_ha:.3e} Ha, "
+        f"work_proxy={selected.estimated_pair_evaluations} pairs."
+    )
+    energy_dtype = jnp.result_type(state.e_estimate)
+    state = state._replace(
+        e_estimate=jnp.asarray(stats.exact_block_energy_ha, dtype=energy_dtype),
+    )
+    return BlockEnergyRetuneResult(
+        state=state,
+        meas_ctx=production_ctx,
+        initial_n_chunks=tuning_cfg.production_initial_n_chunks,
+        settling_blocks=tuning_cfg.settling_blocks,
+    )
+
+
 def make_cisd_mode_meas_ops(
     sys: System,
     *,
     mixed_precision: bool = True,
     n_mode_chunks: int = 1,
     energy_sampling: CisdModePairSamplingCfg | None = None,
+    energy_tuning: CisdModePairTuningCfg | None = None,
 ) -> MeasOps:
     """Build retained-mode CISD measurements.
 
     The deterministic default batches every Cholesky vector. Passing
     ``energy_sampling`` instead evaluates its Cholesky head exactly and uses
-    unbiased weighted walker--Cholesky sampling for the tail. All retained
-    modes remain deterministic in either case. The result is exact when all
-    pair-space modes are retained and is the consistent truncated-K
-    approximation otherwise.
+    unbiased weighted walker--Cholesky sampling for the tail. When
+    ``energy_tuning`` is also supplied, that estimator is used during
+    equilibration, then a bounded-memory deterministic sweep builds a
+    population-RMS guide and chooses the production head and sample count.
+    All retained modes remain deterministic in either case. The result is
+    exact when all pair-space modes are retained and is the consistent
+    truncated-K approximation otherwise.
     """
     if sys.walker_kind.lower() != "restricted":
         raise ValueError(
@@ -545,6 +1040,8 @@ def make_cisd_mode_meas_ops(
         )
     if n_mode_chunks <= 0:
         raise ValueError("n_mode_chunks must be positive.")
+    if energy_tuning is not None and energy_sampling is None:
+        raise ValueError("energy_tuning requires an equilibration energy_sampling config.")
 
     cfg = CisdMeasCfg(
         memory_mode="high",
@@ -552,6 +1049,11 @@ def make_cisd_mode_meas_ops(
         mixed_complex_dtype=jnp.complex64 if mixed_precision else jnp.complex128,
         mixed_real_dtype_testing=jnp.float32 if mixed_precision else jnp.float64,
         mixed_complex_dtype_testing=jnp.complex64 if mixed_precision else jnp.complex128,
+    )
+    retune_block_energy = (
+        partial(retune_cisd_mode_pair_sampling, tuning_cfg=energy_tuning)
+        if energy_tuning is not None
+        else None
     )
     meas_ops = MeasOps(
         overlap=cisd_mode_overlap_r,
@@ -565,6 +1067,7 @@ def make_cisd_mode_meas_ops(
         kernels={k_force_bias: force_bias_kernel_rw_rh, k_energy: energy_kernel_rw_rh},
         observables={},
         block_energy=pair_sampled_block_energy if energy_sampling is not None else None,
+        retune_block_energy=retune_block_energy,
     )
     object.__setattr__(meas_ops, _CISD_MODE_MEAS_CFG_ATTR, cfg)
     return meas_ops

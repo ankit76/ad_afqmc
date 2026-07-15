@@ -17,16 +17,22 @@ from trot.meas.cisd import (
     force_bias_kernel_rw_rh_high as dense_force_bias_kernel,
 )
 from trot.meas.cisd_modes import (
+    CisdModePairTuningCfg,
+    CisdModePopulationStats,
     CisdModePairSamplingCfg,
+    _cisd_mode_chol_index_sum_for_walkers,
     _cisd_mode_chol_pair_terms,
     _cisd_mode_chol_terms_for_walkers,
     _cisd_mode_energy_common,
     build_meas_ctx as build_mode_meas_ctx,
+    configure_cisd_mode_pair_sampling,
     energy_kernel_rw_rh as mode_energy_kernel,
     force_bias_kernel_rw_rh as mode_force_bias_kernel,
     get_cisd_mode_meas_cfg,
     make_cisd_mode_meas_ops,
     pair_sampled_block_energy,
+    select_cisd_mode_pair_sampling,
+    stream_cisd_mode_population_statistics,
 )
 from trot.trial.cisd import CisdTrial, overlap_r as dense_overlap_r
 from trot.trial.cisd_modes import (
@@ -459,6 +465,19 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
     )
     assert deterministic_ops.block_energy is None
     assert sampled_ops.block_energy is pair_sampled_block_energy
+    assert deterministic_ops.retune_block_energy is None
+    assert sampled_ops.retune_block_energy is None
+
+    tuning = CisdModePairTuningCfg()
+    with pytest.raises(ValueError, match="requires an equilibration"):
+        make_cisd_mode_meas_ops(sys, mixed_precision=False, energy_tuning=tuning)
+    tuned_ops = make_cisd_mode_meas_ops(
+        sys,
+        mixed_precision=False,
+        energy_sampling=sampling,
+        energy_tuning=tuning,
+    )
+    assert tuned_ops.retune_block_energy is not None
 
     sampled_ctx = sampled_ops.build_meas_ctx(ham, trial)
     assert sampled_ctx.energy_sampling == sampling
@@ -469,6 +488,75 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
     invalid_sampling = CisdModePairSamplingCfg(chol_head_size=6, pair_sample_size=16)
     with pytest.raises(ValueError, match="must not exceed"):
         build_mode_meas_ctx(ham, trial, energy_sampling=invalid_sampling)
+
+
+def test_ranked_arbitrary_head_uses_indices_without_reordering_cholesky_storage():
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(921),
+        norb=trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    base_ctx = build_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=CisdMeasCfg(memory_mode="high"),
+        n_mode_chunks=2,
+    )
+    sampling = CisdModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=16,
+        rank_head_by_guide=True,
+        head_chol_batch_size=1,
+    )
+    scores = jnp.asarray([1.0, 9.0, 2.0, 8.0, 3.0], dtype=jnp.float64)
+    ctx = configure_cisd_mode_pair_sampling(base_ctx, sampling, scores)
+    np.testing.assert_array_equal(ctx.chol_head_indices, np.asarray([1, 3]))
+    np.testing.assert_array_equal(ctx.chol_tail_indices, np.asarray([0, 2, 4]))
+    np.testing.assert_allclose(
+        ctx.chol_tail_prob,
+        np.asarray([1.0, 2.0, 3.0]) / 6.0,
+        rtol=0.0,
+        atol=1.0e-14,
+    )
+
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed),
+                trial.norb,
+                trial.nocc_full,
+                mix=0.25,
+            )
+            for seed in (922, 924, 926)
+        ]
+    )
+    common = jax.vmap(
+        _cisd_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(walkers, ham, ctx, trial)
+    all_terms = _cisd_mode_chol_terms_for_walkers(
+        common,
+        ham.chol,
+        ctx.rot_chol,
+        ctx.lci1,
+        ctx,
+        trial,
+    )
+    candidate = jax.jit(
+        lambda common_i: _cisd_mode_chol_index_sum_for_walkers(
+            common_i,
+            ctx.chol_head_indices,
+            ham,
+            ctx,
+            trial,
+            n_walker_chunks=2,
+            chol_batch_size=1,
+        )
+    )(common)
+    expected = jnp.sum(all_terms[:, jnp.asarray([1, 3])], axis=1)
+    np.testing.assert_allclose(candidate, expected, rtol=2.0e-12, atol=2.0e-12)
 
 
 def test_sampled_pair_terms_gather_inside_chunks_matches_full_pair_matrix():
@@ -647,3 +735,109 @@ def test_pair_sampled_tail_matches_exact_energy_within_analytic_sampling_error()
         rtol=0.0,
         atol=float(6.0 * standard_error + 1.0e-12),
     )
+
+
+def test_streaming_population_statistics_match_full_contribution_table():
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(997),
+        norb=trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    ctx = build_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=CisdMeasCfg(memory_mode="high"),
+        n_mode_chunks=2,
+    )
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed),
+                trial.norb,
+                trial.nocc_full,
+                mix=0.25,
+            )
+            for seed in (1009, 1013, 1019)
+        ]
+    )
+    weights = jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float64)
+    norm_weights = np.asarray(weights / jnp.sum(weights))
+    common = jax.vmap(
+        _cisd_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(walkers, ham, ctx, trial)
+    terms = np.real(
+        np.asarray(
+            _cisd_mode_chol_terms_for_walkers(
+                common,
+                ham.chol,
+                ctx.rot_chol,
+                ctx.lci1,
+                ctx,
+                trial,
+            )
+        )
+    )
+    base = np.real(np.asarray(common.base))
+
+    stats = stream_cisd_mode_population_statistics(
+        walkers,
+        weights,
+        ham,
+        ctx,
+        trial,
+        n_walker_chunks=2,
+        chol_batch_size=2,
+    )
+    expected_means = np.sum(norm_weights[:, None] * terms, axis=0)
+    expected_seconds = np.sum(norm_weights[:, None] * terms**2, axis=0)
+    expected_local = base + np.sum(terms, axis=1)
+    np.testing.assert_allclose(stats.term_means, expected_means, rtol=2.0e-12, atol=2.0e-12)
+    np.testing.assert_allclose(
+        stats.term_second_moments,
+        expected_seconds,
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
+    np.testing.assert_allclose(stats.rms_scores, np.sqrt(expected_seconds), rtol=2.0e-12)
+    np.testing.assert_allclose(stats.local_energies, expected_local, rtol=2.0e-12, atol=2.0e-12)
+    np.testing.assert_allclose(
+        stats.exact_block_energy_ha,
+        np.sum(norm_weights * expected_local),
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
+
+
+def test_population_tuner_selects_least_work_candidate_meeting_noise_target():
+    # The RMS-optimal tail variance after a ranked head is
+    # (sum_g score_g)^2 - (sum_g mean_g)^2.
+    stats = CisdModePopulationStats(
+        term_means=np.zeros(4, dtype=np.float64),
+        term_second_moments=np.asarray([16.0, 4.0, 1.0, 0.25]),
+        rms_scores=np.asarray([4.0, 2.0, 1.0, 0.5]),
+        local_energies=np.zeros(2, dtype=np.float64),
+        exact_block_energy_ha=0.0,
+        independent_population_std_ha=0.0,
+        wall_seconds=0.0,
+    )
+    cfg = CisdModePairTuningCfg(
+        target_tail_std_ha=0.08,
+        safety_factor=1.0,
+        candidate_sample_sizes=(64, 256),
+        maximum_head_fraction=0.75,
+        production_head_chol_batch_size=2,
+        settling_blocks=0,
+    )
+    selected = select_cisd_mode_pair_sampling(stats, cfg, n_walkers=10)
+
+    # H=2, S=256 has std 1.5/sqrt(256)=0.09375 and fails. H=3,
+    # S=64 has std 0.5/sqrt(64)=0.0625 and is the cheapest feasible cell.
+    assert selected.sampling.chol_head_size == 3
+    assert selected.sampling.pair_sample_size == 64
+    assert selected.sampling.rank_head_by_guide
+    assert selected.sampling.head_chol_batch_size == 2
+    assert selected.estimated_pair_evaluations == 94
+    np.testing.assert_allclose(selected.estimated_tail_std_ha, 0.0625)

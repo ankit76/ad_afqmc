@@ -7,7 +7,8 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
-from trot.core.ops import MeasOps, TrialOps, k_energy
+from trot import driver
+from trot.core.ops import BlockEnergyRetuneResult, MeasOps, TrialOps, k_energy
 from trot.core.system import System
 from trot.prop.blocks import block
 from trot.prop.types import PropOps, PropState, QmcParams
@@ -161,3 +162,90 @@ def test_block_energy_hook_gets_dedicated_key_and_needs_no_energy_kernel():
         state_new.e_estimate,
         params.shift_ema * expected_energy,
     )
+
+
+def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
+    selector_calls = []
+
+    def fake_make_run_blocks_with_auto_chunks(**kwargs):
+        params_i = kwargs["params"]
+        meas_ctx_i = kwargs["meas_ctx"]
+        selector_calls.append((params_i.n_chunks, float(meas_ctx_i)))
+
+        def run_blocks(state, *, n_blocks, **run_kwargs):
+            del run_kwargs
+            scalars = {
+                "energy": jnp.full((n_blocks,), meas_ctx_i, dtype=jnp.float64),
+                "weight": jnp.ones((n_blocks,), dtype=jnp.float64),
+            }
+            return state, scalars, ()
+
+        return params_i, run_blocks
+
+    monkeypatch.setattr(
+        driver,
+        "_make_run_blocks_with_auto_chunks",
+        fake_make_run_blocks_with_auto_chunks,
+    )
+
+    retune_calls = []
+
+    def retune(
+        state,
+        equilibration_energies,
+        equilibration_weights,
+        params,
+        ham_data,
+        meas_ctx,
+        trial_data,
+    ):
+        del params, ham_data, trial_data
+        retune_calls.append(
+            (
+                np.asarray(equilibration_energies),
+                np.asarray(equilibration_weights),
+                float(meas_ctx),
+            )
+        )
+        return BlockEnergyRetuneResult(
+            state=state._replace(e_estimate=jnp.asarray(2.0)),
+            meas_ctx=jnp.asarray(2.0),
+            initial_n_chunks=3,
+            settling_blocks=2,
+        )
+
+    meas_ops = MeasOps(
+        overlap=_overlap,
+        block_energy=lambda *args, **kwargs: jnp.asarray(0.0),
+        retune_block_energy=retune,
+    )
+    sys, _, state, trial_ops, prop_ops, _ = _make_inputs(meas_ops)
+    params = QmcParams(
+        dt=0.005,
+        n_walkers=2,
+        n_prop_steps=1,
+        n_eql_blocks=2,
+        n_blocks=20,
+        n_chunks=1,
+        seed=0,
+    )
+    result = driver.run_qmc(
+        sys=sys,
+        params=params,
+        ham_data=jnp.asarray(0.0),
+        trial_data=jnp.asarray(0.0),
+        meas_ops=meas_ops,
+        trial_ops=trial_ops,
+        prop_ops=prop_ops,
+        block_fn=block,
+        state=state,
+        meas_ctx=jnp.asarray(1.0),
+        prop_ctx=None,
+    )
+
+    assert selector_calls == [(1, 1.0), (3, 2.0)]
+    assert len(retune_calls) == 1
+    np.testing.assert_allclose(retune_calls[0][0], np.ones(2))
+    np.testing.assert_allclose(retune_calls[0][1], np.ones(2))
+    np.testing.assert_allclose(result.block_energies[:5], np.asarray([0.0, 1.0, 1.0, 2.0, 2.0]))
+    np.testing.assert_allclose(result.block_energies[5:], 2.0)
