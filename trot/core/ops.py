@@ -132,7 +132,14 @@ class BlockEnergyFn(Protocol):
         ham_data: Any,
         meas_ctx: Any,
         trial_data: Any,
-    ) -> jax.Array: ...
+    ) -> jax.Array | BlockEnergyEstimate: ...
+
+
+class BlockEnergyEstimate(NamedTuple):
+    """Block energy with optional zero-mean estimator diagnostics."""
+
+    energy: jax.Array
+    diagnostics: Mapping[str, jax.Array]
 
 
 class BlockEnergyRetuneResult(NamedTuple):
@@ -162,6 +169,7 @@ class BlockEnergyRetuneFn(Protocol):
 # usual kernel names
 k_energy = "energy"
 k_force_bias = "force_bias"
+d_energy_sampling_noise = "energy_sampling_noise"
 o_rdm1 = "rdm1"
 o_density_corr = "density_corr"
 o_orb_corr = "orb_corr"

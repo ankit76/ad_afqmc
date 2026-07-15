@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from trot import config
 
 config.configure_once(use_gpu=False)
@@ -8,7 +10,7 @@ import numpy as np
 import pytest
 
 from trot import testing
-from trot.core.ops import k_energy, k_force_bias
+from trot.core.ops import BlockEnergyEstimate, d_energy_sampling_noise, k_energy, k_force_bias
 from trot.core.system import System
 from trot.meas.cisd import (
     CisdMeasCfg,
@@ -443,6 +445,20 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
         CisdModePairSamplingCfg(chol_head_size=-1, pair_sample_size=8)
     with pytest.raises(ValueError, match="pair_sample_size must be positive"):
         CisdModePairSamplingCfg(chol_head_size=0, pair_sample_size=0)
+    with pytest.raises(ValueError, match="uniform_mix must lie"):
+        CisdModePairSamplingCfg(
+            chol_head_size=0,
+            pair_sample_size=8,
+            tail_probability_uniform_mix=1.1,
+        )
+    with pytest.raises(ValueError, match="at least two"):
+        CisdModePairSamplingCfg(
+            chol_head_size=0,
+            pair_sample_size=1,
+            track_half_sample_diagnostic=True,
+        )
+    with pytest.raises(ValueError, match="target_tail_std_fraction"):
+        CisdModePairTuningCfg(target_tail_std_fraction=0.0)
 
     _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
     sys = System(
@@ -517,6 +533,15 @@ def test_ranked_arbitrary_head_uses_indices_without_reordering_cholesky_storage(
     np.testing.assert_allclose(
         ctx.chol_tail_prob,
         np.asarray([1.0, 2.0, 3.0]) / 6.0,
+        rtol=0.0,
+        atol=1.0e-14,
+    )
+    mixed_sampling = replace(sampling, tail_probability_uniform_mix=0.2)
+    mixed_ctx = configure_cisd_mode_pair_sampling(base_ctx, mixed_sampling, scores)
+    expected_mixed_prob = 0.8 * np.asarray([1.0, 2.0, 3.0]) / 6.0 + 0.2 / 3.0
+    np.testing.assert_allclose(
+        mixed_ctx.chol_tail_prob,
+        expected_mixed_prob,
         rtol=0.0,
         atol=1.0e-14,
     )
@@ -676,6 +701,7 @@ def test_pair_sampled_tail_matches_exact_energy_within_analytic_sampling_error()
     sampling = CisdModePairSamplingCfg(
         chol_head_size=2,
         pair_sample_size=pair_sample_size,
+        track_half_sample_diagnostic=True,
     )
     ctx = build_mode_meas_ctx(
         ham,
@@ -719,21 +745,53 @@ def test_pair_sampled_tail_matches_exact_energy_within_analytic_sampling_error()
     tail_variance = jnp.sum(joint_prob * (importance_values - tail_mean) ** 2)
     standard_error = jnp.sqrt(tail_variance / pair_sample_size)
 
-    candidate = jax.jit(pair_sampled_block_energy, static_argnums=4)(
+    rng_key = jax.random.PRNGKey(991)
+    candidate_result = jax.jit(pair_sampled_block_energy, static_argnums=4)(
         walkers,
         weights,
         jnp.ones_like(weights, dtype=jnp.complex128),
-        jax.random.PRNGKey(991),
+        rng_key,
         2,
         ham,
         ctx,
         trial,
     )
+    assert isinstance(candidate_result, BlockEnergyEstimate)
     np.testing.assert_allclose(
-        candidate,
+        candidate_result.energy,
         exact_block,
         rtol=0.0,
         atol=float(6.0 * standard_error + 1.0e-12),
+    )
+
+    key_walker, key_chol = jax.random.split(rng_key)
+    sample_walker = jax.random.choice(
+        key_walker,
+        weights.shape[0],
+        shape=(pair_sample_size,),
+        replace=True,
+        p=norm_weights,
+    )
+    sample_chol_rel = jax.random.choice(
+        key_chol,
+        ctx.chol_tail_prob.shape[0],
+        shape=(pair_sample_size,),
+        replace=True,
+        p=ctx.chol_tail_prob,
+    )
+    sampled_values = (
+        jnp.real(all_terms[sample_walker, ctx.chol_tail_indices[sample_chol_rel]])
+        / ctx.chol_tail_prob[sample_chol_rel]
+    )
+    half_size = pair_sample_size // 2
+    expected_diagnostic = 0.5 * (
+        jnp.mean(sampled_values[:half_size]) - jnp.mean(sampled_values[half_size:])
+    )
+    np.testing.assert_allclose(
+        candidate_result.diagnostics[d_energy_sampling_noise],
+        expected_diagnostic,
+        rtol=2.0e-12,
+        atol=2.0e-12,
     )
 
 
@@ -820,18 +878,24 @@ def test_population_tuner_selects_least_work_candidate_meeting_noise_target():
         rms_scores=np.asarray([4.0, 2.0, 1.0, 0.5]),
         local_energies=np.zeros(2, dtype=np.float64),
         exact_block_energy_ha=0.0,
-        independent_population_std_ha=0.0,
+        independent_population_std_ha=0.16,
         wall_seconds=0.0,
     )
     cfg = CisdModePairTuningCfg(
-        target_tail_std_ha=0.08,
+        target_tail_std_fraction=0.5,
         safety_factor=1.0,
         candidate_sample_sizes=(64, 256),
         maximum_head_fraction=0.75,
         production_head_chol_batch_size=2,
         settling_blocks=0,
     )
-    selected = select_cisd_mode_pair_sampling(stats, cfg, n_walkers=10)
+    selected = select_cisd_mode_pair_sampling(
+        stats,
+        cfg,
+        n_walkers=10,
+        calibration_std_ha=0.16,
+        calibration_source="late equilibration block standard deviation",
+    )
 
     # H=2, S=256 has std 1.5/sqrt(256)=0.09375 and fails. H=3,
     # S=64 has std 0.5/sqrt(64)=0.0625 and is the cheapest feasible cell.
@@ -841,3 +905,8 @@ def test_population_tuner_selects_least_work_candidate_meeting_noise_target():
     assert selected.sampling.head_chol_batch_size == 2
     assert selected.estimated_pair_evaluations == 94
     np.testing.assert_allclose(selected.estimated_tail_std_ha, 0.0625)
+    np.testing.assert_allclose(selected.target_tail_std_ha, 0.08)
+    assert selected.target_tail_std_source == (
+        "0.500 x late equilibration block standard deviation"
+    )
+    np.testing.assert_allclose(selected.calibration_std_ha, 0.16)

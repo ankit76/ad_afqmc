@@ -11,7 +11,7 @@ from jax.experimental import io_callback
 
 from .. import walkers as wk
 from ..core.levels import LevelPack
-from ..core.ops import MeasOps, TrialOps, k_energy
+from ..core.ops import BlockEnergyEstimate, MeasOps, TrialOps, k_energy
 from ..core.system import System
 from ..walkers import SrFn
 from .types import PropOps, PropState, QmcParams, QmcParamsFp
@@ -235,6 +235,7 @@ def block(
 
     thresh = jnp.sqrt(2.0 / jnp.asarray(params.dt))
     e_ref = state.e_estimate
+    energy_diagnostics: dict[str, jax.Array] = {}
     if meas_ops.block_energy is None:
         e_kernel = meas_ops.require_kernel(k_energy)
         e_samples = wk.vmap_chunked(
@@ -264,18 +265,21 @@ def block(
         weights = state.weights
         w_sum = jnp.sum(weights)
         w_sum_safe = jnp.where(w_sum == 0, 1.0, w_sum)
-        e_block = jnp.real(
-            meas_ops.block_energy(
-                state.walkers,
-                weights,
-                state.overlaps,
-                key_energy,
-                params.n_chunks,
-                ham_data,
-                meas_ctx,
-                trial_data,
-            )
+        energy_estimate = meas_ops.block_energy(
+            state.walkers,
+            weights,
+            state.overlaps,
+            key_energy,
+            params.n_chunks,
+            ham_data,
+            meas_ctx,
+            trial_data,
         )
+        if isinstance(energy_estimate, BlockEnergyEstimate):
+            e_block = jnp.real(energy_estimate.energy)
+            energy_diagnostics = dict(energy_estimate.diagnostics)
+        else:
+            e_block = jnp.real(energy_estimate)
         is_bad = (~jnp.isfinite(e_block)) | (jnp.abs(e_block - e_ref) > thresh)
         e_block = jnp.where((w_sum == 0) | is_bad, e_ref, e_block)
 
@@ -308,10 +312,9 @@ def block(
         rng_key=key_next,
     )
 
-    obs = BlockObs(
-        scalars={"energy": e_block, "weight": w_sum},
-        observables=obs_samples,
-    )
+    scalars = {"energy": e_block, "weight": w_sum}
+    scalars.update(energy_diagnostics)
+    obs = BlockObs(scalars=scalars, observables=obs_samples)
     return state, obs
 
 

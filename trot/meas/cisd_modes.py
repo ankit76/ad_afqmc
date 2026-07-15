@@ -12,7 +12,14 @@ import numpy as np
 from jax import lax, tree_util
 
 from .. import walkers as wk
-from ..core.ops import BlockEnergyRetuneResult, MeasOps, k_energy, k_force_bias
+from ..core.ops import (
+    BlockEnergyEstimate,
+    BlockEnergyRetuneResult,
+    MeasOps,
+    d_energy_sampling_noise,
+    k_energy,
+    k_force_bias,
+)
 from ..core.system import System
 from ..ham.chol import HamChol
 from ..trial.cisd_modes import CisdModeTrial, mode_apply, mode_quadratic
@@ -97,6 +104,8 @@ class CisdModePairSamplingCfg:
     rank_head_by_guide: bool = False
     guide_chol_batch_size: int = 16
     head_chol_batch_size: int = 0
+    tail_probability_uniform_mix: float = 0.0
+    track_half_sample_diagnostic: bool = False
 
     def __post_init__(self) -> None:
         if self.chol_head_size < 0:
@@ -107,13 +116,20 @@ class CisdModePairSamplingCfg:
             raise ValueError("guide_chol_batch_size must be positive.")
         if self.head_chol_batch_size < 0:
             raise ValueError("head_chol_batch_size must be nonnegative.")
+        if not 0.0 <= self.tail_probability_uniform_mix <= 1.0:
+            raise ValueError("tail_probability_uniform_mix must lie in [0, 1].")
+        if self.track_half_sample_diagnostic and self.pair_sample_size < 2:
+            raise ValueError(
+                "track_half_sample_diagnostic requires pair_sample_size to be at least two."
+            )
 
 
 @dataclass(frozen=True)
 class CisdModePairTuningCfg:
     """Post-equilibration population-RMS pair-sampling policy."""
 
-    target_tail_std_ha: float = 4.0e-3
+    target_tail_std_fraction: float = 0.35
+    target_tail_std_ha: float | None = None
     safety_factor: float = 1.25
     candidate_sample_sizes: tuple[int, ...] = (
         256,
@@ -132,17 +148,27 @@ class CisdModePairTuningCfg:
     tuning_chol_batch_size: int = 16
     production_initial_n_chunks: int = 1
     production_head_chol_batch_size: int = 0
+    tail_probability_uniform_mix: float = 0.01
+    track_half_sample_diagnostic: bool = True
     settling_blocks: int = 5
 
     def __post_init__(self) -> None:
-        if self.target_tail_std_ha <= 0.0:
-            raise ValueError("target_tail_std_ha must be positive.")
+        if self.target_tail_std_fraction <= 0.0:
+            raise ValueError("target_tail_std_fraction must be positive.")
+        if self.target_tail_std_ha is not None and self.target_tail_std_ha <= 0.0:
+            raise ValueError("target_tail_std_ha must be positive when provided.")
         if self.safety_factor <= 0.0:
             raise ValueError("safety_factor must be positive.")
         if not self.candidate_sample_sizes or any(
             sample_size <= 0 for sample_size in self.candidate_sample_sizes
         ):
             raise ValueError("candidate_sample_sizes must contain positive integers.")
+        if self.track_half_sample_diagnostic and any(
+            sample_size < 2 for sample_size in self.candidate_sample_sizes
+        ):
+            raise ValueError(
+                "track_half_sample_diagnostic requires candidate sample sizes of at least two."
+            )
         if not 0.0 <= self.minimum_head_fraction <= self.maximum_head_fraction <= 1.0:
             raise ValueError("head fractions must satisfy 0 <= minimum <= maximum <= 1.")
         if self.head_size_stride <= 0:
@@ -155,6 +181,8 @@ class CisdModePairTuningCfg:
             raise ValueError("production_initial_n_chunks must be positive.")
         if self.production_head_chol_batch_size < 0:
             raise ValueError("production_head_chol_batch_size must be nonnegative.")
+        if not 0.0 <= self.tail_probability_uniform_mix <= 1.0:
+            raise ValueError("tail_probability_uniform_mix must lie in [0, 1].")
         if self.settling_blocks < 0:
             raise ValueError("settling_blocks must be nonnegative.")
 
@@ -182,6 +210,8 @@ class CisdModePairTuningResult:
     estimated_tail_std_ha: float
     guarded_tail_std_ha: float
     target_tail_std_ha: float
+    target_tail_std_source: str
+    calibration_std_ha: float
     estimated_pair_evaluations: int
 
 
@@ -641,6 +671,10 @@ def configure_cisd_mode_pair_sampling(
     else:
         tail_scores = jnp.maximum(scores[tail_indices], 1.0e-300)
         tail_prob = tail_scores / jnp.sum(tail_scores, dtype=jnp.float64)
+        uniform_mix = sampling.tail_probability_uniform_mix
+        if uniform_mix > 0.0:
+            uniform_prob = jnp.full_like(tail_prob, 1.0 / tail_prob.shape[0])
+            tail_prob = (1.0 - uniform_mix) * tail_prob + uniform_mix * uniform_prob
     return replace(
         meas_ctx,
         chol_head_indices=head_indices,
@@ -659,7 +693,7 @@ def pair_sampled_block_energy(
     ham_data: HamChol,
     meas_ctx: CisdModeMeasCtx,
     trial_data: CisdModeTrial,
-) -> jax.Array:
+) -> jax.Array | BlockEnergyEstimate:
     """Exact Cholesky head plus sampled walker--Cholesky tail energy.
 
     Walkers are sampled according to their normalized phaseless weights and
@@ -701,6 +735,11 @@ def pair_sampled_block_energy(
 
     tail_size = int(meas_ctx.chol_tail_prob.shape[0])
     if tail_size == 0:
+        if sampling.track_half_sample_diagnostic:
+            return BlockEnergyEstimate(
+                energy=block_head,
+                diagnostics={d_energy_sampling_noise: jnp.asarray(0.0, dtype=jnp.float64)},
+            )
         return block_head
 
     key_walker, key_chol = jax.random.split(rng_key)
@@ -730,11 +769,22 @@ def pair_sampled_block_energy(
         trial_data,
         n_chunks=pair_n_chunks,
     )
-    tail_estimate = jnp.mean(
-        jnp.real(sample_terms) / meas_ctx.chol_tail_prob[sample_chol_rel],
-        dtype=jnp.float64,
+    importance_samples = jnp.real(sample_terms) / meas_ctx.chol_tail_prob[sample_chol_rel]
+    tail_estimate = jnp.mean(importance_samples, dtype=jnp.float64)
+    energy = block_head + tail_estimate
+    if not sampling.track_half_sample_diagnostic:
+        return energy
+
+    first_size = sampling.pair_sample_size // 2
+    second_size = sampling.pair_sample_size - first_size
+    first_mean = jnp.mean(importance_samples[:first_size], dtype=jnp.float64)
+    second_mean = jnp.mean(importance_samples[first_size:], dtype=jnp.float64)
+    diagnostic_scale = math.sqrt(first_size * second_size) / sampling.pair_sample_size
+    sampling_noise = diagnostic_scale * (first_mean - second_mean)
+    return BlockEnergyEstimate(
+        energy=energy,
+        diagnostics={d_energy_sampling_noise: sampling_noise},
     )
-    return block_head + tail_estimate
 
 
 def stream_cisd_mode_population_statistics(
@@ -866,6 +916,8 @@ def select_cisd_mode_pair_sampling(
     cfg: CisdModePairTuningCfg,
     *,
     n_walkers: int,
+    calibration_std_ha: float | None = None,
+    calibration_source: str = "independent population standard deviation",
 ) -> CisdModePairTuningResult:
     """Choose the least pair work that meets the guarded tail-noise target."""
 
@@ -875,14 +927,29 @@ def select_cisd_mode_pair_sampling(
     means = np.asarray(stats.term_means, dtype=np.float64)
     if scores.ndim != 1 or means.shape != scores.shape or scores.size == 0:
         raise ValueError("population statistics must contain matching nonempty Cholesky arrays.")
+    if not np.all(np.isfinite(scores)) or not np.all(np.isfinite(means)):
+        raise ValueError("population Cholesky statistics must be finite.")
+    scores = np.maximum(scores, 1.0e-300)
 
     n_chol = int(scores.size)
+    calibration_std = float(
+        stats.independent_population_std_ha if calibration_std_ha is None else calibration_std_ha
+    )
+    if cfg.target_tail_std_ha is None:
+        if not np.isfinite(calibration_std) or calibration_std <= 0.0:
+            raise ValueError(
+                "A positive finite calibration standard deviation is required when "
+                "target_tail_std_ha is not provided."
+            )
+        target_tail_std = cfg.target_tail_std_fraction * calibration_std
+        target_source = f"{cfg.target_tail_std_fraction:.3f} x {calibration_source}"
+    else:
+        target_tail_std = cfg.target_tail_std_ha
+        target_source = "absolute override"
+
     order = np.argsort(-scores, kind="stable")
     ordered_scores = scores[order]
     ordered_means = means[order]
-    tail_score_sum = np.concatenate(
-        (np.cumsum(ordered_scores[::-1], dtype=np.float64)[::-1], np.zeros(1))
-    )
     tail_mean_sum = np.concatenate(
         (np.cumsum(ordered_means[::-1], dtype=np.float64)[::-1], np.zeros(1))
     )
@@ -896,14 +963,22 @@ def select_cisd_mode_pair_sampling(
 
     candidates: list[CisdModePairTuningResult] = []
     for head_size in head_sizes:
-        variance = max(
-            0.0,
-            float(tail_score_sum[head_size] ** 2 - tail_mean_sum[head_size] ** 2),
-        )
+        tail_scores = ordered_scores[head_size:]
+        if tail_scores.size == 0:
+            variance = 0.0
+        else:
+            guide_prob = tail_scores / np.sum(tail_scores, dtype=np.float64)
+            uniform_mix = cfg.tail_probability_uniform_mix
+            probabilities = (1.0 - uniform_mix) * guide_prob + uniform_mix / tail_scores.size
+            second_moment = np.sum(tail_scores**2 / probabilities, dtype=np.float64)
+            variance = max(
+                0.0,
+                float(second_moment - tail_mean_sum[head_size] ** 2),
+            )
         for sample_size in sample_sizes:
             tail_std = math.sqrt(variance / sample_size) if head_size < n_chol else 0.0
             guarded_std = cfg.safety_factor * tail_std
-            if guarded_std > cfg.target_tail_std_ha:
+            if guarded_std > target_tail_std:
                 continue
             pair_evaluations = n_walkers * head_size
             if head_size < n_chol:
@@ -916,12 +991,16 @@ def select_cisd_mode_pair_sampling(
                         rank_head_by_guide=True,
                         guide_chol_batch_size=cfg.tuning_chol_batch_size,
                         head_chol_batch_size=cfg.production_head_chol_batch_size,
+                        tail_probability_uniform_mix=cfg.tail_probability_uniform_mix,
+                        track_half_sample_diagnostic=cfg.track_half_sample_diagnostic,
                     ),
                     chol_head_fraction=head_size / n_chol,
                     estimated_single_pair_variance_ha2=variance,
                     estimated_tail_std_ha=tail_std,
                     guarded_tail_std_ha=guarded_std,
-                    target_tail_std_ha=cfg.target_tail_std_ha,
+                    target_tail_std_ha=target_tail_std,
+                    target_tail_std_source=target_source,
+                    calibration_std_ha=calibration_std,
                     estimated_pair_evaluations=pair_evaluations,
                 )
             )
@@ -970,27 +1049,45 @@ def retune_cisd_mode_pair_sampling(
         n_walker_chunks=tuning_cfg.tuning_n_chunks,
         chol_batch_size=tuning_cfg.tuning_chol_batch_size,
     )
+    equilibration_values = np.asarray(
+        jax.device_get(equilibration_energies),
+        dtype=np.float64,
+    )
+    late_equilibration_values = equilibration_values[equilibration_values.size // 2 :]
+    late_equilibration_std = (
+        float(np.std(late_equilibration_values, ddof=1))
+        if late_equilibration_values.size > 1
+        else float("nan")
+    )
+    calibration_std = late_equilibration_std
+    calibration_source = "late equilibration block standard deviation"
+    if tuning_cfg.target_tail_std_ha is None and (
+        not np.isfinite(calibration_std) or calibration_std <= 0.0
+    ):
+        calibration_std = stats.independent_population_std_ha
+        calibration_source = "independent population standard deviation fallback"
+        print(
+            "[sampling] late-equilibration standard deviation is unavailable; "
+            "using the independent-population estimate for the relative target."
+        )
     selected = select_cisd_mode_pair_sampling(
         stats,
         tuning_cfg,
         n_walkers=int(state.walkers.shape[0]),
+        calibration_std_ha=calibration_std,
+        calibration_source=calibration_source,
     )
     production_ctx = configure_cisd_mode_pair_sampling(
         meas_ctx,
         selected.sampling,
         jnp.asarray(stats.rms_scores, dtype=jnp.float64),
     )
-    equilibration_std = (
-        float(np.std(np.asarray(jax.device_get(equilibration_energies)), ddof=1))
-        if int(equilibration_energies.shape[0]) > 1
-        else float("nan")
-    )
     print(
         "[sampling] population tuning complete: "
         f"seconds={stats.wall_seconds:.1f}, "
         f"exact_snapshot_energy={stats.exact_block_energy_ha:.10f} Ha, "
         f"independent_population_std={stats.independent_population_std_ha:.3e} Ha, "
-        f"equilibration_block_std={equilibration_std:.3e} Ha."
+        f"late_equilibration_block_std={late_equilibration_std:.3e} Ha."
     )
     print(
         "[sampling] selected population-RMS estimator: "
@@ -1000,6 +1097,8 @@ def retune_cisd_mode_pair_sampling(
         f"tail_std={selected.estimated_tail_std_ha:.3e} Ha, "
         f"guarded_tail_std={selected.guarded_tail_std_ha:.3e} Ha, "
         f"target={selected.target_tail_std_ha:.3e} Ha, "
+        f"target_source={selected.target_tail_std_source}, "
+        f"uniform_mix={selected.sampling.tail_probability_uniform_mix:.3%}, "
         f"work_proxy={selected.estimated_pair_evaluations} pairs."
     )
     energy_dtype = jnp.result_type(state.e_estimate)

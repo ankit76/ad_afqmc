@@ -8,7 +8,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from trot import driver
-from trot.core.ops import BlockEnergyRetuneResult, MeasOps, TrialOps, k_energy
+from trot.core.ops import (
+    BlockEnergyEstimate,
+    BlockEnergyRetuneResult,
+    MeasOps,
+    TrialOps,
+    d_energy_sampling_noise,
+    k_energy,
+)
 from trot.core.system import System
 from trot.prop.blocks import block
 from trot.prop.types import PropOps, PropState, QmcParams
@@ -164,6 +171,26 @@ def test_block_energy_hook_gets_dedicated_key_and_needs_no_energy_kernel():
     )
 
 
+def test_block_energy_diagnostics_are_added_to_block_scalars():
+    def block_energy(*args, **kwargs):
+        del args, kwargs
+        return BlockEnergyEstimate(
+            energy=jnp.asarray(3.0),
+            diagnostics={d_energy_sampling_noise: jnp.asarray(0.125)},
+        )
+
+    meas_ops = MeasOps(overlap=_overlap, block_energy=block_energy)
+    _, _, _, obs = _run_block(
+        meas_ops,
+        lambda walkers, weights, zeta, walker_kind: (
+            walkers,
+            weights,
+        ),
+    )
+    np.testing.assert_allclose(obs.scalars["energy"], 3.0)
+    np.testing.assert_allclose(obs.scalars[d_energy_sampling_noise], 0.125)
+
+
 def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
     selector_calls = []
 
@@ -178,6 +205,12 @@ def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
                 "energy": jnp.full((n_blocks,), meas_ctx_i, dtype=jnp.float64),
                 "weight": jnp.ones((n_blocks,), dtype=jnp.float64),
             }
+            if float(meas_ctx_i) == 2.0:
+                scalars[d_energy_sampling_noise] = jnp.full(
+                    (n_blocks,),
+                    0.002,
+                    dtype=jnp.float64,
+                )
             return state, scalars, ()
 
         return params_i, run_blocks
@@ -249,3 +282,4 @@ def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
     np.testing.assert_allclose(retune_calls[0][1], np.ones(2))
     np.testing.assert_allclose(result.block_energies[:5], np.asarray([0.0, 1.0, 1.0, 2.0, 2.0]))
     np.testing.assert_allclose(result.block_energies[5:], 2.0)
+    np.testing.assert_allclose(result.block_diagnostics[d_energy_sampling_noise], 0.002)

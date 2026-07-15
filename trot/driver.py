@@ -12,7 +12,7 @@ from jax import lax
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from .core.ops import MeasOps, TrialOps
+from .core.ops import MeasOps, TrialOps, d_energy_sampling_noise
 from .core.system import System
 from .meas.pt2ccsd import get_init_pt2trial_energy
 from .prop.blocks import BlockFn, MixedBlockFn
@@ -42,6 +42,13 @@ _COMPILER_MEMORY_ERROR_MARKERS = (
 
 
 class QmcResult(NamedTuple):
+    """AFQMC estimates, block histories, observables, and raw diagnostics.
+
+    ``block_diagnostics`` contains production-block estimator diagnostics. It
+    is intentionally not filtered by the energy outlier mask, so rare sampling
+    excursions remain visible to validation code.
+    """
+
     mean_energy: jax.Array
     stderr_energy: jax.Array
     block_energies: jax.Array
@@ -49,6 +56,7 @@ class QmcResult(NamedTuple):
     block_observables: dict[str, jax.Array]
     observable_means: dict[str, jax.Array]
     observable_stderrs: dict[str, jax.Array]
+    block_diagnostics: dict[str, jax.Array]
 
 
 class MixedQmcResult(NamedTuple):
@@ -582,6 +590,7 @@ def run_qmc(
     block_e_s = []
     block_w_s = []
     block_obs_s = {name: [] for name in observable_names}
+    block_diagnostics_s: dict[str, list[jax.Array]] = {}
     if print_every:
         print(
             f"{'':4s}{'block':>9s}  {'E_avg':>14s}  {'E_err':>10s}  {'E_block':>14s}  "
@@ -603,6 +612,9 @@ def run_qmc(
         w_chunk = scalars_chunk["weight"]
         block_e_s.extend(e_chunk.tolist())
         block_w_s.extend(w_chunk.tolist())
+        for name, values in scalars_chunk.items():
+            if name not in ("energy", "weight"):
+                block_diagnostics_s.setdefault(name, []).append(values)
         for i, name in enumerate(observable_names):
             block_obs_s[name].append(obs_chunk[i])
         w_chunk_avg = jnp.mean(w_chunk)
@@ -616,6 +628,12 @@ def run_qmc(
         mu = stats["mu"]
         se = stats["se_star"]
         nodes = int(state.node_encounters)
+        diagnostic_text = ""
+        noise_chunks = block_diagnostics_s.get(d_energy_sampling_noise, [])
+        if noise_chunks:
+            noise_values = jnp.concatenate(noise_chunks)
+            noise_rms_mha = 1000.0 * jnp.sqrt(jnp.mean(noise_values**2))
+            diagnostic_text = f"  tail_rms={float(noise_rms_mha):.3f} mHa"
         print(
             f"[blk {start + n:4d}/{params.n_blocks}]  "
             f"{mu:14.10f}  "
@@ -625,6 +643,7 @@ def run_qmc(
             f"{nodes:10d}  "
             f"{dt_per_block:9.3f}  "
             f"{elapsed:8.1f}"
+            f"{diagnostic_text}"
         )
         if se is not None and se <= target_error and target_error > 0.0:
             print(f"\nTarget error {target_error:.3e} reached at block {start + n}.")
@@ -635,6 +654,19 @@ def run_qmc(
         name: (jnp.concatenate(block_obs_s[name], axis=0) if len(block_obs_s[name]) > 0 else None)
         for name in observable_names
     }
+    block_diagnostics = {
+        name: jnp.concatenate(chunks) for name, chunks in block_diagnostics_s.items()
+    }
+    noise_values = block_diagnostics.get(d_energy_sampling_noise)
+    if noise_values is not None and noise_values.size > 0:
+        noise_rms_mha = 1000.0 * jnp.sqrt(jnp.mean(noise_values**2))
+        noise_mean_mha = 1000.0 * jnp.mean(noise_values)
+        print(
+            "\nEnergy-sampling diagnostic: "
+            f"half-difference RMS={float(noise_rms_mha):.3f} mHa, "
+            f"mean={float(noise_mean_mha):.3f} mHa, "
+            f"blocks={noise_values.size}."
+        )
 
     data_clean, keep_mask = reject_outliers(jnp.column_stack((block_e_s, block_w_s)), obs=0)
     print(f"\nRejected {block_e_s.shape[0] - data_clean.shape[0]} outlier blocks.")
@@ -693,6 +725,7 @@ def run_qmc(
         block_observables=block_obs_all,
         observable_means=obs_means,
         observable_stderrs=obs_stderrs,
+        block_diagnostics=block_diagnostics,
     )
 
 
@@ -1225,6 +1258,7 @@ def run_qmc_fp(
         block_observables=block_obs_all,
         observable_means=obs_means,
         observable_stderrs=obs_stderrs,
+        block_diagnostics={},
     )
 
 
