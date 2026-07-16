@@ -462,6 +462,12 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
         )
     with pytest.raises(ValueError, match="target_tail_std_fraction"):
         CisdModePairTuningCfg(target_tail_std_fraction=0.0)
+    with pytest.raises(ValueError, match="final_error_target_ha"):
+        CisdModePairTuningCfg(final_error_target_ha=0.0)
+    with pytest.raises(ValueError, match="final_error_sampling_fraction"):
+        CisdModePairTuningCfg(final_error_sampling_fraction=0.0)
+    with pytest.raises(ValueError, match="cross_validation_quantile"):
+        CisdModePairTuningCfg(cross_validation_quantile=0.0)
     with pytest.raises(ValueError, match="guide_policy"):
         CisdModePairTuningCfg(guide_policy="invalid")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="tuning_population_count"):
@@ -945,6 +951,11 @@ def test_population_tuner_averages_temporal_second_moments_and_conditional_varia
         averaged.population_term_means,
         np.asarray([[1.0, 0.0], [-1.0, 0.0]]),
     )
+    assert averaged.population_term_second_moments is not None
+    np.testing.assert_allclose(
+        averaged.population_term_second_moments,
+        np.asarray([[2.0, 2.0], [2.0, 2.0]]),
+    )
     assert averaged.exact_block_energy_ha == -1.0
     assert averaged.wall_seconds == 2.0
 
@@ -964,6 +975,56 @@ def test_population_tuner_averages_temporal_second_moments_and_conditional_varia
     # q=(1/2, 1/2), so E[X^2]=2/(1/2)+2/(1/2)=8. The
     # population-conditional tail means are +1 and -1, hence E[E[X|b]^2]=1.
     assert selected.estimated_single_pair_variance_ha2 == 7.0
+    assert selected.in_sample_single_pair_variance_ha2 == 7.0
+    assert selected.cross_validation_fold_count == 2
+
+
+def test_population_tuner_uses_held_out_population_variance_and_final_error_budget():
+    population_seconds = np.asarray(
+        [[100.0, 1.0], [1.0, 100.0]],
+        dtype=np.float64,
+    )
+    averaged_seconds = np.mean(population_seconds, axis=0)
+    stats = CisdModePopulationStats(
+        term_means=np.zeros(2, dtype=np.float64),
+        term_second_moments=averaged_seconds,
+        rms_scores=np.sqrt(averaged_seconds),
+        local_energies=np.zeros(2, dtype=np.float64),
+        exact_block_energy_ha=0.0,
+        independent_population_std_ha=1.0,
+        wall_seconds=0.0,
+        population_term_means=np.zeros((2, 2), dtype=np.float64),
+        population_term_second_moments=population_seconds,
+    )
+    cfg = CisdModePairTuningCfg(
+        final_error_sampling_fraction=0.2,
+        safety_factor=1.0,
+        cross_validation_quantile=1.0,
+        candidate_sample_sizes=(100_000_000,),
+        maximum_head_fraction=0.0,
+        tail_probability_uniform_mix=0.0,
+        track_half_sample_diagnostic=False,
+    )
+    selected = select_cisd_mode_pair_sampling(
+        stats,
+        cfg,
+        n_walkers=10,
+        final_error_target_ha=7.0e-4,
+        n_blocks=1000,
+    )
+
+    # The fitted guide is uniform and gives 202 Ha^2. In either held-out fold,
+    # the guide from the other population is (1/11, 10/11), giving 1101.1 Ha^2.
+    np.testing.assert_allclose(selected.in_sample_single_pair_variance_ha2, 202.0)
+    np.testing.assert_allclose(selected.estimated_single_pair_variance_ha2, 1101.1)
+    assert selected.cross_validation_fold_count == 2
+    np.testing.assert_allclose(
+        selected.target_tail_std_ha,
+        0.2 * 7.0e-4 * np.sqrt(1000),
+    )
+    assert selected.target_tail_std_source == (
+        "0.200 x final error 7.000e-04 Ha x sqrt(1000 blocks)"
+    )
 
 
 def test_hf_guide_tuner_uses_population_moments_to_select_ranked_estimator():

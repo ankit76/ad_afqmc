@@ -144,12 +144,23 @@ class CisdModePairTuningCfg:
     Cholesky head ranking and tail sampling probabilities. Multiple tuning
     populations are collected sequentially and discarded, with
     ``tuning_population_spacing_blocks`` propagation blocks between them.
+    Their stored first and second moments provide leave-one-population-out
+    variance validation without additional AFQMC blocks.
+
+    ``target_tail_std_ha`` is the highest-priority target override. Otherwise
+    a requested final error, supplied here or to the driver, is converted to a
+    per-block sampling budget using ``final_error_sampling_fraction`` and the
+    planned production length. The late-equilibration relative target remains
+    a fallback when neither is available.
     """
 
     guide_policy: Literal["population_rms", "hf"] = "population_rms"
+    final_error_target_ha: float | None = None
+    final_error_sampling_fraction: float = 0.2
     target_tail_std_fraction: float = 0.35
     target_tail_std_ha: float | None = None
-    safety_factor: float = 1.25
+    safety_factor: float = 1.0
+    cross_validation_quantile: float = 1.0
     candidate_sample_sizes: tuple[int, ...] = (
         256,
         512,
@@ -165,7 +176,7 @@ class CisdModePairTuningCfg:
     head_size_stride: int = 1
     tuning_n_chunks: int = 10
     tuning_chol_batch_size: int = 16
-    tuning_population_count: int = 1
+    tuning_population_count: int = 5
     tuning_population_spacing_blocks: int = 2
     production_initial_n_chunks: int = 1
     production_head_chol_batch_size: int = 0
@@ -176,12 +187,18 @@ class CisdModePairTuningCfg:
     def __post_init__(self) -> None:
         if self.guide_policy not in ("population_rms", "hf"):
             raise ValueError("guide_policy must be 'population_rms' or 'hf'.")
+        if self.final_error_target_ha is not None and self.final_error_target_ha <= 0.0:
+            raise ValueError("final_error_target_ha must be positive when provided.")
+        if not 0.0 < self.final_error_sampling_fraction <= 1.0:
+            raise ValueError("final_error_sampling_fraction must lie in (0, 1].")
         if self.target_tail_std_fraction <= 0.0:
             raise ValueError("target_tail_std_fraction must be positive.")
         if self.target_tail_std_ha is not None and self.target_tail_std_ha <= 0.0:
             raise ValueError("target_tail_std_ha must be positive when provided.")
         if self.safety_factor <= 0.0:
             raise ValueError("safety_factor must be positive.")
+        if not 0.0 < self.cross_validation_quantile <= 1.0:
+            raise ValueError("cross_validation_quantile must lie in (0, 1].")
         if not self.candidate_sample_sizes or any(
             sample_size <= 0 for sample_size in self.candidate_sample_sizes
         ):
@@ -226,6 +243,7 @@ class CisdModePopulationStats:
     independent_population_std_ha: float
     wall_seconds: float
     population_term_means: np.ndarray | None = None
+    population_term_second_moments: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -235,7 +253,10 @@ class CisdModePairTuningResult:
     sampling: CisdModePairSamplingCfg
     guide_policy: Literal["population_rms", "hf"]
     chol_head_fraction: float
+    in_sample_single_pair_variance_ha2: float
     estimated_single_pair_variance_ha2: float
+    cross_validation_fold_count: int
+    cross_validation_quantile: float
     estimated_tail_std_ha: float
     guarded_tail_std_ha: float
     target_tail_std_ha: float
@@ -948,6 +969,7 @@ def stream_cisd_mode_population_statistics(
         independent_population_std_ha=independent_population_std,
         wall_seconds=time.perf_counter() - start_time,
         population_term_means=term_means[None, :],
+        population_term_second_moments=term_second_moments[None, :],
     )
 
 
@@ -968,18 +990,16 @@ def average_cisd_mode_population_statistics(
     population_means = np.stack(
         [np.asarray(stats.term_means, dtype=np.float64) for stats in population_stats]
     )
+    population_second_moments = np.stack(
+        [np.asarray(stats.term_second_moments, dtype=np.float64) for stats in population_stats]
+    )
     mean_term_means = np.asarray(
         np.mean(population_means, axis=0, dtype=np.float64),
         dtype=np.float64,
     )
     second_moments = np.asarray(
         np.mean(
-            np.stack(
-                [
-                    np.asarray(stats.term_second_moments, dtype=np.float64)
-                    for stats in population_stats
-                ]
-            ),
+            population_second_moments,
             axis=0,
             dtype=np.float64,
         ),
@@ -1004,6 +1024,7 @@ def average_cisd_mode_population_statistics(
         ),
         wall_seconds=float(sum(stats.wall_seconds for stats in population_stats)),
         population_term_means=population_means,
+        population_term_second_moments=population_second_moments,
     )
 
 
@@ -1015,8 +1036,10 @@ def select_cisd_mode_pair_sampling(
     reference_guide_scores: np.ndarray | None = None,
     calibration_std_ha: float | None = None,
     calibration_source: str = "independent population standard deviation",
+    final_error_target_ha: float | None = None,
+    n_blocks: int | None = None,
 ) -> CisdModePairTuningResult:
-    """Choose the least pair work that meets the guarded tail-noise target."""
+    """Choose the least pair work that meets a cross-validated noise target."""
 
     if n_walkers <= 0:
         raise ValueError("n_walkers must be positive.")
@@ -1028,6 +1051,11 @@ def select_cisd_mode_pair_sampling(
         if stats.population_term_means is None
         else np.asarray(stats.population_term_means, dtype=np.float64)
     )
+    population_second_moments = (
+        second_moments[None, :]
+        if stats.population_term_second_moments is None
+        else np.asarray(stats.population_term_second_moments, dtype=np.float64)
+    )
     if (
         rms_scores.ndim != 1
         or means.shape != rms_scores.shape
@@ -1035,6 +1063,7 @@ def select_cisd_mode_pair_sampling(
         or population_means.ndim != 2
         or population_means.shape[1:] != rms_scores.shape
         or population_means.shape[0] == 0
+        or population_second_moments.shape != population_means.shape
         or rms_scores.size == 0
     ):
         raise ValueError("population statistics must contain matching nonempty Cholesky arrays.")
@@ -1043,7 +1072,9 @@ def select_cisd_mode_pair_sampling(
         or not np.all(np.isfinite(means))
         or not np.all(np.isfinite(second_moments))
         or not np.all(np.isfinite(population_means))
+        or not np.all(np.isfinite(population_second_moments))
         or np.any(second_moments < 0.0)
+        or np.any(population_second_moments < 0.0)
     ):
         raise ValueError("population Cholesky statistics must be finite.")
     if cfg.guide_policy == "population_rms":
@@ -1065,17 +1096,35 @@ def select_cisd_mode_pair_sampling(
     calibration_std = float(
         stats.independent_population_std_ha if calibration_std_ha is None else calibration_std_ha
     )
-    if cfg.target_tail_std_ha is None:
+    configured_final_error = (
+        cfg.final_error_target_ha
+        if cfg.final_error_target_ha is not None
+        else final_error_target_ha
+    )
+    if cfg.target_tail_std_ha is not None:
+        target_tail_std = cfg.target_tail_std_ha
+        target_source = "absolute override"
+    elif configured_final_error is not None and configured_final_error > 0.0:
+        if n_blocks is None or n_blocks <= 0:
+            raise ValueError(
+                "A positive n_blocks is required to derive the tail target from "
+                "the requested final error."
+            )
+        target_tail_std = (
+            cfg.final_error_sampling_fraction * configured_final_error * math.sqrt(n_blocks)
+        )
+        target_source = (
+            f"{cfg.final_error_sampling_fraction:.3f} x final error "
+            f"{configured_final_error:.3e} Ha x sqrt({n_blocks} blocks)"
+        )
+    else:
         if not np.isfinite(calibration_std) or calibration_std <= 0.0:
             raise ValueError(
                 "A positive finite calibration standard deviation is required when "
-                "target_tail_std_ha is not provided."
+                "neither target_tail_std_ha nor a final-error target is provided."
             )
         target_tail_std = cfg.target_tail_std_fraction * calibration_std
         target_source = f"{cfg.target_tail_std_fraction:.3f} x {calibration_source}"
-    else:
-        target_tail_std = cfg.target_tail_std_ha
-        target_source = "absolute override"
 
     order = np.argsort(-guide_scores, kind="stable")
     ordered_guide_scores = guide_scores[order]
@@ -1093,6 +1142,60 @@ def select_cisd_mode_pair_sampling(
         dtype=np.float64,
     )
 
+    def tail_variance(
+        head_size: int,
+        ordered_scores: np.ndarray,
+        ordered_seconds: np.ndarray,
+        tail_mean_square: float,
+    ) -> float:
+        tail_scores = ordered_scores[head_size:]
+        if tail_scores.size == 0:
+            return 0.0
+        guide_prob = tail_scores / np.sum(tail_scores, dtype=np.float64)
+        uniform_mix = cfg.tail_probability_uniform_mix
+        probabilities = (1.0 - uniform_mix) * guide_prob + uniform_mix / tail_scores.size
+        importance_second_moment = np.sum(
+            ordered_seconds[head_size:] / probabilities,
+            dtype=np.float64,
+        )
+        return max(0.0, float(importance_second_moment - tail_mean_square))
+
+    cross_validation_folds: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    n_populations = int(population_means.shape[0])
+    if n_populations > 1:
+        second_moment_sum = np.sum(
+            population_second_moments,
+            axis=0,
+            dtype=np.float64,
+        )
+        for held_out in range(n_populations):
+            if cfg.guide_policy == "population_rms":
+                training_seconds = (second_moment_sum - population_second_moments[held_out]) / (
+                    n_populations - 1
+                )
+                fold_scores = np.sqrt(np.maximum(training_seconds, 0.0))
+            else:
+                fold_scores = guide_scores
+            fold_scores = np.maximum(fold_scores, 1.0e-300)
+            fold_order = np.argsort(-fold_scores, kind="stable")
+            ordered_fold_means = population_means[held_out, fold_order]
+            fold_tail_means = np.concatenate(
+                (
+                    np.cumsum(
+                        ordered_fold_means[::-1],
+                        dtype=np.float64,
+                    )[::-1],
+                    np.zeros(1, dtype=np.float64),
+                )
+            )
+            cross_validation_folds.append(
+                (
+                    fold_scores[fold_order],
+                    population_second_moments[held_out, fold_order],
+                    fold_tail_means**2,
+                )
+            )
+
     minimum_head = max(0, min(n_chol, int(round(cfg.minimum_head_fraction * n_chol))))
     maximum_head = max(0, min(n_chol, int(round(cfg.maximum_head_fraction * n_chol))))
     head_sizes = list(range(minimum_head, maximum_head + 1, cfg.head_size_stride))
@@ -1102,23 +1205,39 @@ def select_cisd_mode_pair_sampling(
 
     candidates: list[CisdModePairTuningResult] = []
     for head_size in head_sizes:
-        tail_guide_scores = ordered_guide_scores[head_size:]
-        if tail_guide_scores.size == 0:
-            variance = 0.0
-        else:
-            guide_prob = tail_guide_scores / np.sum(tail_guide_scores, dtype=np.float64)
-            uniform_mix = cfg.tail_probability_uniform_mix
-            probabilities = (1.0 - uniform_mix) * guide_prob + uniform_mix / tail_guide_scores.size
-            second_moment = np.sum(
-                ordered_second_moments[head_size:] / probabilities,
+        in_sample_variance = tail_variance(
+            head_size,
+            ordered_guide_scores,
+            ordered_second_moments,
+            float(tail_mean_squares[head_size]),
+        )
+        if cross_validation_folds:
+            fold_variances = np.asarray(
+                [
+                    tail_variance(
+                        head_size,
+                        fold_scores,
+                        fold_seconds,
+                        float(fold_tail_mean_squares[head_size]),
+                    )
+                    for fold_scores, fold_seconds, fold_tail_mean_squares in (
+                        cross_validation_folds
+                    )
+                ],
                 dtype=np.float64,
             )
-            variance = max(
-                0.0,
-                float(second_moment - tail_mean_squares[head_size]),
+            cross_validated_variance = float(
+                np.quantile(
+                    fold_variances,
+                    cfg.cross_validation_quantile,
+                    method="higher",
+                )
             )
+            selection_variance = max(in_sample_variance, cross_validated_variance)
+        else:
+            selection_variance = in_sample_variance
         for sample_size in sample_sizes:
-            tail_std = math.sqrt(variance / sample_size) if head_size < n_chol else 0.0
+            tail_std = math.sqrt(selection_variance / sample_size) if head_size < n_chol else 0.0
             guarded_std = cfg.safety_factor * tail_std
             if guarded_std > target_tail_std:
                 continue
@@ -1138,7 +1257,10 @@ def select_cisd_mode_pair_sampling(
                     ),
                     guide_policy=cfg.guide_policy,
                     chol_head_fraction=head_size / n_chol,
-                    estimated_single_pair_variance_ha2=variance,
+                    in_sample_single_pair_variance_ha2=in_sample_variance,
+                    estimated_single_pair_variance_ha2=selection_variance,
+                    cross_validation_fold_count=len(cross_validation_folds),
+                    cross_validation_quantile=cfg.cross_validation_quantile,
                     estimated_tail_std_ha=tail_std,
                     guarded_tail_std_ha=guarded_std,
                     target_tail_std_ha=target_tail_std,
@@ -1175,10 +1297,11 @@ def retune_cisd_mode_pair_sampling(
     *,
     advance_blocks: BlockEnergyAdvanceFn,
     tuning_cfg: CisdModePairTuningCfg,
+    target_error: float | None = None,
 ) -> BlockEnergyRetuneResult:
     """Tune and install the requested production guide after equilibration."""
 
-    del equilibration_weights, params
+    del equilibration_weights
     population_stats = []
     additional_equilibration_energies = []
     for population_index in range(tuning_cfg.tuning_population_count):
@@ -1241,8 +1364,13 @@ def retune_cisd_mode_pair_sampling(
     )
     calibration_std = late_equilibration_std
     calibration_source = "late equilibration block standard deviation"
-    if tuning_cfg.target_tail_std_ha is None and (
-        not np.isfinite(calibration_std) or calibration_std <= 0.0
+    has_final_error_target = tuning_cfg.final_error_target_ha is not None or (
+        target_error is not None and target_error > 0.0
+    )
+    if (
+        tuning_cfg.target_tail_std_ha is None
+        and not has_final_error_target
+        and (not np.isfinite(calibration_std) or calibration_std <= 0.0)
     ):
         calibration_std = stats.independent_population_std_ha
         calibration_source = "independent population standard deviation fallback"
@@ -1260,6 +1388,8 @@ def retune_cisd_mode_pair_sampling(
         ),
         calibration_std_ha=calibration_std,
         calibration_source=calibration_source,
+        final_error_target_ha=target_error,
+        n_blocks=(int(params.n_blocks) if params is not None else None),
     )
     if tuning_cfg.guide_policy == "population_rms":
         production_guide_scores = stats.rms_scores
@@ -1289,6 +1419,10 @@ def retune_cisd_mode_pair_sampling(
         f"({selected.chol_head_fraction:.3%}), "
         f"pair_sample_size={selected.sampling.pair_sample_size}, "
         f"tail_std={selected.estimated_tail_std_ha:.3e} Ha, "
+        f"in_sample_tail_std="
+        f"{math.sqrt(selected.in_sample_single_pair_variance_ha2 / selected.sampling.pair_sample_size):.3e} Ha, "
+        f"cv_folds={selected.cross_validation_fold_count}, "
+        f"cv_quantile={selected.cross_validation_quantile:.3f}, "
         f"guarded_tail_std={selected.guarded_tail_std_ha:.3e} Ha, "
         f"target={selected.target_tail_std_ha:.3e} Ha, "
         f"target_source={selected.target_tail_std_source}, "

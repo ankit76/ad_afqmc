@@ -530,6 +530,7 @@ def run_qmc(
             meas_ctx,
             trial_data,
             advance_blocks=advance_equilibration_blocks,
+            target_error=target_error,
         )
         if retuned.initial_n_chunks <= 0:
             raise ValueError("retuned initial_n_chunks must be positive.")

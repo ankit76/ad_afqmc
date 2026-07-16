@@ -233,6 +233,7 @@ def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
         trial_data,
         *,
         advance_blocks,
+        target_error=None,
     ):
         del params, ham_data, trial_data
         assert callable(advance_blocks)
@@ -241,6 +242,7 @@ def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
                 np.asarray(equilibration_energies),
                 np.asarray(equilibration_weights),
                 float(meas_ctx),
+                target_error,
             )
         )
         return BlockEnergyRetuneResult(
@@ -277,12 +279,14 @@ def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
         state=state,
         meas_ctx=jnp.asarray(1.0),
         prop_ctx=None,
+        target_error=0.0,
     )
 
     assert selector_calls == [(1, 1.0), (3, 2.0)]
     assert len(retune_calls) == 1
     np.testing.assert_allclose(retune_calls[0][0], np.ones(2))
     np.testing.assert_allclose(retune_calls[0][1], np.ones(2))
+    assert retune_calls[0][3] == 0.0
     np.testing.assert_allclose(result.block_energies[:5], np.asarray([0.0, 1.0, 1.0, 2.0, 2.0]))
     np.testing.assert_allclose(result.block_energies[5:], 2.0)
     np.testing.assert_allclose(result.block_diagnostics[d_energy_sampling_noise], 0.002)

@@ -176,6 +176,7 @@ class BlockEnergyRetuneFn(Protocol):
         trial_data: Any,
         *,
         advance_blocks: BlockEnergyAdvanceFn,
+        target_error: float | None = None,
     ) -> BlockEnergyRetuneResult: ...
 
 
