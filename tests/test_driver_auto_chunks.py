@@ -141,6 +141,21 @@ def test_auto_chunks_retries_compiler_memory_failure_with_twice_the_chunks(monke
     assert run_blocks is built[-1]
 
 
+def test_auto_chunks_retries_when_gpu_autotuner_finds_no_valid_config(monkeypatch):
+    params = QmcParams(n_walkers=8, n_chunks=1, auto_n_chunks=True)
+    compile_error = jax.errors.JaxRuntimeError("INTERNAL: No valid config found!")
+    selected, run_blocks, built = _select(
+        monkeypatch,
+        params,
+        {1: 0, 2: 700},
+        compile_errors={1: compile_error},
+    )
+
+    assert [candidate.n_chunks for candidate in built] == [1, 2]
+    assert selected.n_chunks == 2
+    assert run_blocks is built[-1]
+
+
 def test_auto_chunks_reraises_unrecognized_compiler_failure(monkeypatch):
     params = QmcParams(n_walkers=8, n_chunks=1, auto_n_chunks=True)
     compile_error = jax.errors.JaxRuntimeError("INTERNAL: invalid compiler IR")

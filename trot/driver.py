@@ -38,6 +38,9 @@ _COMPILER_MEMORY_ERROR_MARKERS = (
     # GPU GEMM autotuning can report this after every candidate kernel fails
     # to produce a reference result because its buffers could not be allocated.
     "no reference output found",
+    # Some XLA GPU autotuners discard every candidate after allocation
+    # failures and only expose this generic final error to Python.
+    "no valid config found",
 )
 
 
@@ -470,14 +473,7 @@ def run_qmc(
     block_w_eq.append(jnp.sum(state.weights))
     print("\nEquilibration:\n")
     if print_every:
-        print(
-            f"{'':4s}"
-            f"{'block':>9s}  "
-            f"{'E_blk':>14s}  "
-            f"{'W':>12s}   "
-            f"{'nodes':>10s}  "
-            f"{'t[s]':>8s}"
-        )
+        print(f"{'':4s}{'block':>9s}  {'E_blk':>14s}  {'W':>12s}   {'nodes':>10s}  {'t[s]':>8s}")
     print(
         f"[eql {0:4d}/{params.n_eql_blocks}]  "
         f"{float(state.e_estimate):14.10f}  "
@@ -1197,7 +1193,7 @@ def run_qmc_fp(
     chunk = print_every
     for i in range(params.n_traj):
         print("Trajectory count", i + 1)
-        print(f"{'tau':^12s}    " f"{'E_avg':^14s}  " f"{'E_err':^13s}  " f"{'sign':>6s}")
+        print(f"{'tau':^12s}    {'E_avg':^14s}  {'E_err':^13s}  {'sign':>6s}")
         if i > 0:
             params = dataclasses.replace(params, seed=params.seed + i)
             state = prop_ops.init_prop_state(
