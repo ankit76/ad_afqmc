@@ -18,6 +18,8 @@ from .core.ops import (
     d_energy_head_guard_count,
     d_energy_head_guard_weight,
     d_energy_sampling_noise,
+    d_energy_walker_guide_ess,
+    d_energy_walker_guide_max_correction,
 )
 from .core.system import System
 from .meas.pt2ccsd import get_init_pt2trial_energy
@@ -699,6 +701,20 @@ def run_qmc(
             f"affected_blocks={int(guarded_blocks)}/{guard_counts.size}, "
             f"mean_rejected_weight={float(mean_guarded_weight):.3e}, "
             f"max_rejected_weight={float(max_guarded_weight):.3e}."
+        )
+    walker_guide_ess = block_diagnostics.get(d_energy_walker_guide_ess)
+    walker_guide_max_correction = block_diagnostics.get(d_energy_walker_guide_max_correction)
+    if (
+        walker_guide_ess is not None
+        and walker_guide_max_correction is not None
+        and walker_guide_ess.size > 0
+    ):
+        print(
+            "Walker-importance diagnostic: "
+            f"mean_proposal_ess={float(jnp.mean(walker_guide_ess)):.1f}, "
+            f"minimum_proposal_ess={float(jnp.min(walker_guide_ess)):.1f}, "
+            f"maximum_ht_correction="
+            f"{float(jnp.max(walker_guide_max_correction)):.3e}."
         )
 
     data_clean, keep_mask = reject_outliers(jnp.column_stack((block_e_s, block_w_s)), obs=0)

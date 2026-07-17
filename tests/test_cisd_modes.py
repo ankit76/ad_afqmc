@@ -15,6 +15,8 @@ from trot.core.ops import (
     d_energy_head_guard_count,
     d_energy_head_guard_weight,
     d_energy_sampling_noise,
+    d_energy_walker_guide_ess,
+    d_energy_walker_guide_max_correction,
     k_energy,
     k_force_bias,
 )
@@ -30,6 +32,7 @@ from trot.meas.cisd_modes import (
     CisdModePopulationStats,
     CisdModePairSamplingCfg,
     _cisd_mode_chol_index_sum_for_walkers,
+    _cisd_mode_chol_index_moments_for_walkers,
     _cisd_mode_chol_pair_terms,
     _cisd_mode_chol_terms_for_walkers,
     _cisd_mode_energy_common,
@@ -467,6 +470,18 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
             pair_sample_size=1,
             track_half_sample_diagnostic=True,
         )
+    with pytest.raises(ValueError, match="walker_guide_policy"):
+        CisdModePairSamplingCfg(
+            chol_head_size=0,
+            pair_sample_size=8,
+            walker_guide_policy="invalid",  # pyright: ignore[reportArgumentType]
+        )
+    with pytest.raises(ValueError, match="walker_guide_weight_mix"):
+        CisdModePairSamplingCfg(
+            chol_head_size=0,
+            pair_sample_size=8,
+            walker_guide_weight_mix=0.0,
+        )
     with pytest.raises(ValueError, match="target_tail_std_fraction"):
         CisdModePairTuningCfg(target_tail_std_fraction=0.0)
     with pytest.raises(ValueError, match="final_error_target_ha"):
@@ -481,6 +496,10 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
         CisdModePairTuningCfg(tuning_population_count=0)
     with pytest.raises(ValueError, match="tuning_population_spacing_blocks"):
         CisdModePairTuningCfg(tuning_population_spacing_blocks=0)
+    with pytest.raises(ValueError, match="walker_guide_policy"):
+        CisdModePairTuningCfg(
+            walker_guide_policy="invalid"  # pyright: ignore[reportArgumentType]
+        )
 
     _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
     sys = System(
@@ -605,6 +624,26 @@ def test_ranked_arbitrary_head_uses_indices_without_reordering_cholesky_storage(
     )(common)
     expected = jnp.sum(all_terms[:, jnp.asarray([1, 3])], axis=1)
     np.testing.assert_allclose(candidate, expected, rtol=2.0e-12, atol=2.0e-12)
+
+    candidate_sum, candidate_squared_norm = jax.jit(
+        lambda common_i: _cisd_mode_chol_index_moments_for_walkers(
+            common_i,
+            ctx.chol_head_indices,
+            ham,
+            ctx,
+            trial,
+            n_walker_chunks=2,
+            chol_batch_size=1,
+        )
+    )(common)
+    expected_terms = all_terms[:, jnp.asarray([1, 3])]
+    np.testing.assert_allclose(candidate_sum, expected, rtol=2.0e-12, atol=2.0e-12)
+    np.testing.assert_allclose(
+        candidate_squared_norm,
+        jnp.sum(jnp.real(expected_terms) ** 2, axis=1),
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
 
 
 def test_sampled_pair_terms_gather_inside_chunks_matches_full_pair_matrix():
@@ -809,6 +848,127 @@ def test_pair_sampled_head_guard_replaces_flagged_walkers_and_reports_weight():
     np.testing.assert_allclose(
         candidate.diagnostics[d_energy_head_guard_weight],
         jnp.sum(norm_weights * guarded),
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
+
+
+def test_head_rms_walker_importance_uses_exact_ht_correction():
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(965),
+        norb=trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    pair_sample_size = 128
+    weight_mix = 0.2
+    sampling = CisdModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=pair_sample_size,
+        walker_guide_policy="head_rms",
+        walker_guide_weight_mix=weight_mix,
+        track_half_sample_diagnostic=True,
+    )
+    ctx = build_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=CisdMeasCfg(memory_mode="high"),
+        n_mode_chunks=2,
+        energy_sampling=sampling,
+    )
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed),
+                trial.norb,
+                trial.nocc_full,
+                mix=mix,
+            )
+            for seed, mix in ((969, 0.1), (973, 0.3), (975, 0.6))
+        ]
+    )
+    weights = jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float64)
+    norm_weights = weights / jnp.sum(weights)
+    common = jax.vmap(
+        _cisd_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(walkers, ham, ctx, trial)
+    all_terms = jnp.real(
+        _cisd_mode_chol_terms_for_walkers(
+            common,
+            ham.chol,
+            ctx.rot_chol,
+            ctx.lci1,
+            ctx,
+            trial,
+        )
+    )
+    head_terms = all_terms[:, ctx.chol_head_indices]
+    head_energy = jnp.real(common.base) + jnp.sum(head_terms, axis=1)
+    head_rms_scores = jnp.sqrt(jnp.sum(head_terms**2, axis=1))
+    guided_probabilities = norm_weights * head_rms_scores
+    guided_probabilities /= jnp.sum(guided_probabilities)
+    walker_probabilities = weight_mix * norm_weights + (1.0 - weight_mix) * guided_probabilities
+    walker_corrections = norm_weights / walker_probabilities
+
+    rng_key = jax.random.PRNGKey(979)
+    key_walker, key_chol = jax.random.split(rng_key)
+    sample_walker = jax.random.choice(
+        key_walker,
+        weights.shape[0],
+        shape=(pair_sample_size,),
+        replace=True,
+        p=walker_probabilities,
+    )
+    sample_chol_rel = jax.random.choice(
+        key_chol,
+        ctx.chol_tail_prob.shape[0],
+        shape=(pair_sample_size,),
+        replace=True,
+        p=ctx.chol_tail_prob,
+    )
+    sample_values = (
+        walker_corrections[sample_walker]
+        * all_terms[sample_walker, ctx.chol_tail_indices[sample_chol_rel]]
+        / ctx.chol_tail_prob[sample_chol_rel]
+    )
+    expected_energy = jnp.sum(norm_weights * head_energy) + jnp.mean(sample_values)
+    half_size = pair_sample_size // 2
+    expected_diagnostic = 0.5 * (
+        jnp.mean(sample_values[:half_size]) - jnp.mean(sample_values[half_size:])
+    )
+
+    candidate = jax.jit(pair_sampled_block_energy, static_argnums=4)(
+        walkers,
+        weights,
+        jnp.ones_like(weights, dtype=jnp.complex128),
+        rng_key,
+        2,
+        ham,
+        ctx,
+        trial,
+        jnp.asarray(0.0),
+        jnp.asarray(20.0),
+    )
+
+    assert isinstance(candidate, BlockEnergyEstimate)
+    np.testing.assert_allclose(candidate.energy, expected_energy, rtol=2.0e-12, atol=2.0e-12)
+    np.testing.assert_allclose(
+        candidate.diagnostics[d_energy_sampling_noise],
+        expected_diagnostic,
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
+    np.testing.assert_allclose(
+        candidate.diagnostics[d_energy_walker_guide_ess],
+        1.0 / jnp.sum(walker_probabilities**2),
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
+    np.testing.assert_allclose(
+        candidate.diagnostics[d_energy_walker_guide_max_correction],
+        jnp.max(walker_corrections),
         rtol=2.0e-12,
         atol=2.0e-12,
     )

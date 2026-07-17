@@ -20,6 +20,8 @@ from ..core.ops import (
     d_energy_head_guard_count,
     d_energy_head_guard_weight,
     d_energy_sampling_noise,
+    d_energy_walker_guide_ess,
+    d_energy_walker_guide_max_correction,
     k_energy,
     k_force_bias,
 )
@@ -112,6 +114,10 @@ class CisdModePairSamplingCfg:
     pairs are drawn from the remaining tail. When ``guard_head_deviations`` is
     enabled, walkers with nonfinite or anomalous exact head energies contribute
     the current reference energy and are excluded from tail sampling.
+    ``walker_guide_policy='head_rms'`` additionally proposes accepted walkers
+    using the noncancelling RMS magnitude of their exact head terms. The
+    ``walker_guide_weight_mix`` fraction retains ordinary weight-proportional
+    sampling as a defensive component.
     """
 
     chol_head_size: int
@@ -122,6 +128,8 @@ class CisdModePairSamplingCfg:
     tail_probability_uniform_mix: float = 0.0
     track_half_sample_diagnostic: bool = False
     guard_head_deviations: bool = False
+    walker_guide_policy: Literal["weight", "head_rms"] = "weight"
+    walker_guide_weight_mix: float = 0.1
 
     def __post_init__(self) -> None:
         if self.chol_head_size < 0:
@@ -134,6 +142,10 @@ class CisdModePairSamplingCfg:
             raise ValueError("head_chol_batch_size must be nonnegative.")
         if not 0.0 <= self.tail_probability_uniform_mix <= 1.0:
             raise ValueError("tail_probability_uniform_mix must lie in [0, 1].")
+        if self.walker_guide_policy not in ("weight", "head_rms"):
+            raise ValueError("walker_guide_policy must be 'weight' or 'head_rms'.")
+        if not 0.0 < self.walker_guide_weight_mix <= 1.0:
+            raise ValueError("walker_guide_weight_mix must lie in (0, 1].")
         if self.track_half_sample_diagnostic and self.pair_sample_size < 2:
             raise ValueError(
                 "track_half_sample_diagnostic requires pair_sample_size to be at least two."
@@ -188,11 +200,17 @@ class CisdModePairTuningCfg:
     tail_probability_uniform_mix: float = 0.01
     track_half_sample_diagnostic: bool = True
     guard_head_deviations: bool = False
+    walker_guide_policy: Literal["weight", "head_rms"] = "weight"
+    walker_guide_weight_mix: float = 0.1
     settling_blocks: int = 5
 
     def __post_init__(self) -> None:
         if self.guide_policy not in ("population_rms", "hf"):
             raise ValueError("guide_policy must be 'population_rms' or 'hf'.")
+        if self.walker_guide_policy not in ("weight", "head_rms"):
+            raise ValueError("walker_guide_policy must be 'weight' or 'head_rms'.")
+        if not 0.0 < self.walker_guide_weight_mix <= 1.0:
+            raise ValueError("walker_guide_weight_mix must lie in (0, 1].")
         if self.final_error_target_ha is not None and self.final_error_target_ha <= 0.0:
             raise ValueError("final_error_target_ha must be positive when provided.")
         if not 0.0 < self.final_error_sampling_fraction <= 1.0:
@@ -352,7 +370,9 @@ def build_meas_ctx(
             f"({energy_sampling.chol_head_size / n_chol:.3%}), "
             f"pair_sample_size={energy_sampling.pair_sample_size}, "
             f"ranked_head={energy_sampling.rank_head_by_guide}, "
-            f"head_guard={energy_sampling.guard_head_deviations}."
+            f"head_guard={energy_sampling.guard_head_deviations}, "
+            f"walker_guide={energy_sampling.walker_guide_policy}, "
+            f"walker_weight_mix={energy_sampling.walker_guide_weight_mix:.3%}."
         )
     return meas_ctx
 
@@ -584,6 +604,67 @@ def _cisd_mode_chol_index_terms(
     )(chol_indices)
 
 
+def _cisd_mode_chol_index_moments_for_walkers(
+    common: CisdModeEnergyCommon,
+    chol_indices: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: CisdModeMeasCtx,
+    trial_data: CisdModeTrial,
+    *,
+    n_walker_chunks: int,
+    chol_batch_size: int,
+    compute_squared_norm: bool = True,
+) -> tuple[jax.Array, jax.Array]:
+    """Return the head sum and noncancelling real squared norm per walker."""
+
+    head_size = int(chol_indices.shape[0])
+    if head_size == 0:
+        return (
+            jnp.zeros_like(common.base, dtype=jnp.complex128),
+            jnp.zeros_like(jnp.real(common.base), dtype=jnp.float64),
+        )
+
+    batch_size = head_size if chol_batch_size <= 0 else min(chol_batch_size, head_size)
+    n_batches = math.ceil(head_size / batch_size)
+    padded_size = n_batches * batch_size
+    padded_indices = jnp.pad(chol_indices, (0, padded_size - head_size)).reshape(
+        n_batches, batch_size
+    )
+    valid = (jnp.arange(padded_size) < head_size).reshape(n_batches, batch_size)
+
+    def scan_body(carry, xs):
+        total, squared_norm = carry
+        indices_i, valid_i = xs
+        terms_i = _cisd_mode_chol_terms_for_walkers(
+            common,
+            ham_data.chol[indices_i],
+            meas_ctx.rot_chol[indices_i],
+            meas_ctx.lci1[indices_i],
+            meas_ctx,
+            trial_data,
+            n_chunks=n_walker_chunks,
+        )
+        terms_i = jnp.where(valid_i[None, :], terms_i, 0.0)
+        total = total + jnp.sum(terms_i, axis=1, dtype=jnp.complex128)
+        if compute_squared_norm:
+            terms_real = jnp.real(terms_i).astype(jnp.float64)
+            squared_norm = squared_norm + jnp.sum(
+                terms_real**2,
+                axis=1,
+                dtype=jnp.float64,
+            )
+        return (total, squared_norm), None
+
+    zero_total = jnp.zeros_like(common.base, dtype=jnp.complex128)
+    zero_squared_norm = jnp.zeros_like(jnp.real(common.base), dtype=jnp.float64)
+    (total, squared_norm), _ = lax.scan(
+        scan_body,
+        (zero_total, zero_squared_norm),
+        (padded_indices, valid),
+    )
+    return total, squared_norm
+
+
 def _cisd_mode_chol_index_sum_for_walkers(
     common: CisdModeEnergyCommon,
     chol_indices: jax.Array,
@@ -596,34 +677,16 @@ def _cisd_mode_chol_index_sum_for_walkers(
 ) -> jax.Array:
     """Sum arbitrary head terms while bounding the gathered Cholesky batch."""
 
-    head_size = int(chol_indices.shape[0])
-    if head_size == 0:
-        return jnp.zeros_like(common.base, dtype=jnp.complex128)
-
-    batch_size = head_size if chol_batch_size <= 0 else min(chol_batch_size, head_size)
-    n_batches = math.ceil(head_size / batch_size)
-    padded_size = n_batches * batch_size
-    padded_indices = jnp.pad(chol_indices, (0, padded_size - head_size)).reshape(
-        n_batches, batch_size
+    total, _ = _cisd_mode_chol_index_moments_for_walkers(
+        common,
+        chol_indices,
+        ham_data,
+        meas_ctx,
+        trial_data,
+        n_walker_chunks=n_walker_chunks,
+        chol_batch_size=chol_batch_size,
+        compute_squared_norm=False,
     )
-    valid = (jnp.arange(padded_size) < head_size).reshape(n_batches, batch_size)
-
-    def scan_body(total, xs):
-        indices_i, valid_i = xs
-        terms_i = _cisd_mode_chol_terms_for_walkers(
-            common,
-            ham_data.chol[indices_i],
-            meas_ctx.rot_chol[indices_i],
-            meas_ctx.lci1[indices_i],
-            meas_ctx,
-            trial_data,
-            n_chunks=n_walker_chunks,
-        )
-        terms_i = jnp.where(valid_i[None, :], terms_i, 0.0)
-        return total + jnp.sum(terms_i, axis=1, dtype=jnp.complex128), None
-
-    zero = jnp.zeros_like(common.base, dtype=jnp.complex128)
-    total, _ = lax.scan(scan_body, zero, (padded_indices, valid))
     return total
 
 
@@ -782,7 +845,18 @@ def pair_sampled_block_energy(
     weight_sum_safe = jnp.where(weight_sum == 0.0, 1.0, weight_sum)
     norm_weights = weights_real / weight_sum_safe
 
-    if sampling.chol_head_size > 0:
+    if sampling.chol_head_size > 0 and sampling.walker_guide_policy == "head_rms":
+        head_sum, head_squared_norm = _cisd_mode_chol_index_moments_for_walkers(
+            common,
+            meas_ctx.chol_head_indices,
+            ham_data,
+            meas_ctx,
+            trial_data,
+            n_walker_chunks=n_chunks,
+            chol_batch_size=sampling.head_chol_batch_size,
+        )
+        head_energy = jnp.real(common.base + head_sum)
+    elif sampling.chol_head_size > 0:
         head_sum = _cisd_mode_chol_index_sum_for_walkers(
             common,
             meas_ctx.chol_head_indices,
@@ -793,8 +867,10 @@ def pair_sampled_block_energy(
             chol_batch_size=sampling.head_chol_batch_size,
         )
         head_energy = jnp.real(common.base + head_sum)
+        head_squared_norm = jnp.zeros_like(head_energy, dtype=jnp.float64)
     else:
         head_energy = jnp.real(common.base)
+        head_squared_norm = jnp.zeros_like(head_energy, dtype=jnp.float64)
 
     finite_head = jnp.isfinite(head_energy)
     if sampling.guard_head_deviations:
@@ -833,6 +909,40 @@ def pair_sampled_block_energy(
             dtype=jnp.float64,
         )
 
+    if sampling.walker_guide_policy == "head_rms":
+        head_rms_scores = jnp.sqrt(jnp.maximum(head_squared_norm, 0.0))
+        head_rms_scores = jnp.where(
+            head_guarded | (~jnp.isfinite(head_rms_scores)),
+            0.0,
+            head_rms_scores,
+        )
+        guided_weights = accepted_weights * head_rms_scores
+        guided_weight_sum = jnp.sum(guided_weights, dtype=jnp.float64)
+        guided_weight_sum_safe = jnp.where(guided_weight_sum == 0.0, 1.0, guided_weight_sum)
+        guided_probabilities = guided_weights / guided_weight_sum_safe
+        guided_probabilities = jnp.where(
+            guided_weight_sum == 0.0,
+            accepted_probabilities,
+            guided_probabilities,
+        )
+        weight_mix = sampling.walker_guide_weight_mix
+        walker_probabilities = (
+            weight_mix * accepted_probabilities + (1.0 - weight_mix) * guided_probabilities
+        )
+        walker_corrections = jnp.where(
+            walker_probabilities > 0.0,
+            accepted_weights / walker_probabilities,
+            0.0,
+        )
+        diagnostics[d_energy_walker_guide_ess] = 1.0 / jnp.sum(
+            walker_probabilities**2,
+            dtype=jnp.float64,
+        )
+        diagnostics[d_energy_walker_guide_max_correction] = jnp.max(walker_corrections)
+    else:
+        walker_probabilities = accepted_probabilities
+        walker_corrections = jnp.full_like(accepted_weights, accepted_weight)
+
     tail_size = int(meas_ctx.chol_tail_prob.shape[0])
     if tail_size == 0:
         if sampling.track_half_sample_diagnostic:
@@ -847,7 +957,7 @@ def pair_sampled_block_energy(
         weights_real.shape[0],
         shape=(sampling.pair_sample_size,),
         replace=True,
-        p=accepted_probabilities,
+        p=walker_probabilities,
     )
     sample_chol_rel = jax.random.choice(
         key_chol,
@@ -869,7 +979,9 @@ def pair_sampled_block_energy(
         n_chunks=pair_n_chunks,
     )
     importance_samples = (
-        accepted_weight * jnp.real(sample_terms) / meas_ctx.chol_tail_prob[sample_chol_rel]
+        walker_corrections[sample_walker]
+        * jnp.real(sample_terms)
+        / meas_ctx.chol_tail_prob[sample_chol_rel]
     )
     tail_estimate = jnp.mean(importance_samples, dtype=jnp.float64)
     energy = block_head + tail_estimate
@@ -1307,6 +1419,8 @@ def select_cisd_mode_pair_sampling(
                         tail_probability_uniform_mix=cfg.tail_probability_uniform_mix,
                         track_half_sample_diagnostic=cfg.track_half_sample_diagnostic,
                         guard_head_deviations=cfg.guard_head_deviations,
+                        walker_guide_policy=cfg.walker_guide_policy,
+                        walker_guide_weight_mix=cfg.walker_guide_weight_mix,
                     ),
                     guide_policy=cfg.guide_policy,
                     chol_head_fraction=head_size / n_chol,
@@ -1481,6 +1595,8 @@ def retune_cisd_mode_pair_sampling(
         f"target_source={selected.target_tail_std_source}, "
         f"uniform_mix={selected.sampling.tail_probability_uniform_mix:.3%}, "
         f"head_guard={selected.sampling.guard_head_deviations}, "
+        f"walker_guide={selected.sampling.walker_guide_policy}, "
+        f"walker_weight_mix={selected.sampling.walker_guide_weight_mix:.3%}, "
         f"work_proxy={selected.estimated_pair_evaluations} pairs."
     )
     energy_dtype = jnp.result_type(state.e_estimate)
