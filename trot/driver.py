@@ -12,7 +12,13 @@ from jax import lax
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from .core.ops import MeasOps, TrialOps, d_energy_sampling_noise
+from .core.ops import (
+    MeasOps,
+    TrialOps,
+    d_energy_head_guard_count,
+    d_energy_head_guard_weight,
+    d_energy_sampling_noise,
+)
 from .core.system import System
 from .meas.pt2ccsd import get_init_pt2trial_energy
 from .prop.blocks import BlockFn, MixedBlockFn
@@ -675,6 +681,24 @@ def run_qmc(
             f"half-difference RMS={float(noise_rms_mha):.3f} mHa, "
             f"mean={float(noise_mean_mha):.3f} mHa, "
             f"blocks={noise_values.size}."
+        )
+    guard_counts = block_diagnostics.get(d_energy_head_guard_count)
+    guard_weights = block_diagnostics.get(d_energy_head_guard_weight)
+    if guard_counts is not None and guard_counts.size > 0:
+        guarded_events = jnp.sum(guard_counts)
+        guarded_blocks = jnp.count_nonzero(guard_counts)
+        mean_guarded_weight = (
+            jnp.mean(guard_weights) if guard_weights is not None else jnp.asarray(float("nan"))
+        )
+        max_guarded_weight = (
+            jnp.max(guard_weights) if guard_weights is not None else jnp.asarray(float("nan"))
+        )
+        print(
+            "Head-deviation guard diagnostic: "
+            f"rejected_walker_events={int(guarded_events)}, "
+            f"affected_blocks={int(guarded_blocks)}/{guard_counts.size}, "
+            f"mean_rejected_weight={float(mean_guarded_weight):.3e}, "
+            f"max_rejected_weight={float(max_guarded_weight):.3e}."
         )
 
     data_clean, keep_mask = reject_outliers(jnp.column_stack((block_e_s, block_w_s)), obs=0)

@@ -17,6 +17,8 @@ from ..core.ops import (
     BlockEnergyEstimate,
     BlockEnergyRetuneResult,
     MeasOps,
+    d_energy_head_guard_count,
+    d_energy_head_guard_weight,
     d_energy_sampling_noise,
     k_energy,
     k_force_bias,
@@ -107,7 +109,9 @@ class CisdModePairSamplingCfg:
     By default they are the original Cholesky prefix. When
     ``rank_head_by_guide`` is true, they are the largest reference- or
     population-guide scores. ``pair_sample_size`` weighted walker--Cholesky
-    pairs are drawn from the remaining tail.
+    pairs are drawn from the remaining tail. When ``guard_head_deviations`` is
+    enabled, walkers with nonfinite or anomalous exact head energies contribute
+    the current reference energy and are excluded from tail sampling.
     """
 
     chol_head_size: int
@@ -117,6 +121,7 @@ class CisdModePairSamplingCfg:
     head_chol_batch_size: int = 0
     tail_probability_uniform_mix: float = 0.0
     track_half_sample_diagnostic: bool = False
+    guard_head_deviations: bool = False
 
     def __post_init__(self) -> None:
         if self.chol_head_size < 0:
@@ -182,6 +187,7 @@ class CisdModePairTuningCfg:
     production_head_chol_batch_size: int = 0
     tail_probability_uniform_mix: float = 0.01
     track_half_sample_diagnostic: bool = True
+    guard_head_deviations: bool = False
     settling_blocks: int = 5
 
     def __post_init__(self) -> None:
@@ -345,7 +351,8 @@ def build_meas_ctx(
             f"chol_head_size={energy_sampling.chol_head_size}/{n_chol} "
             f"({energy_sampling.chol_head_size / n_chol:.3%}), "
             f"pair_sample_size={energy_sampling.pair_sample_size}, "
-            f"ranked_head={energy_sampling.rank_head_by_guide}."
+            f"ranked_head={energy_sampling.rank_head_by_guide}, "
+            f"head_guard={energy_sampling.guard_head_deviations}."
         )
     return meas_ctx
 
@@ -745,12 +752,19 @@ def pair_sampled_block_energy(
     ham_data: HamChol,
     meas_ctx: CisdModeMeasCtx,
     trial_data: CisdModeTrial,
+    e_ref: jax.Array,
+    energy_clip_threshold: jax.Array,
 ) -> jax.Array | BlockEnergyEstimate:
     """Exact Cholesky head plus sampled walker--Cholesky tail energy.
 
     Walkers are sampled according to their normalized phaseless weights and
     tail Cholesky vectors according to the guide stored in ``meas_ctx``. All
-    retained K modes are summed exactly for every evaluated pair.
+    retained K modes are summed exactly for every evaluated pair. When the
+    head-deviation guard is enabled, a walker whose exact head energy differs
+    from the finite weighted head center by more than
+    ``energy_clip_threshold`` contributes ``e_ref`` and is excluded from the
+    sampled tail. The surviving tail estimate retains its original population
+    weight rather than being renormalized.
     """
     del overlaps
     sampling = meas_ctx.energy_sampling
@@ -767,8 +781,6 @@ def pair_sampled_block_energy(
     weight_sum = jnp.sum(weights_real, dtype=jnp.float64)
     weight_sum_safe = jnp.where(weight_sum == 0.0, 1.0, weight_sum)
     norm_weights = weights_real / weight_sum_safe
-    uniform_weights = jnp.ones_like(weights_real) / weights_real.shape[0]
-    sample_weights = jnp.where(weight_sum == 0.0, uniform_weights, norm_weights)
 
     if sampling.chol_head_size > 0:
         head_sum = _cisd_mode_chol_index_sum_for_walkers(
@@ -783,15 +795,50 @@ def pair_sampled_block_energy(
         head_energy = jnp.real(common.base + head_sum)
     else:
         head_energy = jnp.real(common.base)
-    block_head = jnp.sum(norm_weights * head_energy, dtype=jnp.float64)
+
+    finite_head = jnp.isfinite(head_energy)
+    if sampling.guard_head_deviations:
+        finite_head_weights = jnp.where(finite_head, norm_weights, 0.0)
+        finite_head_weight = jnp.sum(finite_head_weights, dtype=jnp.float64)
+        finite_head_weight_safe = jnp.where(finite_head_weight == 0.0, 1.0, finite_head_weight)
+        head_center = (
+            jnp.sum(
+                finite_head_weights * jnp.where(finite_head, head_energy, 0.0),
+                dtype=jnp.float64,
+            )
+            / finite_head_weight_safe
+        )
+        head_center = jnp.where(finite_head_weight == 0.0, jnp.real(e_ref), head_center)
+        head_guarded = (~finite_head) | (jnp.abs(head_energy - head_center) > energy_clip_threshold)
+    else:
+        head_guarded = jnp.zeros_like(finite_head)
+
+    safe_head_energy = jnp.where(finite_head, head_energy, jnp.real(e_ref))
+    guarded_head_energy = jnp.where(head_guarded, jnp.real(e_ref), safe_head_energy)
+    block_head = jnp.sum(norm_weights * guarded_head_energy, dtype=jnp.float64)
+    accepted_weights = jnp.where(head_guarded, 0.0, norm_weights)
+    accepted_weight = jnp.sum(accepted_weights, dtype=jnp.float64)
+    accepted_weight_safe = jnp.where(accepted_weight == 0.0, 1.0, accepted_weight)
+    accepted_probabilities = accepted_weights / accepted_weight_safe
+    accepted_probabilities = jnp.where(
+        accepted_weight == 0.0,
+        jnp.ones_like(accepted_weights) / accepted_weights.shape[0],
+        accepted_probabilities,
+    )
+    diagnostics: dict[str, jax.Array] = {}
+    if sampling.guard_head_deviations:
+        diagnostics[d_energy_head_guard_count] = jnp.sum(head_guarded, dtype=jnp.int32)
+        diagnostics[d_energy_head_guard_weight] = jnp.sum(
+            norm_weights * head_guarded,
+            dtype=jnp.float64,
+        )
 
     tail_size = int(meas_ctx.chol_tail_prob.shape[0])
     if tail_size == 0:
         if sampling.track_half_sample_diagnostic:
-            return BlockEnergyEstimate(
-                energy=block_head,
-                diagnostics={d_energy_sampling_noise: jnp.asarray(0.0, dtype=jnp.float64)},
-            )
+            diagnostics[d_energy_sampling_noise] = jnp.asarray(0.0, dtype=jnp.float64)
+        if diagnostics:
+            return BlockEnergyEstimate(energy=block_head, diagnostics=diagnostics)
         return block_head
 
     key_walker, key_chol = jax.random.split(rng_key)
@@ -800,7 +847,7 @@ def pair_sampled_block_energy(
         weights_real.shape[0],
         shape=(sampling.pair_sample_size,),
         replace=True,
-        p=sample_weights,
+        p=accepted_probabilities,
     )
     sample_chol_rel = jax.random.choice(
         key_chol,
@@ -821,10 +868,14 @@ def pair_sampled_block_energy(
         trial_data,
         n_chunks=pair_n_chunks,
     )
-    importance_samples = jnp.real(sample_terms) / meas_ctx.chol_tail_prob[sample_chol_rel]
+    importance_samples = (
+        accepted_weight * jnp.real(sample_terms) / meas_ctx.chol_tail_prob[sample_chol_rel]
+    )
     tail_estimate = jnp.mean(importance_samples, dtype=jnp.float64)
     energy = block_head + tail_estimate
     if not sampling.track_half_sample_diagnostic:
+        if diagnostics:
+            return BlockEnergyEstimate(energy=energy, diagnostics=diagnostics)
         return energy
 
     first_size = sampling.pair_sample_size // 2
@@ -833,9 +884,10 @@ def pair_sampled_block_energy(
     second_mean = jnp.mean(importance_samples[first_size:], dtype=jnp.float64)
     diagnostic_scale = math.sqrt(first_size * second_size) / sampling.pair_sample_size
     sampling_noise = diagnostic_scale * (first_mean - second_mean)
+    diagnostics[d_energy_sampling_noise] = sampling_noise
     return BlockEnergyEstimate(
         energy=energy,
-        diagnostics={d_energy_sampling_noise: sampling_noise},
+        diagnostics=diagnostics,
     )
 
 
@@ -1254,6 +1306,7 @@ def select_cisd_mode_pair_sampling(
                         head_chol_batch_size=cfg.production_head_chol_batch_size,
                         tail_probability_uniform_mix=cfg.tail_probability_uniform_mix,
                         track_half_sample_diagnostic=cfg.track_half_sample_diagnostic,
+                        guard_head_deviations=cfg.guard_head_deviations,
                     ),
                     guide_policy=cfg.guide_policy,
                     chol_head_fraction=head_size / n_chol,
@@ -1427,6 +1480,7 @@ def retune_cisd_mode_pair_sampling(
         f"target={selected.target_tail_std_ha:.3e} Ha, "
         f"target_source={selected.target_tail_std_source}, "
         f"uniform_mix={selected.sampling.tail_probability_uniform_mix:.3%}, "
+        f"head_guard={selected.sampling.guard_head_deviations}, "
         f"work_proxy={selected.estimated_pair_evaluations} pairs."
     )
     energy_dtype = jnp.result_type(state.e_estimate)

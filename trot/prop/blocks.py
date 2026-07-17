@@ -274,6 +274,8 @@ def block(
             ham_data,
             meas_ctx,
             trial_data,
+            e_ref,
+            thresh,
         )
         if isinstance(energy_estimate, BlockEnergyEstimate):
             e_block = jnp.real(energy_estimate.energy)

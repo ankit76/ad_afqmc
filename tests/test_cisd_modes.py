@@ -10,7 +10,14 @@ import numpy as np
 import pytest
 
 from trot import testing
-from trot.core.ops import BlockEnergyEstimate, d_energy_sampling_noise, k_energy, k_force_bias
+from trot.core.ops import (
+    BlockEnergyEstimate,
+    d_energy_head_guard_count,
+    d_energy_head_guard_weight,
+    d_energy_sampling_noise,
+    k_energy,
+    k_force_bias,
+)
 from trot.core.system import System
 from trot.meas.cisd import (
     CisdMeasCfg,
@@ -700,9 +707,111 @@ def test_pair_sampled_block_energy_full_head_matches_weighted_deterministic_ener
         ham,
         ctx,
         trial,
+        jnp.asarray(0.0),
+        jnp.asarray(20.0),
     )
     assert ctx.chol_tail_prob.shape == (0,)
     np.testing.assert_allclose(candidate, expected, rtol=2.0e-12, atol=2.0e-12)
+
+
+def test_pair_sampled_head_guard_replaces_flagged_walkers_and_reports_weight():
+    _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(954),
+        norb=trial.norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    sampling = CisdModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=32768,
+        guard_head_deviations=True,
+    )
+    ctx = build_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=CisdMeasCfg(memory_mode="high"),
+        n_mode_chunks=2,
+        energy_sampling=sampling,
+    )
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed),
+                trial.norb,
+                trial.nocc_full,
+                mix=mix,
+            )
+            for seed, mix in ((955, 0.1), (957, 0.25), (961, 0.65))
+        ]
+    )
+    weights = jnp.asarray([1.0, 2.0, 4.0], dtype=jnp.float64)
+    norm_weights = weights / jnp.sum(weights)
+    common = jax.vmap(
+        _cisd_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(walkers, ham, ctx, trial)
+    all_terms = jnp.real(
+        _cisd_mode_chol_terms_for_walkers(
+            common,
+            ham.chol,
+            ctx.rot_chol,
+            ctx.lci1,
+            ctx,
+            trial,
+        )
+    )
+    head_energy = jnp.real(common.base) + jnp.sum(
+        all_terms[:, ctx.chol_head_indices],
+        axis=1,
+    )
+    head_center = jnp.sum(norm_weights * head_energy)
+    deviations = jnp.abs(head_energy - head_center)
+    sorted_deviations = jnp.sort(deviations)
+    threshold = 0.5 * (sorted_deviations[-2] + sorted_deviations[-1])
+    guarded = deviations > threshold
+    e_ref = jnp.asarray(-7.5, dtype=jnp.float64)
+    tail_terms = all_terms[:, ctx.chol_tail_indices]
+    full_energy = head_energy + jnp.sum(tail_terms, axis=1)
+    expected = jnp.sum(norm_weights * jnp.where(guarded, e_ref, full_energy))
+    accepted_weight = jnp.sum(jnp.where(guarded, 0.0, norm_weights))
+    accepted_prob = jnp.where(guarded, 0.0, norm_weights) / accepted_weight
+    importance_values = accepted_weight * tail_terms / ctx.chol_tail_prob[None, :]
+    joint_prob = accepted_prob[:, None] * ctx.chol_tail_prob[None, :]
+    tail_mean = jnp.sum(joint_prob * importance_values)
+    tail_variance = jnp.sum(joint_prob * (importance_values - tail_mean) ** 2)
+    standard_error = jnp.sqrt(tail_variance / sampling.pair_sample_size)
+
+    candidate = jax.jit(pair_sampled_block_energy, static_argnums=4)(
+        walkers,
+        weights,
+        jnp.ones_like(weights, dtype=jnp.complex128),
+        jax.random.PRNGKey(963),
+        2,
+        ham,
+        ctx,
+        trial,
+        e_ref,
+        threshold,
+    )
+
+    assert isinstance(candidate, BlockEnergyEstimate)
+    np.testing.assert_allclose(
+        candidate.energy,
+        expected,
+        rtol=0.0,
+        atol=float(6.0 * standard_error + 1.0e-12),
+    )
+    np.testing.assert_array_equal(
+        candidate.diagnostics[d_energy_head_guard_count],
+        jnp.sum(guarded),
+    )
+    np.testing.assert_allclose(
+        candidate.diagnostics[d_energy_head_guard_weight],
+        jnp.sum(norm_weights * guarded),
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
 
 
 def test_pair_sampled_tail_matches_exact_energy_within_analytic_sampling_error():
@@ -771,6 +880,8 @@ def test_pair_sampled_tail_matches_exact_energy_within_analytic_sampling_error()
         ham,
         ctx,
         trial,
+        jnp.asarray(0.0),
+        jnp.asarray(20.0),
     )
     assert isinstance(candidate_result, BlockEnergyEstimate)
     np.testing.assert_allclose(

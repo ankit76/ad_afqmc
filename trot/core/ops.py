@@ -132,6 +132,8 @@ class BlockEnergyFn(Protocol):
         ham_data: Any,
         meas_ctx: Any,
         trial_data: Any,
+        e_ref: jax.Array,
+        energy_clip_threshold: jax.Array,
     ) -> jax.Array | BlockEnergyEstimate: ...
 
 
@@ -184,6 +186,8 @@ class BlockEnergyRetuneFn(Protocol):
 k_energy = "energy"
 k_force_bias = "force_bias"
 d_energy_sampling_noise = "energy_sampling_noise"
+d_energy_head_guard_count = "energy_head_guard_count"
+d_energy_head_guard_weight = "energy_head_guard_weight"
 o_rdm1 = "rdm1"
 o_density_corr = "density_corr"
 o_orb_corr = "orb_corr"

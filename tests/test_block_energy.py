@@ -135,6 +135,8 @@ def test_block_energy_hook_gets_dedicated_key_and_needs_no_energy_kernel():
         ham_data,
         meas_ctx,
         trial_data,
+        e_ref,
+        energy_clip_threshold,
     ):
         assert n_chunks == 1
         walker_mean = jnp.sum(weights * jnp.real(walkers[:, 0, 0])) / jnp.sum(weights)
@@ -145,6 +147,8 @@ def test_block_energy_hook_gets_dedicated_key_and_needs_no_energy_kernel():
             + ham_data
             + meas_ctx
             + trial_data
+            + 0.0 * e_ref
+            + 0.0 * energy_clip_threshold
             + jax.random.uniform(rng_key)
         )
 
