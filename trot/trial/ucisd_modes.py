@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -165,6 +166,15 @@ class UcisdModeTrial:
         return cls(*children)
 
 
+class UcisdModeProjections(NamedTuple):
+    """Four reusable projections of alpha/beta matrices onto UCISD modes."""
+
+    aa: jax.Array
+    ab_left: jax.Array
+    ab_right: jax.Array
+    bb: jax.Array
+
+
 def get_rdm1(trial_data: UcisdModeTrial) -> jax.Array:
     """Return the UHF reference density matrices in the alpha orbital basis."""
     norb = trial_data.norb
@@ -186,8 +196,14 @@ def _mode_projections(modes: jax.Array, matrix: jax.Array) -> jax.Array:
     return projections_r.astype(jnp.complex128) + 1.0j * projections_i.astype(jnp.complex128)
 
 
-def _mode_apply(values: jax.Array, modes: jax.Array, matrix: jax.Array) -> jax.Array:
-    projections = _mode_projections(modes, matrix)
+def _mode_apply(
+    values: jax.Array,
+    modes: jax.Array,
+    matrix: jax.Array,
+    projections: jax.Array | None = None,
+) -> jax.Array:
+    if projections is None:
+        projections = _mode_projections(modes, matrix)
     weighted = values.astype(jnp.float64) * projections
     if not jnp.issubdtype(matrix.dtype, jnp.complexfloating):
         return jnp.einsum("r,rpt->pt", weighted, modes, optimize="optimal").astype(jnp.float64)
@@ -196,16 +212,45 @@ def _mode_apply(values: jax.Array, modes: jax.Array, matrix: jax.Array) -> jax.A
     return applied_r.astype(jnp.complex128) + 1.0j * applied_i.astype(jnp.complex128)
 
 
-def _mode_quadratic(values: jax.Array, modes: jax.Array, matrix: jax.Array) -> jax.Array:
-    projections = _mode_projections(modes, matrix)
+def _mode_quadratic(
+    values: jax.Array,
+    modes: jax.Array,
+    matrix: jax.Array,
+    projections: jax.Array | None = None,
+) -> jax.Array:
+    if projections is None:
+        projections = _mode_projections(modes, matrix)
     dtype = jnp.complex128 if jnp.issubdtype(matrix.dtype, jnp.complexfloating) else jnp.float64
     return jnp.sum(values.astype(jnp.float64) * projections * projections, dtype=dtype)
+
+
+def doubles_projections(
+    trial_data: UcisdModeTrial,
+    matrix_a: jax.Array,
+    matrix_b: jax.Array,
+) -> UcisdModeProjections:
+    """Project alpha/beta pair matrices once for apply and quadratic contractions."""
+    expected_a = (trial_data.nocc[0], trial_data.nvir[0])
+    expected_b = (trial_data.nocc[1], trial_data.nvir[1])
+    if matrix_a.shape != expected_a or matrix_b.shape != expected_b:
+        raise ValueError(
+            f"matrix pair must have shapes {expected_a} and {expected_b}, got "
+            f"{matrix_a.shape} and {matrix_b.shape}."
+        )
+    return UcisdModeProjections(
+        aa=_mode_projections(trial_data.modes_aa, matrix_a),
+        ab_left=_mode_projections(trial_data.left_modes_ab, matrix_a),
+        ab_right=_mode_projections(trial_data.right_modes_ab, matrix_b),
+        bb=_mode_projections(trial_data.modes_bb, matrix_b),
+    )
 
 
 def doubles_apply(
     trial_data: UcisdModeTrial,
     matrix_a: jax.Array,
     matrix_b: jax.Array,
+    *,
+    projections: UcisdModeProjections | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     """Return ``(Caa @ a + Cab @ b, Cbb @ b + Cab.T @ a)``."""
     expected_a = (trial_data.nocc[0], trial_data.nvir[0])
@@ -216,12 +261,22 @@ def doubles_apply(
             f"{matrix_a.shape} and {matrix_b.shape}."
         )
 
-    applied_a = _mode_apply(trial_data.eigenvalues_aa, trial_data.modes_aa, matrix_a)
-    applied_b = _mode_apply(trial_data.eigenvalues_bb, trial_data.modes_bb, matrix_b)
-    projections_a = _mode_projections(trial_data.left_modes_ab, matrix_a)
-    projections_b = _mode_projections(trial_data.right_modes_ab, matrix_b)
-    weighted_a = trial_data.singular_values_ab.astype(jnp.float64) * projections_b
-    weighted_b = trial_data.singular_values_ab.astype(jnp.float64) * projections_a
+    if projections is None:
+        projections = doubles_projections(trial_data, matrix_a, matrix_b)
+    applied_a = _mode_apply(
+        trial_data.eigenvalues_aa,
+        trial_data.modes_aa,
+        matrix_a,
+        projections.aa,
+    )
+    applied_b = _mode_apply(
+        trial_data.eigenvalues_bb,
+        trial_data.modes_bb,
+        matrix_b,
+        projections.bb,
+    )
+    weighted_a = trial_data.singular_values_ab.astype(jnp.float64) * projections.ab_right
+    weighted_b = trial_data.singular_values_ab.astype(jnp.float64) * projections.ab_left
 
     if jnp.issubdtype(matrix_a.dtype, jnp.complexfloating) or jnp.issubdtype(
         matrix_b.dtype, jnp.complexfloating
@@ -252,10 +307,19 @@ def doubles_quadratic(
     trial_data: UcisdModeTrial,
     matrix_a: jax.Array,
     matrix_b: jax.Array,
+    *,
+    projections: UcisdModeProjections | None = None,
 ) -> jax.Array:
     """Return the UCISD doubles overlap bilinear for a pair of matrices."""
-    projections_a = _mode_projections(trial_data.left_modes_ab, matrix_a)
-    projections_b = _mode_projections(trial_data.right_modes_ab, matrix_b)
+    expected_a = (trial_data.nocc[0], trial_data.nvir[0])
+    expected_b = (trial_data.nocc[1], trial_data.nvir[1])
+    if matrix_a.shape != expected_a or matrix_b.shape != expected_b:
+        raise ValueError(
+            f"matrix pair must have shapes {expected_a} and {expected_b}, got "
+            f"{matrix_a.shape} and {matrix_b.shape}."
+        )
+    if projections is None:
+        projections = doubles_projections(trial_data, matrix_a, matrix_b)
     dtype = (
         jnp.complex128
         if jnp.issubdtype(matrix_a.dtype, jnp.complexfloating)
@@ -263,13 +327,27 @@ def doubles_quadratic(
         else jnp.float64
     )
     cross = jnp.sum(
-        trial_data.singular_values_ab.astype(jnp.float64) * projections_a * projections_b,
+        trial_data.singular_values_ab.astype(jnp.float64)
+        * projections.ab_left
+        * projections.ab_right,
         dtype=dtype,
     )
     return (
-        0.5 * _mode_quadratic(trial_data.eigenvalues_aa, trial_data.modes_aa, matrix_a)
+        0.5
+        * _mode_quadratic(
+            trial_data.eigenvalues_aa,
+            trial_data.modes_aa,
+            matrix_a,
+            projections.aa,
+        )
         + cross
-        + 0.5 * _mode_quadratic(trial_data.eigenvalues_bb, trial_data.modes_bb, matrix_b)
+        + 0.5
+        * _mode_quadratic(
+            trial_data.eigenvalues_bb,
+            trial_data.modes_bb,
+            matrix_b,
+            projections.bb,
+        )
     )
 
 

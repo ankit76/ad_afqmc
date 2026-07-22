@@ -18,6 +18,8 @@ from trot.meas.ucisd import (
     force_bias_kernel_rw_rh as dense_force_bias_kernel,
 )
 from trot.meas.ucisd_modes import (
+    _chol_contract,
+    _energy_gl_batched_realimag,
     _ucisd_mode_chol_terms,
     _ucisd_mode_energy_common,
     build_meas_ctx as build_mode_meas_ctx,
@@ -30,6 +32,7 @@ from trot.trial.ucisd import UcisdTrial, overlap_r as dense_overlap_r
 from trot.trial.ucisd_modes import (
     UcisdModeTrial,
     doubles_apply,
+    doubles_projections,
     doubles_quadratic,
     make_ucisd_mode_trial_data,
     make_ucisd_mode_trial_ops,
@@ -268,7 +271,13 @@ def test_mode_helpers_match_explicit_block_contractions():
     matrix_b = jnp.asarray(matrix_b + 1.0j * rng.standard_normal(matrix_b.shape))
     dense = _reconstruct_dense(trial)
 
-    applied_a, applied_b = doubles_apply(trial, matrix_a, matrix_b)
+    projections = doubles_projections(trial, matrix_a, matrix_b)
+    applied_a, applied_b = doubles_apply(
+        trial,
+        matrix_a,
+        matrix_b,
+        projections=projections,
+    )
     expected_a = jnp.einsum("ptqu,pt->qu", dense.c2aa, matrix_a, optimize="optimal")
     expected_a += jnp.einsum("ptqu,qu->pt", dense.c2ab, matrix_b, optimize="optimal")
     expected_b = jnp.einsum("ptqu,pt->qu", dense.c2bb, matrix_b, optimize="optimal")
@@ -285,11 +294,51 @@ def test_mode_helpers_match_explicit_block_contractions():
     np.testing.assert_allclose(applied_a, expected_a, rtol=2.0e-12, atol=2.0e-12)
     np.testing.assert_allclose(applied_b, expected_b, rtol=2.0e-12, atol=2.0e-12)
     np.testing.assert_allclose(
-        doubles_quadratic(trial, matrix_a, matrix_b),
+        doubles_quadratic(
+            trial,
+            matrix_a,
+            matrix_b,
+            projections=projections,
+        ),
         expected_quadratic,
         rtol=2.0e-12,
         atol=2.0e-12,
     )
+
+
+def test_mixed_realimag_cholesky_helpers_match_complex_contractions():
+    rng = np.random.default_rng(1351)
+    cfg = UcisdMeasCfg(
+        memory_mode="high",
+        mixed_real_dtype=jnp.float32,
+        mixed_complex_dtype=jnp.complex64,
+        mixed_real_dtype_testing=jnp.float32,
+        mixed_complex_dtype_testing=jnp.complex64,
+    )
+    chol = jnp.asarray(rng.standard_normal((5, 6, 6)), dtype=jnp.float64)
+    matrix_np = rng.standard_normal((6, 6)) + 1.0j * rng.standard_normal((6, 6))
+    matrix = jnp.asarray(matrix_np, dtype=jnp.complex128)
+    green_np = rng.standard_normal((3, 6)) + 1.0j * rng.standard_normal((3, 6))
+    green = jnp.asarray(green_np, dtype=jnp.complex128)
+
+    contraction = _chol_contract(chol, matrix, cfg)
+    expected_contraction = jnp.einsum(
+        "gij,ij->g",
+        chol.astype(jnp.float32),
+        matrix.astype(jnp.complex64),
+        optimize="optimal",
+    )
+    gl = _energy_gl_batched_realimag(green, chol, cfg)
+    expected_gl = jnp.einsum(
+        "pj,gji->gpi",
+        green.astype(jnp.complex64),
+        chol.astype(jnp.float32),
+        optimize="optimal",
+    )
+    assert contraction.dtype == jnp.complex64
+    assert gl.dtype == jnp.complex64
+    np.testing.assert_allclose(contraction, expected_contraction, rtol=2.0e-6, atol=2.0e-6)
+    np.testing.assert_allclose(gl, expected_gl, rtol=2.0e-6, atol=2.0e-6)
 
 
 def test_trial_loader_mixed_precision_and_pytree_behavior():

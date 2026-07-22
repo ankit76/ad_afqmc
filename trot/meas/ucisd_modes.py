@@ -11,7 +11,13 @@ from ..core.ops import MeasOps, k_energy, k_force_bias
 from ..core.system import System
 from ..ham.chol import HamChol
 from ..trial.ucisd import UcisdTrial
-from ..trial.ucisd_modes import UcisdModeTrial, doubles_apply, doubles_quadratic, overlap_r
+from ..trial.ucisd_modes import (
+    UcisdModeTrial,
+    doubles_apply,
+    doubles_projections,
+    doubles_quadratic,
+    overlap_r,
+)
 from .ucisd import UcisdMeasCfg, UcisdMeasCtx
 from .ucisd import build_meas_ctx as build_dense_meas_ctx
 
@@ -100,11 +106,32 @@ def _greens_restricted(
 
 
 def _chol_contract(chol: jax.Array, matrix: jax.Array, cfg: UcisdMeasCfg) -> jax.Array:
-    return jnp.einsum(
-        "gij,ij->g",
-        chol.astype(cfg.mixed_real_dtype),
-        matrix.astype(cfg.mixed_complex_dtype),
-        optimize="optimal",
+    """Contract through real FP32 kernels before reconstructing the result."""
+    chol_r = chol.astype(cfg.mixed_real_dtype)
+    matrix_r = jnp.real(matrix).astype(cfg.mixed_real_dtype)
+    matrix_i = jnp.imag(matrix).astype(cfg.mixed_real_dtype)
+    real_part = jnp.einsum("gij,ij->g", chol_r, matrix_r, optimize="optimal")
+    imag_part = jnp.einsum("gij,ij->g", chol_r, matrix_i, optimize="optimal")
+    imag_unit = jnp.asarray(1.0j, dtype=cfg.mixed_complex_dtype)
+    return real_part.astype(cfg.mixed_complex_dtype) + imag_unit * imag_part.astype(
+        cfg.mixed_complex_dtype
+    )
+
+
+def _energy_gl_batched_realimag(
+    green: jax.Array,
+    chol: jax.Array,
+    cfg: UcisdMeasCfg,
+) -> jax.Array:
+    """Build a batched ``green @ chol`` through real mixed-precision GEMMs."""
+    green_r = jnp.real(green).astype(cfg.mixed_real_dtype)
+    green_i = jnp.imag(green).astype(cfg.mixed_real_dtype)
+    chol_r = chol.astype(cfg.mixed_real_dtype)
+    real_part = jnp.einsum("pj,gji->gpi", green_r, chol_r, optimize="optimal")
+    imag_part = jnp.einsum("pj,gji->gpi", green_i, chol_r, optimize="optimal")
+    imag_unit = jnp.asarray(1.0j, dtype=cfg.mixed_complex_dtype)
+    return real_part.astype(cfg.mixed_complex_dtype) + imag_unit * imag_part.astype(
+        cfg.mixed_complex_dtype
     )
 
 
@@ -129,8 +156,19 @@ def force_bias_kernel_rw_rh(
     m1_a = (greenp_a @ trial_data.c1a.T) @ green_a
     m1_b = (greenp_b @ trial_data.c1b.T) @ green_b
 
-    ya, yb = doubles_apply(trial_data, green_occ_a, green_occ_b)
-    doubles = doubles_quadratic(trial_data, green_occ_a, green_occ_b)
+    projections = doubles_projections(trial_data, green_occ_a, green_occ_b)
+    ya, yb = doubles_apply(
+        trial_data,
+        green_occ_a,
+        green_occ_b,
+        projections=projections,
+    )
+    doubles = doubles_quadratic(
+        trial_data,
+        green_occ_a,
+        green_occ_b,
+        projections=projections,
+    )
     m2_a = (greenp_a @ ya.T) @ green_a
     m2_b = (greenp_b @ yb.T) @ green_b
     overlap = 1.0 + singles + doubles
@@ -148,6 +186,7 @@ def _mode_bilinear_matrices(
     right_matrices: jax.Array,
     *,
     n_mode_chunks: int,
+    shared_projection: bool = False,
 ) -> jax.Array:
     """Evaluate batched bilinear mode contractions with a bounded mode axis."""
     if left_matrices.shape[:-2] != right_matrices.shape[:-2]:
@@ -178,22 +217,28 @@ def _mode_bilinear_matrices(
 
     def evaluate_chunk(values_i, left_modes_i, right_modes_i):
         left_r = jnp.real(left_flat).astype(left_modes_i.dtype)
-        right_r = jnp.real(right_flat).astype(right_modes_i.dtype)
         projection_left_r = jnp.einsum(
             "spt,rpt->sr", left_r, left_modes_i, optimize="optimal"
         )
-        projection_right_r = jnp.einsum(
-            "spt,rpt->sr", right_r, right_modes_i, optimize="optimal"
-        )
+        if shared_projection:
+            projection_right_r = projection_left_r
+        else:
+            right_r = jnp.real(right_flat).astype(right_modes_i.dtype)
+            projection_right_r = jnp.einsum(
+                "spt,rpt->sr", right_r, right_modes_i, optimize="optimal"
+            )
         if result_dtype == jnp.complex128:
             left_i = jnp.imag(left_flat).astype(left_modes_i.dtype)
-            right_i = jnp.imag(right_flat).astype(right_modes_i.dtype)
             projection_left_i = jnp.einsum(
                 "spt,rpt->sr", left_i, left_modes_i, optimize="optimal"
             )
-            projection_right_i = jnp.einsum(
-                "spt,rpt->sr", right_i, right_modes_i, optimize="optimal"
-            )
+            if shared_projection:
+                projection_right_i = projection_left_i
+            else:
+                right_i = jnp.imag(right_flat).astype(right_modes_i.dtype)
+                projection_right_i = jnp.einsum(
+                    "spt,rpt->sr", right_i, right_modes_i, optimize="optimal"
+                )
             projection_left = projection_left_r.astype(jnp.complex128)
             projection_left += 1.0j * projection_left_i.astype(jnp.complex128)
             projection_right = projection_right_r.astype(jnp.complex128)
@@ -245,6 +290,7 @@ def _mode_quadratic_matrices(
         matrices_a,
         matrices_a,
         n_mode_chunks=meas_ctx.n_mode_chunks,
+        shared_projection=True,
     )
     ab = _mode_bilinear_matrices(
         trial_data.singular_values_ab,
@@ -261,6 +307,7 @@ def _mode_quadratic_matrices(
         matrices_b,
         matrices_b,
         n_mode_chunks=meas_ctx.n_mode_chunks,
+        shared_projection=True,
     )
     return 0.5 * aa + ab + 0.5 * bb
 
@@ -287,8 +334,19 @@ def _ucisd_mode_energy_common(
     m1_a = (greenp_a @ trial_data.c1a.T) @ green_a
     m1_b = (greenp_b @ trial_data.c1b.T) @ green_b
 
-    ya, yb = doubles_apply(trial_data, green_occ_a, green_occ_b)
-    doubles = doubles_quadratic(trial_data, green_occ_a, green_occ_b)
+    projections = doubles_projections(trial_data, green_occ_a, green_occ_b)
+    ya, yb = doubles_apply(
+        trial_data,
+        green_occ_a,
+        green_occ_b,
+        projections=projections,
+    )
+    doubles = doubles_quadratic(
+        trial_data,
+        green_occ_a,
+        green_occ_b,
+        projections=projections,
+    )
     m2_a = (greenp_a @ ya.T) @ green_a
     m2_b = (greenp_b @ yb.T) @ green_b
     overlap = 1.0 + singles + doubles
@@ -347,25 +405,25 @@ def _ucisd_mode_chol_terms(
 
     lm2 = _chol_contract(chol_a, common.m2_a, cfg)
     lm2 += _chol_contract(chol_b, common.m2_b, cfg)
-    gl_a = jnp.einsum(
-        "pj,gji->gpi",
-        green_a.astype(cfg.mixed_complex_dtype),
-        chol_a.astype(cfg.mixed_real_dtype),
-        optimize="optimal",
-    )
-    gl_b = jnp.einsum(
-        "pj,gji->gpi",
-        green_b.astype(cfg.mixed_complex_dtype),
-        chol_b.astype(cfg.mixed_real_dtype),
-        optimize="optimal",
-    )
+    gl_a = _energy_gl_batched_realimag(green_a, chol_a, cfg)
+    gl_b = _energy_gl_batched_realimag(green_b, chol_b, cfg)
     rot_m2_a = jnp.einsum("gpi,ji->gpj", rot_chol_a, common.m2_a, optimize="optimal")
     rot_m2_b = jnp.einsum("gpi,ji->gpj", rot_chol_b, common.m2_b, optimize="optimal")
     r2 = jnp.einsum("gpi,gpi->g", gl_a, rot_m2_a, optimize="optimal")
     r2 += jnp.einsum("gpi,gpi->g", gl_b, rot_m2_b, optimize="optimal")
 
-    x_a = jnp.einsum("gpi,it->gpt", gl_a, common.greenp_a, optimize="optimal")
-    x_b = jnp.einsum("gpi,it->gpt", gl_b, common.greenp_b, optimize="optimal")
+    x_a = jnp.einsum(
+        "gpi,it->gpt",
+        gl_a,
+        common.greenp_a.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
+    )
+    x_b = jnp.einsum(
+        "gpi,it->gpt",
+        gl_b,
+        common.greenp_b.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
+    )
     r3 = _mode_quadratic_matrices(trial_data, meas_ctx, x_a, x_b)
     numerator = common.overlap * e20 - (lm1 + lm2) * lg + r1 + r2 + r3
     return numerator / common.overlap
