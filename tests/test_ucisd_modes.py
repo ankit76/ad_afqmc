@@ -20,6 +20,7 @@ from trot.meas.ucisd import (
 from trot.meas.ucisd_modes import (
     _chol_contract,
     _energy_gl_batched_realimag,
+    _spin_sum_chol_contract,
     _ucisd_mode_chol_terms,
     _ucisd_mode_energy_common,
     build_meas_ctx as build_mode_meas_ctx,
@@ -339,6 +340,31 @@ def test_mixed_realimag_cholesky_helpers_match_complex_contractions():
     assert gl.dtype == jnp.complex64
     np.testing.assert_allclose(contraction, expected_contraction, rtol=2.0e-6, atol=2.0e-6)
     np.testing.assert_allclose(gl, expected_gl, rtol=2.0e-6, atol=2.0e-6)
+
+
+def test_spin_sum_cholesky_contraction_matches_separate_orbital_bases():
+    rng = np.random.default_rng(1357)
+    norb = 6
+    chol = jnp.asarray(rng.standard_normal((5, norb, norb)), dtype=jnp.float64)
+    rotation_raw = rng.standard_normal((norb, norb)) + 1.0j * rng.standard_normal(
+        (norb, norb)
+    )
+    rotation, _ = np.linalg.qr(rotation_raw)
+    cb = jnp.asarray(rotation, dtype=jnp.complex128)
+    matrix_a_np = rng.standard_normal((norb, norb)) + 1.0j * rng.standard_normal(
+        (norb, norb)
+    )
+    matrix_b_np = rng.standard_normal((norb, norb)) + 1.0j * rng.standard_normal(
+        (norb, norb)
+    )
+    matrix_a = jnp.asarray(matrix_a_np, dtype=jnp.complex128)
+    matrix_b = jnp.asarray(matrix_b_np, dtype=jnp.complex128)
+    chol_b = jnp.einsum("pi,gij,jq->gpq", cb.conj().T, chol, cb, optimize="optimal")
+
+    expected = jnp.einsum("gij,ij->g", chol, matrix_a, optimize="optimal")
+    expected += jnp.einsum("gij,ij->g", chol_b, matrix_b, optimize="optimal")
+    actual = _spin_sum_chol_contract(chol, matrix_a, matrix_b, cb, _double_cfg())
+    np.testing.assert_allclose(actual, expected, rtol=3.0e-12, atol=3.0e-12)
 
 
 def test_trial_loader_mixed_precision_and_pytree_behavior():

@@ -135,6 +135,44 @@ def _energy_gl_batched_realimag(
     )
 
 
+def _beta_matrix_to_alpha_basis(
+    matrix_b: jax.Array,
+    mo_coeff_b: jax.Array,
+    cfg: UcisdMeasCfg,
+) -> jax.Array:
+    """Return ``C_b.conj() @ matrix_b @ C_b.T`` in the mixed dtype."""
+    if jnp.issubdtype(mo_coeff_b.dtype, jnp.complexfloating):
+        cb = mo_coeff_b.astype(cfg.mixed_complex_dtype)
+        return cb.conj() @ matrix_b.astype(cfg.mixed_complex_dtype) @ cb.T
+
+    cb = mo_coeff_b.astype(cfg.mixed_real_dtype)
+    matrix_r = jnp.real(matrix_b).astype(cfg.mixed_real_dtype)
+    matrix_i = jnp.imag(matrix_b).astype(cfg.mixed_real_dtype)
+    rotated_r = (cb @ matrix_r) @ cb.T
+    rotated_i = (cb @ matrix_i) @ cb.T
+    imag_unit = jnp.asarray(1.0j, dtype=cfg.mixed_complex_dtype)
+    return rotated_r.astype(cfg.mixed_complex_dtype) + imag_unit * rotated_i.astype(
+        cfg.mixed_complex_dtype
+    )
+
+
+def _spin_sum_chol_contract(
+    chol_a: jax.Array,
+    matrix_a: jax.Array,
+    matrix_b: jax.Array,
+    mo_coeff_b: jax.Array,
+    cfg: UcisdMeasCfg,
+) -> jax.Array:
+    """Contract alpha and beta matrices once in the alpha orbital basis.
+
+    If ``L_b = C_b.conj().T @ L_a @ C_b``, then
+    ``L_a:M_a + L_b:M_b = L_a:(M_a + C_b.conj() @ M_b @ C_b.T)``.
+    """
+    matrix_b_alpha = _beta_matrix_to_alpha_basis(matrix_b, mo_coeff_b, cfg)
+    spin_sum = matrix_a.astype(cfg.mixed_complex_dtype) + matrix_b_alpha
+    return _chol_contract(chol_a, spin_sum, cfg)
+
+
 def force_bias_kernel_rw_rh(
     walker: jax.Array,
     ham_data: HamChol,
@@ -173,8 +211,13 @@ def force_bias_kernel_rw_rh(
     m2_b = (greenp_b @ yb.T) @ green_b
     overlap = 1.0 + singles + doubles
 
-    correction = _chol_contract(ham_data.chol, m1_a + m2_a, base.cfg)
-    correction += _chol_contract(base.chol_b, m1_b + m2_b, base.cfg)
+    correction = _spin_sum_chol_contract(
+        ham_data.chol,
+        m1_a + m2_a,
+        m1_b + m2_b,
+        trial_data.mo_coeff_b,
+        base.cfg,
+    )
     return (lg * overlap - correction) / overlap
 
 
@@ -394,8 +437,6 @@ def _ucisd_mode_chol_terms(
     e20 -= 0.5 * jnp.sum(q_a * jnp.swapaxes(q_a, -1, -2), axis=(-1, -2))
     e20 -= 0.5 * jnp.sum(q_b * jnp.swapaxes(q_b, -1, -2), axis=(-1, -2))
 
-    lm1 = _chol_contract(chol_a, common.m1_a, cfg)
-    lm1 += _chol_contract(chol_b, common.m1_b, cfg)
     r1 = jnp.einsum("gpq,gqr,rp->g", q_a, q_a, common.z1_a, optimize="optimal")
     r1 += jnp.einsum("gpq,gqr,rp->g", q_b, q_b, common.z1_b, optimize="optimal")
     lci1g_a = jnp.einsum("gip,qi->gpq", lci1_a, green_a, optimize="optimal")
@@ -403,8 +444,13 @@ def _ucisd_mode_chol_terms(
     r1 -= jnp.einsum("gpq,gqp->g", lci1g_a, q_a, optimize="optimal")
     r1 -= jnp.einsum("gpq,gqp->g", lci1g_b, q_b, optimize="optimal")
 
-    lm2 = _chol_contract(chol_a, common.m2_a, cfg)
-    lm2 += _chol_contract(chol_b, common.m2_b, cfg)
+    lm12 = _spin_sum_chol_contract(
+        chol_a,
+        common.m1_a + common.m2_a,
+        common.m1_b + common.m2_b,
+        trial_data.mo_coeff_b,
+        cfg,
+    )
     gl_a = _energy_gl_batched_realimag(green_a, chol_a, cfg)
     gl_b = _energy_gl_batched_realimag(green_b, chol_b, cfg)
     rot_m2_a = jnp.einsum("gpi,ji->gpj", rot_chol_a, common.m2_a, optimize="optimal")
@@ -425,7 +471,7 @@ def _ucisd_mode_chol_terms(
         optimize="optimal",
     )
     r3 = _mode_quadratic_matrices(trial_data, meas_ctx, x_a, x_b)
-    numerator = common.overlap * e20 - (lm1 + lm2) * lg + r1 + r2 + r3
+    numerator = common.overlap * e20 - lm12 * lg + r1 + r2 + r3
     return numerator / common.overlap
 
 
