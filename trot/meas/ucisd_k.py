@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp
@@ -149,8 +150,10 @@ def _k_quadratic_batched_realimag(
     matrices_a: jax.Array,
     matrices_b: jax.Array,
     cfg: UcisdMeasCfg,
+    n_mode_chunks: int = 1,
 ) -> jax.Array:
     """Return ``0.5 * z.T @ K @ z`` independently for every leading index."""
+    del n_mode_chunks
     vectors, leading_shape = _combined_pair_batch(trial_data, matrices_a, matrices_b)
     kernel = trial_data.k.astype(cfg.mixed_real_dtype_testing)
     vectors_r = jnp.real(vectors).astype(cfg.mixed_real_dtype_testing)
@@ -172,13 +175,17 @@ def _k_quadratic_batched_realimag(
     return result.reshape(leading_shape)
 
 
-def force_bias_kernel_rw_rh(
+def _force_bias_kernel_rw_rh_with_apply(
     walker: jax.Array,
     ham_data: HamChol,
-    meas_ctx: UcisdKMeasCtx,
-    trial_data: UcisdKTrial,
+    meas_ctx: Any,
+    trial_data: Any,
+    apply_fn: Callable[
+        [Any, jax.Array, jax.Array, UcisdMeasCfg],
+        tuple[jax.Array, jax.Array],
+    ],
 ) -> jax.Array:
-    """Exact combined-K UCISD force bias for a restricted walker."""
+    """Combined-K UCISD force bias with a selectable kernel backend."""
     base = meas_ctx.base
     green_a, green_b, greenp_a, greenp_b = _greens_restricted(walker, trial_data)
     noa, nob = trial_data.nocc
@@ -193,7 +200,7 @@ def force_bias_kernel_rw_rh(
     m1_a = (greenp_a @ trial_data.c1a.T) @ green_a
     m1_b = (greenp_b @ trial_data.c1b.T) @ green_b
 
-    ya, yb = _k_apply_realimag(trial_data, green_occ_a, green_occ_b, base.cfg)
+    ya, yb = apply_fn(trial_data, green_occ_a, green_occ_b, base.cfg)
     doubles = 0.5 * jnp.einsum("pt,pt->", green_occ_a, ya, optimize="optimal")
     doubles += 0.5 * jnp.einsum("pt,pt->", green_occ_b, yb, optimize="optimal")
     m2_a = (greenp_a @ ya.T) @ green_a
@@ -210,11 +217,31 @@ def force_bias_kernel_rw_rh(
     return (lg * overlap - correction) / overlap
 
 
-def _ucisd_k_energy_common(
+def force_bias_kernel_rw_rh(
     walker: jax.Array,
     ham_data: HamChol,
     meas_ctx: UcisdKMeasCtx,
     trial_data: UcisdKTrial,
+) -> jax.Array:
+    """Exact combined-K UCISD force bias for a restricted walker."""
+    return _force_bias_kernel_rw_rh_with_apply(
+        walker,
+        ham_data,
+        meas_ctx,
+        trial_data,
+        _k_apply_realimag,
+    )
+
+
+def _ucisd_k_energy_common(
+    walker: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: Any,
+    trial_data: Any,
+    apply_fn: Callable[
+        [Any, jax.Array, jax.Array, UcisdMeasCfg],
+        tuple[jax.Array, jax.Array],
+    ] = _k_apply_realimag,
 ) -> UcisdKEnergyCommon:
     """Build the walker-only energy base and reusable K intermediates."""
     base = meas_ctx.base
@@ -232,7 +259,7 @@ def _ucisd_k_energy_common(
     m1_a = (greenp_a @ trial_data.c1a.T) @ green_a
     m1_b = (greenp_b @ trial_data.c1b.T) @ green_b
 
-    ya, yb = _k_apply_realimag(trial_data, green_occ_a, green_occ_b, base.cfg)
+    ya, yb = apply_fn(trial_data, green_occ_a, green_occ_b, base.cfg)
     doubles = 0.5 * jnp.einsum("pt,pt->", green_occ_a, ya, optimize="optimal")
     doubles += 0.5 * jnp.einsum("pt,pt->", green_occ_b, yb, optimize="optimal")
     m2_a = (greenp_a @ ya.T) @ green_a
@@ -261,8 +288,12 @@ def _ucisd_k_energy_common(
 def _ucisd_k_chol_terms(
     common: UcisdKEnergyCommon,
     ham_data: HamChol,
-    meas_ctx: UcisdKMeasCtx,
-    trial_data: UcisdKTrial,
+    meas_ctx: Any,
+    trial_data: Any,
+    quadratic_fn: Callable[
+        [Any, jax.Array, jax.Array, UcisdMeasCfg, int],
+        jax.Array,
+    ] = _k_quadratic_batched_realimag,
 ) -> jax.Array:
     """Return one walker's normalized contribution for each Cholesky vector."""
     base = meas_ctx.base
@@ -316,7 +347,13 @@ def _ucisd_k_chol_terms(
         common.greenp_b.astype(cfg.mixed_complex_dtype),
         optimize="optimal",
     )
-    r3 = _k_quadratic_batched_realimag(trial_data, x_a, x_b, cfg)
+    r3 = quadratic_fn(
+        trial_data,
+        x_a,
+        x_b,
+        cfg,
+        getattr(meas_ctx, "n_mode_chunks", 1),
+    )
     numerator = common.overlap * e20 - lm12 * lg + r1 + r2 + r3
     return numerator / common.overlap
 
@@ -342,8 +379,7 @@ def make_ucisd_k_meas_ops(
     """Build exact combined-K UCISD measurements for restricted walkers."""
     if sys.walker_kind.lower() != "restricted":
         raise ValueError(
-            "UCISD K MeasOps currently supports only restricted walkers, got: "
-            f"{sys.walker_kind}"
+            f"UCISD K MeasOps currently supports only restricted walkers, got: {sys.walker_kind}"
         )
     if memory_mode != "high":
         raise ValueError("K-native UCISD measurements currently require memory_mode='high'.")
