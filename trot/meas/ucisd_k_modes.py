@@ -75,28 +75,43 @@ def _k_mode_apply_realimag(
     matrix_b: jax.Array,
     cfg: UcisdMeasCfg,
 ) -> tuple[jax.Array, jax.Array]:
-    """Apply retained combined modes through explicit real mixed-precision GEMMs."""
-    vectors, _ = _combined_pair_batch(
-        trial_data,
-        matrix_a[None, ...],
-        matrix_b[None, ...],
-    )
+    """Apply modes after separately projecting the alpha and beta pair spaces."""
+    expected_a = (trial_data.nocc[0], trial_data.nvir[0])
+    expected_b = (trial_data.nocc[1], trial_data.nvir[1])
+    if matrix_a.shape != expected_a or matrix_b.shape != expected_b:
+        raise ValueError(
+            f"matrix pair must have shapes {expected_a} and {expected_b}, got "
+            f"{matrix_a.shape} and {matrix_b.shape}."
+        )
+
+    da, _ = trial_data.pair_dim
     modes = trial_data.modes.astype(cfg.mixed_real_dtype)
+    modes_a = modes[:, :da]
+    modes_b = modes[:, da:]
     values = trial_data.eigenvalues.astype(cfg.mixed_real_dtype)
-    vector_r = jnp.real(vectors[0]).astype(cfg.mixed_real_dtype)
-    vector_i = jnp.imag(vectors[0]).astype(cfg.mixed_real_dtype)
-    projection_r = jnp.einsum("rp,p->r", modes, vector_r, optimize="optimal")
-    projection_i = jnp.einsum("rp,p->r", modes, vector_i, optimize="optimal")
+    vector_a_r = jnp.real(matrix_a).reshape(-1).astype(cfg.mixed_real_dtype)
+    vector_b_r = jnp.real(matrix_b).reshape(-1).astype(cfg.mixed_real_dtype)
+    projection_a_r = jnp.einsum("rp,p->r", modes_a, vector_a_r, optimize="optimal")
+    projection_b_r = jnp.einsum("rp,p->r", modes_b, vector_b_r, optimize="optimal")
+    projection_r = (
+        projection_a_r.astype(jnp.float64) + projection_b_r.astype(jnp.float64)
+    ).astype(cfg.mixed_real_dtype)
+
+    vector_a_i = jnp.imag(matrix_a).reshape(-1).astype(cfg.mixed_real_dtype)
+    vector_b_i = jnp.imag(matrix_b).reshape(-1).astype(cfg.mixed_real_dtype)
+    projection_a_i = jnp.einsum("rp,p->r", modes_a, vector_a_i, optimize="optimal")
+    projection_b_i = jnp.einsum("rp,p->r", modes_b, vector_b_i, optimize="optimal")
+    projection_i = (
+        projection_a_i.astype(jnp.float64) + projection_b_i.astype(jnp.float64)
+    ).astype(cfg.mixed_real_dtype)
+
     applied_r = jnp.einsum("r,rp->p", values * projection_r, modes, optimize="optimal")
     applied_i = jnp.einsum("r,rp->p", values * projection_i, modes, optimize="optimal")
     imag_unit = jnp.asarray(1.0j, dtype=cfg.mixed_complex_dtype)
     applied = applied_r.astype(cfg.mixed_complex_dtype)
     applied += imag_unit * applied_i.astype(cfg.mixed_complex_dtype)
 
-    da, _ = trial_data.pair_dim
-    shape_a = (trial_data.nocc[0], trial_data.nvir[0])
-    shape_b = (trial_data.nocc[1], trial_data.nvir[1])
-    return applied[:da].reshape(shape_a), applied[da:].reshape(shape_b)
+    return applied[:da].reshape(expected_a), applied[da:].reshape(expected_b)
 
 
 def _k_mode_quadratic_batched_realimag(
@@ -106,8 +121,11 @@ def _k_mode_quadratic_batched_realimag(
     cfg: UcisdMeasCfg,
     n_mode_chunks: int = 1,
 ) -> jax.Array:
-    """Return ``0.5 * z.T @ K_R @ z`` for every leading matrix index."""
+    """Evaluate the three spin-block mode quadratics after split projections."""
     vectors, leading_shape = _combined_pair_batch(trial_data, matrices_a, matrices_b)
+    da, _ = trial_data.pair_dim
+    vectors_a = vectors[:, :da]
+    vectors_b = vectors[:, da:]
     rank = trial_data.mode_rank
     result_dtype = (
         jnp.complex128 if jnp.issubdtype(vectors.dtype, jnp.complexfloating) else jnp.float64
@@ -115,25 +133,60 @@ def _k_mode_quadratic_batched_realimag(
     if rank == 0:
         return jnp.zeros(leading_shape, dtype=result_dtype)
 
-    vectors_r = jnp.real(vectors).astype(cfg.mixed_real_dtype_testing)
-    vectors_i = jnp.imag(vectors).astype(cfg.mixed_real_dtype_testing)
+    vectors_a_r = jnp.real(vectors_a).astype(cfg.mixed_real_dtype_testing)
+    vectors_b_r = jnp.real(vectors_b).astype(cfg.mixed_real_dtype_testing)
+    vectors_a_i = jnp.imag(vectors_a).astype(cfg.mixed_real_dtype_testing)
+    vectors_b_i = jnp.imag(vectors_b).astype(cfg.mixed_real_dtype_testing)
 
     def evaluate_chunk(values_i: jax.Array, modes_i: jax.Array) -> jax.Array:
         modes_i = modes_i.astype(cfg.mixed_real_dtype_testing)
-        projection_r = jnp.einsum("sp,rp->sr", vectors_r, modes_i, optimize="optimal")
+        modes_a_i = modes_i[:, :da]
+        modes_b_i = modes_i[:, da:]
+        projection_a_r = jnp.einsum(
+            "sp,rp->sr",
+            vectors_a_r,
+            modes_a_i,
+            optimize="optimal",
+        )
+        projection_b_r = jnp.einsum(
+            "sp,rp->sr",
+            vectors_b_r,
+            modes_b_i,
+            optimize="optimal",
+        )
+        values_t = values_i.astype(jnp.float64)[None, :]
         if result_dtype == jnp.complex128:
-            projection_i = jnp.einsum("sp,rp->sr", vectors_i, modes_i, optimize="optimal")
-            projection = projection_r.astype(jnp.complex128)
-            projection += 1.0j * projection_i.astype(jnp.complex128)
-            return 0.5 * jnp.sum(
-                values_i.astype(jnp.float64)[None, :] * projection * projection,
+            projection_a_i = jnp.einsum(
+                "sp,rp->sr",
+                vectors_a_i,
+                modes_a_i,
+                optimize="optimal",
+            )
+            projection_b_i = jnp.einsum(
+                "sp,rp->sr",
+                vectors_b_i,
+                modes_b_i,
+                optimize="optimal",
+            )
+            projection_a = projection_a_r.astype(jnp.complex128)
+            projection_a += 1.0j * projection_a_i.astype(jnp.complex128)
+            projection_b = projection_b_r.astype(jnp.complex128)
+            projection_b += 1.0j * projection_b_i.astype(jnp.complex128)
+            contribution = 0.5 * values_t * projection_a * projection_a
+            contribution += values_t * projection_a * projection_b
+            contribution += 0.5 * values_t * projection_b * projection_b
+            return jnp.sum(
+                contribution,
                 axis=1,
                 dtype=jnp.complex128,
             )
-        return 0.5 * jnp.sum(
-            values_i.astype(jnp.float64)[None, :]
-            * projection_r.astype(jnp.float64)
-            * projection_r.astype(jnp.float64),
+        projection_a_t = projection_a_r.astype(jnp.float64)
+        projection_b_t = projection_b_r.astype(jnp.float64)
+        contribution = 0.5 * values_t * projection_a_t * projection_a_t
+        contribution += values_t * projection_a_t * projection_b_t
+        contribution += 0.5 * values_t * projection_b_t * projection_b_t
+        return jnp.sum(
+            contribution,
             axis=1,
             dtype=jnp.float64,
         )

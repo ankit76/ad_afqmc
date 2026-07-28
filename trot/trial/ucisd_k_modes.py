@@ -375,14 +375,34 @@ def mode_projections(
     matrix_a: jax.Array,
     matrix_b: jax.Array,
 ) -> jax.Array:
-    """Return the combined projection ``modes @ [matrix_a, matrix_b]``."""
-    vector = combined_pair_vector(trial_data, matrix_a, matrix_b)
-    vector_r = jnp.real(vector).astype(trial_data.modes.dtype)
-    projection_r = jnp.einsum("rp,p->r", trial_data.modes, vector_r, optimize="optimal")
-    if not jnp.issubdtype(vector.dtype, jnp.complexfloating):
-        return projection_r.astype(jnp.float64)
-    vector_i = jnp.imag(vector).astype(trial_data.modes.dtype)
-    projection_i = jnp.einsum("rp,p->r", trial_data.modes, vector_i, optimize="optimal")
+    """Project the alpha and beta pair spaces separately before promotion."""
+    expected_a = (trial_data.nocc[0], trial_data.nvir[0])
+    expected_b = (trial_data.nocc[1], trial_data.nvir[1])
+    if matrix_a.shape != expected_a or matrix_b.shape != expected_b:
+        raise ValueError(
+            f"matrix pair must have shapes {expected_a} and {expected_b}, got "
+            f"{matrix_a.shape} and {matrix_b.shape}."
+        )
+
+    da, _ = trial_data.pair_dim
+    modes_a = trial_data.modes[:, :da]
+    modes_b = trial_data.modes[:, da:]
+    vector_a_r = jnp.real(matrix_a).reshape(-1).astype(trial_data.modes.dtype)
+    vector_b_r = jnp.real(matrix_b).reshape(-1).astype(trial_data.modes.dtype)
+    projection_a_r = jnp.einsum("rp,p->r", modes_a, vector_a_r, optimize="optimal")
+    projection_b_r = jnp.einsum("rp,p->r", modes_b, vector_b_r, optimize="optimal")
+    projection_r = projection_a_r.astype(jnp.float64) + projection_b_r.astype(jnp.float64)
+    is_complex = jnp.issubdtype(matrix_a.dtype, jnp.complexfloating) or jnp.issubdtype(
+        matrix_b.dtype, jnp.complexfloating
+    )
+    if not is_complex:
+        return projection_r
+
+    vector_a_i = jnp.imag(matrix_a).reshape(-1).astype(trial_data.modes.dtype)
+    vector_b_i = jnp.imag(matrix_b).reshape(-1).astype(trial_data.modes.dtype)
+    projection_a_i = jnp.einsum("rp,p->r", modes_a, vector_a_i, optimize="optimal")
+    projection_b_i = jnp.einsum("rp,p->r", modes_b, vector_b_i, optimize="optimal")
+    projection_i = projection_a_i.astype(jnp.float64) + projection_b_i.astype(jnp.float64)
     return projection_r.astype(jnp.complex128) + 1.0j * projection_i.astype(jnp.complex128)
 
 

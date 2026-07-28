@@ -124,25 +124,48 @@ def _k_apply_realimag(
     matrix_b: jax.Array,
     cfg: UcisdMeasCfg,
 ) -> tuple[jax.Array, jax.Array]:
-    """Apply one real combined K through explicit real mixed-precision GEMMs."""
-    vectors, _ = _combined_pair_batch(
-        trial_data,
-        matrix_a[None, ...],
-        matrix_b[None, ...],
-    )
-    kernel = trial_data.k.astype(cfg.mixed_real_dtype)
-    vector_r = jnp.real(vectors[0]).astype(cfg.mixed_real_dtype)
-    vector_i = jnp.imag(vectors[0]).astype(cfg.mixed_real_dtype)
-    applied_r = jnp.einsum("pq,q->p", kernel, vector_r, optimize="optimal")
-    applied_i = jnp.einsum("pq,q->p", kernel, vector_i, optimize="optimal")
-    imag_unit = jnp.asarray(1.0j, dtype=cfg.mixed_complex_dtype)
-    applied = applied_r.astype(cfg.mixed_complex_dtype)
-    applied += imag_unit * applied_i.astype(cfg.mixed_complex_dtype)
+    """Apply the spin blocks of K separately and combine after promotion."""
+    expected_a = (trial_data.nocc[0], trial_data.nvir[0])
+    expected_b = (trial_data.nocc[1], trial_data.nvir[1])
+    if matrix_a.shape != expected_a or matrix_b.shape != expected_b:
+        raise ValueError(
+            f"matrix pair must have shapes {expected_a} and {expected_b}, got "
+            f"{matrix_a.shape} and {matrix_b.shape}."
+        )
 
     da, _ = trial_data.pair_dim
-    shape_a = (trial_data.nocc[0], trial_data.nvir[0])
-    shape_b = (trial_data.nocc[1], trial_data.nvir[1])
-    return applied[:da].reshape(shape_a), applied[da:].reshape(shape_b)
+    kernel = trial_data.k.astype(cfg.mixed_real_dtype)
+    kernel_aa = kernel[:da, :da]
+    kernel_ab = kernel[:da, da:]
+    kernel_bb = kernel[da:, da:]
+    vector_a_r = jnp.real(matrix_a).reshape(-1).astype(cfg.mixed_real_dtype)
+    vector_b_r = jnp.real(matrix_b).reshape(-1).astype(cfg.mixed_real_dtype)
+
+    applied_aa_r = jnp.einsum("pq,q->p", kernel_aa, vector_a_r, optimize="optimal")
+    applied_ab_r = jnp.einsum("pq,q->p", kernel_ab, vector_b_r, optimize="optimal")
+    applied_ba_r = jnp.einsum("pq,p->q", kernel_ab, vector_a_r, optimize="optimal")
+    applied_bb_r = jnp.einsum("pq,q->p", kernel_bb, vector_b_r, optimize="optimal")
+    applied_a_r = applied_aa_r.astype(jnp.float64) + applied_ab_r.astype(jnp.float64)
+    applied_b_r = applied_ba_r.astype(jnp.float64) + applied_bb_r.astype(jnp.float64)
+
+    is_complex = jnp.issubdtype(matrix_a.dtype, jnp.complexfloating) or jnp.issubdtype(
+        matrix_b.dtype, jnp.complexfloating
+    )
+    if not is_complex:
+        return applied_a_r.reshape(expected_a), applied_b_r.reshape(expected_b)
+
+    vector_a_i = jnp.imag(matrix_a).reshape(-1).astype(cfg.mixed_real_dtype)
+    vector_b_i = jnp.imag(matrix_b).reshape(-1).astype(cfg.mixed_real_dtype)
+    applied_aa_i = jnp.einsum("pq,q->p", kernel_aa, vector_a_i, optimize="optimal")
+    applied_ab_i = jnp.einsum("pq,q->p", kernel_ab, vector_b_i, optimize="optimal")
+    applied_ba_i = jnp.einsum("pq,p->q", kernel_ab, vector_a_i, optimize="optimal")
+    applied_bb_i = jnp.einsum("pq,q->p", kernel_bb, vector_b_i, optimize="optimal")
+    applied_a_i = applied_aa_i.astype(jnp.float64) + applied_ab_i.astype(jnp.float64)
+    applied_b_i = applied_ba_i.astype(jnp.float64) + applied_bb_i.astype(jnp.float64)
+    applied_a = applied_a_r.astype(jnp.complex128) + 1.0j * applied_a_i.astype(jnp.complex128)
+    applied_b = applied_b_r.astype(jnp.complex128) + 1.0j * applied_b_i.astype(jnp.complex128)
+
+    return applied_a.reshape(expected_a), applied_b.reshape(expected_b)
 
 
 def _k_quadratic_batched_realimag(
@@ -152,26 +175,46 @@ def _k_quadratic_batched_realimag(
     cfg: UcisdMeasCfg,
     n_mode_chunks: int = 1,
 ) -> jax.Array:
-    """Return ``0.5 * z.T @ K @ z`` independently for every leading index."""
+    """Evaluate the three spin-block quadratic terms with promoted reductions."""
     del n_mode_chunks
     vectors, leading_shape = _combined_pair_batch(trial_data, matrices_a, matrices_b)
+    da, _ = trial_data.pair_dim
+    vectors_a = vectors[:, :da]
+    vectors_b = vectors[:, da:]
     kernel = trial_data.k.astype(cfg.mixed_real_dtype_testing)
-    vectors_r = jnp.real(vectors).astype(cfg.mixed_real_dtype_testing)
-    vectors_i = jnp.imag(vectors).astype(cfg.mixed_real_dtype_testing)
-    applied_r = jnp.einsum("pq,sq->sp", kernel, vectors_r, optimize="optimal")
-    applied_i = jnp.einsum("pq,sq->sp", kernel, vectors_i, optimize="optimal")
+    kernel_aa = kernel[:da, :da]
+    kernel_ab = kernel[:da, da:]
+    kernel_bb = kernel[da:, da:]
 
-    if jnp.issubdtype(vectors.dtype, jnp.complexfloating):
+    is_complex = jnp.issubdtype(vectors.dtype, jnp.complexfloating)
+
+    def block_bilinear(
+        left: jax.Array,
+        block: jax.Array,
+        right: jax.Array,
+    ) -> jax.Array:
+        right_r = jnp.real(right).astype(cfg.mixed_real_dtype_testing)
+        applied_r = jnp.einsum("pq,sq->sp", block, right_r, optimize="optimal")
+        if not is_complex:
+            return jnp.sum(
+                left.astype(jnp.float64) * applied_r.astype(jnp.float64),
+                axis=1,
+                dtype=jnp.float64,
+            )
+
+        right_i = jnp.imag(right).astype(cfg.mixed_real_dtype_testing)
+        applied_i = jnp.einsum("pq,sq->sp", block, right_i, optimize="optimal")
         applied = applied_r.astype(jnp.complex128)
         applied += 1.0j * applied_i.astype(jnp.complex128)
-        vectors_t = vectors.astype(jnp.complex128)
-        result = 0.5 * jnp.sum(vectors_t * applied, axis=1, dtype=jnp.complex128)
-    else:
-        result = 0.5 * jnp.sum(
-            vectors_r.astype(jnp.float64) * applied_r.astype(jnp.float64),
+        return jnp.sum(
+            left.astype(jnp.complex128) * applied,
             axis=1,
-            dtype=jnp.float64,
+            dtype=jnp.complex128,
         )
+
+    result = 0.5 * block_bilinear(vectors_a, kernel_aa, vectors_a)
+    result += block_bilinear(vectors_a, kernel_ab, vectors_b)
+    result += 0.5 * block_bilinear(vectors_b, kernel_bb, vectors_b)
     return result.reshape(leading_shape)
 
 
