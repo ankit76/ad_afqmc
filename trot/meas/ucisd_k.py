@@ -17,6 +17,7 @@ from ..trial.ucisd_k import overlap_r as ucisd_k_overlap_r
 from .ucisd import UcisdMeasCfg, UcisdMeasCtx
 from .ucisd import build_meas_ctx as build_dense_meas_ctx
 from .ucisd_modes import (
+    _chol_contract,
     _energy_gl_batched_realimag,
     _spin_sum_chol_contract,
 )
@@ -218,6 +219,26 @@ def _k_quadratic_batched_realimag(
     return result.reshape(leading_shape)
 
 
+def _separate_spin_chol_contract(
+    chol_a: jax.Array,
+    chol_b: jax.Array,
+    matrix_a: jax.Array,
+    matrix_b: jax.Array,
+    cfg: UcisdMeasCfg,
+) -> jax.Array:
+    """Contract each spin in its native basis before an accurate final sum.
+
+    This mirrors the mixed-precision association of the default dense UCISD
+    energy kernel: each expensive Cholesky contraction remains mixed precision,
+    while the alpha and beta outputs are promoted before addition.  In
+    particular, it avoids rotating the walker-dependent beta matrix through
+    two additional mixed-precision GEMMs.
+    """
+    contracted_a = _chol_contract(chol_a, matrix_a, cfg)
+    contracted_b = _chol_contract(chol_b, matrix_b, cfg)
+    return contracted_a.astype(jnp.complex128) + contracted_b.astype(jnp.complex128)
+
+
 def _force_bias_kernel_rw_rh_with_apply(
     walker: jax.Array,
     ham_data: HamChol,
@@ -364,11 +385,11 @@ def _ucisd_k_chol_terms(
     r1 -= jnp.einsum("gpq,gqp->g", lci1g_a, q_a, optimize="optimal")
     r1 -= jnp.einsum("gpq,gqp->g", lci1g_b, q_b, optimize="optimal")
 
-    lm12 = _spin_sum_chol_contract(
+    lm12 = _separate_spin_chol_contract(
         chol_a,
+        chol_b,
         common.m1_a + common.m2_a,
         common.m1_b + common.m2_b,
-        trial_data.mo_coeff_b,
         cfg,
     )
     gl_a = _energy_gl_batched_realimag(green_a, chol_a, cfg)
