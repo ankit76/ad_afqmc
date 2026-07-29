@@ -358,16 +358,33 @@ def _ucisd_k_chol_terms(
         [Any, jax.Array, jax.Array, UcisdMeasCfg, int],
         jax.Array,
     ] = _k_quadratic_batched_realimag,
+    chol_indices: jax.Array | None = None,
 ) -> jax.Array:
-    """Return one walker's normalized contribution for each Cholesky vector."""
+    """Return one walker's normalized contribution for selected Cholesky vectors.
+
+    ``chol_indices=None`` retains the deterministic full-Cholesky path.  An
+    explicit index array gathers every alpha- and beta-basis intermediate
+    before any expensive contraction, which is required by retained-mode
+    walker--Cholesky pair sampling.
+    """
     base = meas_ctx.base
     cfg = base.cfg
     green_a = common.green_a
     green_b = common.green_b
-    chol_a = ham_data.chol
-    chol_b = base.chol_b
-    rot_chol_a = base.rot_chol_a
-    rot_chol_b = base.rot_chol_b
+    if chol_indices is None:
+        chol_a = ham_data.chol
+        chol_b = base.chol_b
+        rot_chol_a = base.rot_chol_a
+        rot_chol_b = base.rot_chol_b
+        lci1_a = base.lci1_a
+        lci1_b = base.lci1_b
+    else:
+        chol_a = ham_data.chol[chol_indices]
+        chol_b = base.chol_b[chol_indices]
+        rot_chol_a = base.rot_chol_a[chol_indices]
+        rot_chol_b = base.rot_chol_b[chol_indices]
+        lci1_a = base.lci1_a[chol_indices]
+        lci1_b = base.lci1_b[chol_indices]
 
     lg_a = jnp.einsum("gpj,pj->g", rot_chol_a, green_a, optimize="optimal")
     lg_b = jnp.einsum("gpj,pj->g", rot_chol_b, green_b, optimize="optimal")
@@ -380,8 +397,8 @@ def _ucisd_k_chol_terms(
 
     r1 = jnp.einsum("gpq,gqr,rp->g", q_a, q_a, common.z1_a, optimize="optimal")
     r1 += jnp.einsum("gpq,gqr,rp->g", q_b, q_b, common.z1_b, optimize="optimal")
-    lci1g_a = jnp.einsum("gip,qi->gpq", base.lci1_a, green_a, optimize="optimal")
-    lci1g_b = jnp.einsum("gip,qi->gpq", base.lci1_b, green_b, optimize="optimal")
+    lci1g_a = jnp.einsum("gip,qi->gpq", lci1_a, green_a, optimize="optimal")
+    lci1g_b = jnp.einsum("gip,qi->gpq", lci1_b, green_b, optimize="optimal")
     r1 -= jnp.einsum("gpq,gqp->g", lci1g_a, q_a, optimize="optimal")
     r1 -= jnp.einsum("gpq,gqp->g", lci1g_b, q_b, optimize="optimal")
 

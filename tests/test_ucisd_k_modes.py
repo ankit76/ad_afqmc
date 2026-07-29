@@ -8,26 +8,37 @@ import numpy as np
 import pytest
 
 from trot import driver, testing
-from trot.core.ops import k_energy, k_force_bias
+from trot.core.ops import BlockEnergyEstimate, d_energy_sampling_noise, k_energy, k_force_bias
 from trot.core.system import System
 from trot.meas.ucisd import UcisdMeasCfg
 from trot.meas.ucisd_k import (
+    _ucisd_k_energy_common,
     build_meas_ctx as build_k_meas_ctx,
     energy_kernel_rw_rh as k_energy_kernel,
     force_bias_kernel_rw_rh as k_force_bias_kernel,
 )
 from trot.meas.ucisd_k_modes import (
+    UcisdKModePairSamplingCfg,
+    UcisdKModePairTuningCfg,
+    UcisdKModePopulationStats,
     _k_mode_apply_realimag,
     _k_mode_quadratic_batched_realimag,
+    _ucisd_k_mode_chol_pair_terms,
+    _ucisd_k_mode_chol_terms_for_walkers,
+    average_ucisd_k_mode_population_statistics,
     build_meas_ctx as build_k_mode_meas_ctx,
     energy_kernel_rw_rh as k_mode_energy_kernel,
     force_bias_kernel_rw_rh as k_mode_force_bias_kernel,
     get_ucisd_k_mode_meas_cfg,
     make_ucisd_k_mode_meas_ops,
+    pair_sampled_block_energy,
+    retune_ucisd_k_mode_pair_sampling,
+    select_ucisd_k_mode_pair_sampling,
+    stream_ucisd_k_mode_population_statistics,
 )
 from trot.prop.afqmc import make_prop_ops
 from trot.prop.blocks import block
-from trot.prop.types import QmcParams
+from trot.prop.types import PropState, QmcParams
 from trot.trial.ucisd_k import UcisdKTrial, overlap_r as k_overlap_r
 from trot.trial.ucisd_k_modes import (
     UcisdKModeTrial,
@@ -368,6 +379,387 @@ def test_k_mode_apply_mixed_precision_matches_reconstructed_kernel():
     )
 
 
+def test_k_mode_sampled_pair_terms_match_full_walker_cholesky_table():
+    _, trial, _ = _make_trials(seed=1903, rank=5)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(1905),
+        trial.norb,
+        n_chol=7,
+        basis="restricted",
+    )
+    ctx = build_k_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=_double_cfg(),
+        n_mode_chunks=3,
+    )
+    walkers = jnp.stack([_walker(trial, seed) for seed in (1909, 1911, 1915)])
+    common = jax.vmap(
+        lambda walker: _ucisd_k_energy_common(
+            walker,
+            ham,
+            ctx,
+            trial,
+            _k_mode_apply_realimag,
+        )
+    )(walkers)
+    all_terms = _ucisd_k_mode_chol_terms_for_walkers(
+        common,
+        ham,
+        ctx,
+        trial,
+        n_chunks=2,
+    )
+    sample_walker = jnp.asarray([2, 0, 1, 2, 1, 0, 2], dtype=jnp.int32)
+    sample_chol = jnp.asarray([6, 1, 4, 0, 3, 5, 2], dtype=jnp.int32)
+    expected = all_terms[sample_walker, sample_chol]
+
+    candidate = jax.jit(
+        lambda walker_indices, chol_indices: _ucisd_k_mode_chol_pair_terms(
+            common,
+            walker_indices,
+            chol_indices,
+            ham,
+            ctx,
+            trial,
+            n_chunks=3,
+        )
+    )(sample_walker, sample_chol)
+
+    np.testing.assert_allclose(candidate, expected, rtol=3.0e-12, atol=3.0e-12)
+
+
+def test_k_mode_pair_sampled_full_head_matches_deterministic_block_energy():
+    _, trial, _ = _make_trials(seed=1917, rank=5)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(1919),
+        trial.norb,
+        n_chol=7,
+        basis="restricted",
+    )
+    sampling = UcisdKModePairSamplingCfg(
+        chol_head_size=7,
+        pair_sample_size=8,
+        head_chol_batch_size=2,
+        track_half_sample_diagnostic=True,
+    )
+    ops = make_ucisd_k_mode_meas_ops(
+        System(trial.norb, trial.nocc, walker_kind="restricted"),
+        mixed_precision=False,
+        n_mode_chunks=3,
+        energy_sampling=sampling,
+    )
+    ctx = ops.build_meas_ctx(ham, trial)
+    walkers = jnp.stack([_walker(trial, seed) for seed in (1921, 1923, 1927)])
+    weights = jnp.asarray([1.0, 2.0, 4.0], dtype=jnp.float64)
+    exact = jax.vmap(k_mode_energy_kernel, in_axes=(0, None, None, None))(
+        walkers,
+        ham,
+        ctx,
+        trial,
+    )
+    expected = jnp.sum(weights * jnp.real(exact)) / jnp.sum(weights)
+    candidate = jax.jit(pair_sampled_block_energy, static_argnums=4)(
+        walkers,
+        weights,
+        jnp.ones_like(weights, dtype=jnp.complex128),
+        jax.random.PRNGKey(1931),
+        2,
+        ham,
+        ctx,
+        trial,
+        jnp.asarray(0.0),
+        jnp.asarray(20.0),
+    )
+
+    assert ops.block_energy is pair_sampled_block_energy
+    assert ctx.energy_sampling == sampling
+    assert ctx.reference_chol_scores.shape == (7,)
+    assert ctx.chol_tail_prob.shape == (0,)
+    assert isinstance(candidate, BlockEnergyEstimate)
+    np.testing.assert_allclose(candidate.energy, expected, rtol=3.0e-12, atol=3.0e-12)
+    np.testing.assert_allclose(
+        candidate.diagnostics[d_energy_sampling_noise],
+        0.0,
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_k_mode_pair_sampled_tail_matches_the_drawn_importance_estimator():
+    _, trial, _ = _make_trials(seed=1933, rank=5)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(1935),
+        trial.norb,
+        n_chol=7,
+        basis="restricted",
+    )
+    pair_sample_size = 128
+    sampling = UcisdKModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=pair_sample_size,
+        rank_head_by_guide=True,
+        tail_probability_uniform_mix=0.1,
+        track_half_sample_diagnostic=True,
+    )
+    ctx = build_k_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=_double_cfg(),
+        n_mode_chunks=3,
+        energy_sampling=sampling,
+    )
+    walkers = jnp.stack([_walker(trial, seed) for seed in (1937, 1941, 1943)])
+    weights = jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float64)
+    norm_weights = weights / jnp.sum(weights)
+    common = jax.vmap(
+        lambda walker: _ucisd_k_energy_common(
+            walker,
+            ham,
+            ctx,
+            trial,
+            _k_mode_apply_realimag,
+        )
+    )(walkers)
+    all_terms = jnp.real(
+        _ucisd_k_mode_chol_terms_for_walkers(
+            common,
+            ham,
+            ctx,
+            trial,
+            n_chunks=2,
+        )
+    )
+    head_energy = jnp.real(common.base) + jnp.sum(
+        all_terms[:, ctx.chol_head_indices],
+        axis=1,
+    )
+
+    rng_key = jax.random.PRNGKey(1945)
+    key_walker, key_chol = jax.random.split(rng_key)
+    sample_walker = jax.random.choice(
+        key_walker,
+        weights.shape[0],
+        shape=(pair_sample_size,),
+        replace=True,
+        p=norm_weights,
+    )
+    sample_chol_rel = jax.random.choice(
+        key_chol,
+        ctx.chol_tail_prob.shape[0],
+        shape=(pair_sample_size,),
+        replace=True,
+        p=ctx.chol_tail_prob,
+    )
+    sample_values = (
+        all_terms[sample_walker, ctx.chol_tail_indices[sample_chol_rel]]
+        / ctx.chol_tail_prob[sample_chol_rel]
+    )
+    expected_energy = jnp.sum(norm_weights * head_energy) + jnp.mean(sample_values)
+    half_size = pair_sample_size // 2
+    expected_diagnostic = 0.5 * (
+        jnp.mean(sample_values[:half_size]) - jnp.mean(sample_values[half_size:])
+    )
+
+    candidate = jax.jit(pair_sampled_block_energy, static_argnums=4)(
+        walkers,
+        weights,
+        jnp.ones_like(weights, dtype=jnp.complex128),
+        rng_key,
+        2,
+        ham,
+        ctx,
+        trial,
+        jnp.asarray(0.0),
+        jnp.asarray(20.0),
+    )
+
+    assert isinstance(candidate, BlockEnergyEstimate)
+    np.testing.assert_allclose(candidate.energy, expected_energy, rtol=3.0e-12, atol=3.0e-12)
+    np.testing.assert_allclose(
+        candidate.diagnostics[d_energy_sampling_noise],
+        expected_diagnostic,
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+
+
+def test_k_mode_streaming_population_statistics_match_full_term_table():
+    _, trial, _ = _make_trials(seed=1947, rank=5)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(1949),
+        trial.norb,
+        n_chol=7,
+        basis="restricted",
+    )
+    ctx = build_k_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=_double_cfg(),
+        n_mode_chunks=3,
+    )
+    walkers = jnp.stack([_walker(trial, seed) for seed in (1951, 1955, 1957)])
+    weights = jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float64)
+    norm_weights = np.asarray(weights / jnp.sum(weights))
+    common = jax.vmap(
+        lambda walker: _ucisd_k_energy_common(
+            walker,
+            ham,
+            ctx,
+            trial,
+            _k_mode_apply_realimag,
+        )
+    )(walkers)
+    terms = np.real(
+        np.asarray(
+            _ucisd_k_mode_chol_terms_for_walkers(
+                common,
+                ham,
+                ctx,
+                trial,
+            )
+        )
+    )
+    base = np.real(np.asarray(common.base))
+
+    stats = stream_ucisd_k_mode_population_statistics(
+        walkers,
+        weights,
+        ham,
+        ctx,
+        trial,
+        n_walker_chunks=2,
+        chol_batch_size=3,
+    )
+    expected_means = np.sum(norm_weights[:, None] * terms, axis=0)
+    expected_seconds = np.sum(norm_weights[:, None] * terms**2, axis=0)
+    expected_local = base + np.sum(terms, axis=1)
+    np.testing.assert_allclose(stats.term_means, expected_means, rtol=3.0e-12, atol=3.0e-12)
+    np.testing.assert_allclose(
+        stats.term_second_moments,
+        expected_seconds,
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(stats.rms_scores, np.sqrt(expected_seconds), rtol=3.0e-12)
+    np.testing.assert_allclose(stats.local_energies, expected_local, rtol=3.0e-12, atol=3.0e-12)
+    np.testing.assert_allclose(
+        stats.exact_block_energy_ha,
+        np.sum(norm_weights * expected_local),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+
+
+def test_k_mode_tuner_uses_shared_policy_and_returns_ucisd_sampling_config():
+    stats = UcisdKModePopulationStats(
+        term_means=np.zeros(4, dtype=np.float64),
+        term_second_moments=np.asarray([16.0, 4.0, 1.0, 0.25]),
+        rms_scores=np.asarray([4.0, 2.0, 1.0, 0.5]),
+        local_energies=np.zeros(2, dtype=np.float64),
+        exact_block_energy_ha=0.0,
+        independent_population_std_ha=0.16,
+        wall_seconds=0.0,
+    )
+    averaged = average_ucisd_k_mode_population_statistics([stats, stats])
+    selected = select_ucisd_k_mode_pair_sampling(
+        averaged,
+        UcisdKModePairTuningCfg(
+            target_tail_std_fraction=0.5,
+            safety_factor=1.0,
+            candidate_sample_sizes=(64, 256),
+            maximum_head_fraction=0.75,
+            production_head_chol_batch_size=2,
+            settling_blocks=0,
+        ),
+        n_walkers=10,
+        calibration_std_ha=0.16,
+        calibration_source="late equilibration block standard deviation",
+    )
+
+    assert isinstance(selected.sampling, UcisdKModePairSamplingCfg)
+    assert selected.sampling.chol_head_size == 3
+    assert selected.sampling.pair_sample_size == 64
+    assert selected.sampling.head_chol_batch_size == 2
+    assert selected.estimated_pair_evaluations == 94
+    np.testing.assert_allclose(selected.estimated_tail_std_ha, 0.0625)
+    np.testing.assert_allclose(selected.target_tail_std_ha, 0.08)
+
+
+def test_k_mode_retune_collects_temporally_separated_populations():
+    _, trial, _ = _make_trials(seed=1959, norb=5, noa=2, nob=2, rank=3)
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(1961),
+        trial.norb,
+        n_chol=4,
+        basis="restricted",
+    )
+    equil_sampling = UcisdKModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=16,
+        rank_head_by_guide=True,
+    )
+    ctx = build_k_mode_meas_ctx(
+        ham,
+        trial,
+        cfg=_double_cfg(),
+        n_mode_chunks=2,
+        energy_sampling=equil_sampling,
+    )
+    walkers = jnp.stack([_walker(trial, seed) for seed in (1963, 1965)])
+    state = PropState(
+        walkers=walkers,
+        weights=jnp.ones(2, dtype=jnp.float64),
+        overlaps=jnp.ones(2, dtype=jnp.complex128),
+        rng_key=jax.random.PRNGKey(1967),
+        pop_control_ene_shift=jnp.asarray(0.0),
+        e_estimate=jnp.asarray(0.0),
+        node_encounters=jnp.asarray(0),
+    )
+    advance_calls = []
+
+    def advance_blocks(state, *, n_blocks: int):
+        advance_calls.append(n_blocks)
+        return (
+            state,
+            {
+                "energy": jnp.zeros(n_blocks, dtype=jnp.float64),
+                "weight": jnp.ones(n_blocks, dtype=jnp.float64),
+            },
+            (),
+        )
+
+    retuned = retune_ucisd_k_mode_pair_sampling(
+        state,
+        jnp.zeros(4, dtype=jnp.float64),
+        jnp.ones(4, dtype=jnp.float64),
+        None,
+        ham,
+        ctx,
+        trial,
+        advance_blocks=advance_blocks,
+        tuning_cfg=UcisdKModePairTuningCfg(
+            guide_policy="population_rms",
+            target_tail_std_ha=1.0e6,
+            safety_factor=1.0,
+            candidate_sample_sizes=(16,),
+            tuning_n_chunks=1,
+            tuning_chol_batch_size=2,
+            tuning_population_count=3,
+            tuning_population_spacing_blocks=2,
+            tail_probability_uniform_mix=0.0,
+            track_half_sample_diagnostic=False,
+            settling_blocks=0,
+        ),
+    )
+
+    assert advance_calls == [2, 2]
+    assert isinstance(retuned.meas_ctx.energy_sampling, UcisdKModePairSamplingCfg)
+    assert retuned.meas_ctx.energy_sampling.chol_head_size == 4
+    assert retuned.meas_ctx.energy_sampling.pair_sample_size == 16
+    assert retuned.settling_blocks == 0
+
+
 def test_k_mode_ops_require_restricted_walkers_and_validate_chunks():
     restricted = System(norb=6, nelec=(3, 2), walker_kind="restricted")
     assert make_ucisd_k_mode_trial_ops(restricted).overlap is k_mode_overlap_r
@@ -380,6 +772,17 @@ def test_k_mode_ops_require_restricted_walkers_and_validate_chunks():
         make_ucisd_k_mode_meas_ops(unrestricted)
     with pytest.raises(ValueError, match="n_mode_chunks must be positive"):
         make_ucisd_k_mode_meas_ops(restricted, n_mode_chunks=0)
+
+    with pytest.raises(ValueError, match="chol_head_size must be nonnegative"):
+        UcisdKModePairSamplingCfg(chol_head_size=-1, pair_sample_size=8)
+    with pytest.raises(ValueError, match="pair_sample_size must be positive"):
+        UcisdKModePairSamplingCfg(chol_head_size=0, pair_sample_size=0)
+
+    with pytest.raises(ValueError, match="requires an equilibration"):
+        make_ucisd_k_mode_meas_ops(
+            restricted,
+            energy_tuning=UcisdKModePairTuningCfg(),
+        )
 
 
 def test_k_mode_trial_runs_a_restricted_afqmc_smoke_calculation():
@@ -411,6 +814,24 @@ def test_k_mode_trial_runs_a_restricted_afqmc_smoke_calculation():
             sys,
             mixed_precision=True,
             n_mode_chunks=2,
+            energy_sampling=UcisdKModePairSamplingCfg(
+                chol_head_size=2,
+                pair_sample_size=8,
+                rank_head_by_guide=True,
+                tail_probability_uniform_mix=0.1,
+                track_half_sample_diagnostic=True,
+            ),
+            energy_tuning=UcisdKModePairTuningCfg(
+                target_tail_std_ha=1.0e6,
+                candidate_sample_sizes=(8,),
+                tuning_n_chunks=1,
+                tuning_chol_batch_size=2,
+                tuning_population_count=1,
+                production_initial_n_chunks=1,
+                tail_probability_uniform_mix=0.1,
+                track_half_sample_diagnostic=True,
+                settling_blocks=0,
+            ),
         ),
         prop_ops=make_prop_ops(ham.basis, sys.walker_kind, mixed_precision=True),
         block_fn=block,
