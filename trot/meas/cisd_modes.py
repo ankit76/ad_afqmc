@@ -632,6 +632,28 @@ def _cisd_mode_chol_index_moments_for_walkers(
     )
     valid = (jnp.arange(padded_size) < head_size).reshape(n_batches, batch_size)
 
+    if n_batches == 1:
+        terms = _cisd_mode_chol_terms_for_walkers(
+            common,
+            ham_data.chol[chol_indices],
+            meas_ctx.rot_chol[chol_indices],
+            meas_ctx.lci1[chol_indices],
+            meas_ctx,
+            trial_data,
+            n_chunks=n_walker_chunks,
+        )
+        total = jnp.sum(terms, axis=1, dtype=jnp.complex128)
+        if compute_squared_norm:
+            terms_real = jnp.real(terms).astype(jnp.float64)
+            squared_norm = jnp.sum(
+                terms_real**2,
+                axis=1,
+                dtype=jnp.float64,
+            )
+        else:
+            squared_norm = jnp.zeros_like(jnp.real(common.base), dtype=jnp.float64)
+        return total, squared_norm
+
     def scan_body(carry, xs):
         total, squared_norm = carry
         indices_i, valid_i = xs
@@ -967,8 +989,6 @@ def pair_sampled_block_energy(
         p=meas_ctx.chol_tail_prob,
     )
     sample_chol = meas_ctx.chol_tail_indices[sample_chol_rel]
-    walker_batch_size = (int(weights_real.shape[0]) + n_chunks - 1) // n_chunks
-    pair_n_chunks = (sampling.pair_sample_size + walker_batch_size - 1) // walker_batch_size
     sample_terms = _cisd_mode_chol_pair_terms(
         common,
         sample_walker,
@@ -976,7 +996,7 @@ def pair_sampled_block_energy(
         ham_data,
         meas_ctx,
         trial_data,
-        n_chunks=pair_n_chunks,
+        n_chunks=n_chunks,
     )
     importance_samples = (
         walker_corrections[sample_walker]

@@ -252,17 +252,17 @@ def _k_mode_apply_realimag(
     vector_b_r = jnp.real(matrix_b).reshape(-1).astype(cfg.mixed_real_dtype)
     projection_a_r = jnp.einsum("rp,p->r", modes_a, vector_a_r, optimize="optimal")
     projection_b_r = jnp.einsum("rp,p->r", modes_b, vector_b_r, optimize="optimal")
-    projection_r = (
-        projection_a_r.astype(jnp.float64) + projection_b_r.astype(jnp.float64)
-    ).astype(cfg.mixed_real_dtype)
+    projection_r = (projection_a_r.astype(jnp.float64) + projection_b_r.astype(jnp.float64)).astype(
+        cfg.mixed_real_dtype
+    )
 
     vector_a_i = jnp.imag(matrix_a).reshape(-1).astype(cfg.mixed_real_dtype)
     vector_b_i = jnp.imag(matrix_b).reshape(-1).astype(cfg.mixed_real_dtype)
     projection_a_i = jnp.einsum("rp,p->r", modes_a, vector_a_i, optimize="optimal")
     projection_b_i = jnp.einsum("rp,p->r", modes_b, vector_b_i, optimize="optimal")
-    projection_i = (
-        projection_a_i.astype(jnp.float64) + projection_b_i.astype(jnp.float64)
-    ).astype(cfg.mixed_real_dtype)
+    projection_i = (projection_a_i.astype(jnp.float64) + projection_b_i.astype(jnp.float64)).astype(
+        cfg.mixed_real_dtype
+    )
 
     applied_r = jnp.einsum("r,rp->p", values * projection_r, modes, optimize="optimal")
     applied_i = jnp.einsum("r,rp->p", values * projection_i, modes, optimize="optimal")
@@ -494,6 +494,27 @@ def _ucisd_k_mode_chol_index_moments_for_walkers(
     )
     valid = (jnp.arange(padded_size) < head_size).reshape(n_batches, batch_size)
 
+    if n_batches == 1:
+        terms = _ucisd_k_mode_chol_terms_for_walkers(
+            common,
+            ham_data,
+            meas_ctx,
+            trial_data,
+            chol_indices=chol_indices,
+            n_chunks=n_walker_chunks,
+        )
+        total = jnp.sum(terms, axis=1, dtype=jnp.complex128)
+        if compute_squared_norm:
+            terms_real = jnp.real(terms).astype(jnp.float64)
+            squared_norm = jnp.sum(
+                terms_real**2,
+                axis=1,
+                dtype=jnp.float64,
+            )
+        else:
+            squared_norm = jnp.zeros_like(jnp.real(common.base), dtype=jnp.float64)
+        return total, squared_norm
+
     def scan_body(carry, xs):
         total, squared_norm = carry
         indices_i, valid_i = xs
@@ -723,9 +744,7 @@ def pair_sampled_block_energy(
             / finite_head_weight_safe
         )
         head_center = jnp.where(finite_head_weight == 0.0, jnp.real(e_ref), head_center)
-        head_guarded = (~finite_head) | (
-            jnp.abs(head_energy - head_center) > energy_clip_threshold
-        )
+        head_guarded = (~finite_head) | (jnp.abs(head_energy - head_center) > energy_clip_threshold)
     else:
         head_guarded = jnp.zeros_like(finite_head)
 
@@ -807,8 +826,6 @@ def pair_sampled_block_energy(
         p=meas_ctx.chol_tail_prob,
     )
     sample_chol = meas_ctx.chol_tail_indices[sample_chol_rel]
-    walker_batch_size = (int(weights_real.shape[0]) + n_chunks - 1) // n_chunks
-    pair_n_chunks = math.ceil(sampling.pair_sample_size / walker_batch_size)
     sample_terms = _ucisd_k_mode_chol_pair_terms(
         common,
         sample_walker,
@@ -816,7 +833,7 @@ def pair_sampled_block_energy(
         ham_data,
         meas_ctx,
         trial_data,
-        n_chunks=pair_n_chunks,
+        n_chunks=n_chunks,
     )
     importance_samples = (
         walker_corrections[sample_walker]
