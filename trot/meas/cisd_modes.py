@@ -989,6 +989,8 @@ def pair_sampled_block_energy(
         p=meas_ctx.chol_tail_prob,
     )
     sample_chol = meas_ctx.chol_tail_indices[sample_chol_rel]
+    walker_batch_size = (int(weights_real.shape[0]) + n_chunks - 1) // n_chunks
+    pair_n_chunks = (sampling.pair_sample_size + walker_batch_size - 1) // walker_batch_size
     sample_terms = _cisd_mode_chol_pair_terms(
         common,
         sample_walker,
@@ -996,7 +998,7 @@ def pair_sampled_block_energy(
         ham_data,
         meas_ctx,
         trial_data,
-        n_chunks=n_chunks,
+        n_chunks=pair_n_chunks,
     )
     importance_samples = (
         walker_corrections[sample_walker]
