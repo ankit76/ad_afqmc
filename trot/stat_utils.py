@@ -217,6 +217,271 @@ def blocking_analysis_ratio(
     return out
 
 
+def _autocovariance_fft(data: np.ndarray, max_lag: int) -> np.ndarray:
+    """Return autocovariances through ``max_lag`` using the ``n - lag`` normalization."""
+    data = np.asarray(data, dtype=float).ravel()
+    n = data.size
+    centered = data - data.mean()
+    n_fft = 1 << (2 * n - 1).bit_length()
+    spectrum = np.fft.rfft(centered, n=n_fft)
+    autocovariance_sums = np.fft.irfft(spectrum * spectrum.conjugate(), n=n_fft)
+    return autocovariance_sums[: max_lag + 1] / np.arange(n, n - max_lag - 1, -1)
+
+
+def gamma_analysis_ratio(
+    ene: np.ndarray | jax.Array,
+    wt: np.ndarray | jax.Array,
+    *,
+    s_tau: float = 1.5,
+    max_lag: int | None = None,
+    min_effective_samples: float = 20.0,
+    figsize: tuple[float, float] = (12, 4.2),
+    title: str | None = None,
+    print_q: bool = True,
+    plot_q: bool = False,
+    exact: float | None = None,
+) -> Dict[str, Any]:
+    r"""Automatic-window Gamma-method analysis of a weighted ratio.
+
+    The estimator is
+
+    .. math::
+
+        \hat\mu = \frac{\sum_t w_t E_t}{\sum_t w_t}.
+
+    Its projected fluctuation (influence) series is
+
+    .. math::
+
+        x_t = \frac{w_t(E_t - \hat\mu)}{\bar w}.
+
+    The autocovariance of ``x_t`` therefore includes fluctuations of the
+    numerator and denominator as well as their cross-correlation.  The
+    summation window is selected by the automatic procedure of U. Wolff,
+    Comput. Phys. Commun. 156, 143 (2004), with the paper's default
+    ``s_tau=1.5``.  The search is capped at half of the trajectory.
+
+    This is a post-processing routine: it does not replace or alter the
+    existing blocking estimator used by the AFQMC driver.
+    """
+
+    ene_raw = np.asarray(ene)
+    wt_raw = np.asarray(wt)
+    if np.iscomplexobj(ene_raw) and np.any(np.abs(ene_raw.imag) > 0.0):
+        raise ValueError("ene must be real-valued")
+    if np.iscomplexobj(wt_raw) and np.any(np.abs(wt_raw.imag) > 0.0):
+        raise ValueError("wt must be real-valued")
+
+    ene_np = np.asarray(ene_raw.real, dtype=float).ravel()
+    wt_np = np.asarray(wt_raw.real, dtype=float).ravel()
+    n = ene_np.size
+    if wt_np.size != n:
+        raise ValueError("ene and wt must contain the same number of samples")
+    if n < 4:
+        raise ValueError("Gamma analysis requires at least four samples")
+    if not np.all(np.isfinite(ene_np)) or not np.all(np.isfinite(wt_np)):
+        raise ValueError("ene and wt must contain only finite values")
+    if not np.isfinite(s_tau) or s_tau <= 0.0:
+        raise ValueError("s_tau must be positive and finite")
+    if not np.isfinite(min_effective_samples) or min_effective_samples < 0.0:
+        raise ValueError("min_effective_samples must be nonnegative and finite")
+
+    search_limit = n // 2
+    if max_lag is not None:
+        if isinstance(max_lag, bool) or int(max_lag) != max_lag or max_lag < 1:
+            raise ValueError("max_lag must be a positive integer")
+        search_limit = min(search_limit, int(max_lag))
+
+    weight_sum = float(wt_np.sum())
+    weight_abs_sum = float(np.abs(wt_np).sum())
+    denominator_scale = max(weight_abs_sum, np.finfo(float).tiny)
+    if abs(weight_sum) <= 10.0 * np.finfo(float).eps * denominator_scale:
+        raise ValueError("sum(wt) is zero or numerically ill-conditioned")
+
+    mu = float(np.dot(wt_np, ene_np) / weight_sum)
+    mean_weight = weight_sum / n
+    influence = wt_np * (ene_np - mu) / mean_weight
+    autocovariance = _autocovariance_fft(influence, search_limit)
+    variance_naive = float(autocovariance[0])
+    denominator_fraction = abs(weight_sum) / denominator_scale
+
+    if not np.isfinite(variance_naive) or variance_naive <= 0.0:
+        warnings = (
+            "projected ratio fluctuations have zero variance; autocorrelation is undefined",
+        )
+        out = {
+            "mu": mu,
+            "se_gamma": 0.0,
+            "ci95_gamma": (mu, mu),
+            "window": 0,
+            "window_found": False,
+            "tau_int": None,
+            "tau_int_error": None,
+            "effective_sample_size": None,
+            "se_error": None,
+            "long_run_variance": 0.0,
+            "variance_naive": variance_naive,
+            "autocovariance": autocovariance,
+            "autocorrelation": np.full_like(autocovariance, np.nan),
+            "tau_int_curve": np.full_like(autocovariance, np.nan),
+            "tau_exp_curve": np.full_like(autocovariance, np.nan),
+            "window_criterion": np.full_like(autocovariance, np.nan),
+            "influence": influence,
+            "denominator_fraction": denominator_fraction,
+            "reliable": False,
+            "warnings": warnings,
+            "bias": (mu - exact) if exact is not None else None,
+            "z_score": None,
+        }
+        if print_q:
+            print(f"mu: {mu:.16g}  Gamma SE: 0  (degenerate projected series)")
+        return out
+
+    autocorrelation = autocovariance / variance_naive
+    correlation_sum = autocovariance[0] + 2.0 * np.concatenate(
+        ([0.0], np.cumsum(autocovariance[1:]))
+    )
+    tau_curve = correlation_sum / (2.0 * variance_naive)
+    window_criterion = np.full(search_limit + 1, np.nan)
+    tau_exp_curve = np.full(search_limit + 1, np.nan)
+
+    window = search_limit
+    window_found = False
+    tiny_tau = np.finfo(float).tiny
+    for lag in range(1, search_limit + 1):
+        tau_lag = float(tau_curve[lag])
+        if not np.isfinite(tau_lag) or tau_lag <= 0.5:
+            tau_exp = tiny_tau
+            criterion = -tiny_tau
+        else:
+            ratio = (2.0 * tau_lag + 1.0) / (2.0 * tau_lag - 1.0)
+            tau_exp = s_tau / np.log(ratio)
+            criterion = np.exp(-lag / tau_exp) - tau_exp / np.sqrt(lag * n)
+        tau_exp_curve[lag] = tau_exp
+        window_criterion[lag] = criterion
+        # A negative truncated variance can occur for strongly alternating
+        # finite series.  Keep searching instead of returning an invalid SE.
+        if criterion < 0.0 and correlation_sum[lag] > 0.0:
+            window = lag
+            window_found = True
+            break
+
+    long_run_variance_raw = float(correlation_sum[window])
+    warnings_list: list[str] = []
+    if not window_found:
+        warnings_list.append(
+            f"automatic window was not found before the maximum lag ({search_limit})"
+        )
+
+    if not np.isfinite(long_run_variance_raw) or long_run_variance_raw <= 0.0:
+        warnings_list.append("truncated autocovariance sum is not positive")
+        se_gamma = float("nan")
+        ci95 = (float("nan"), float("nan"))
+        tau_int = float("nan")
+        tau_int_error = float("nan")
+        effective_sample_size = float("nan")
+        se_error = float("nan")
+        long_run_variance = float("nan")
+    else:
+        # Wolff Eq. (49): cancel the leading finite-N bias caused by using the
+        # sample mean in the autocovariance estimator.
+        bias_correction = 1.0 + (2.0 * window + 1.0) / n
+        long_run_variance = long_run_variance_raw * bias_correction
+        se_gamma = float(np.sqrt(long_run_variance / n))
+        ci95 = (mu - 1.96 * se_gamma, mu + 1.96 * se_gamma)
+        tau_int = float(tau_curve[window])
+        effective_sample_size = float(n / (2.0 * tau_int))
+        tau_error_term = max(window + 0.5 - tau_int, 0.0)
+        tau_int_error = float(2.0 * tau_int * np.sqrt(tau_error_term / n))
+        se_error = float(se_gamma * np.sqrt((window + 0.5) / n))
+        if effective_sample_size < min_effective_samples:
+            warnings_list.append(
+                "effective sample size "
+                f"({effective_sample_size:.1f}) is below the requested minimum "
+                f"({min_effective_samples:.1f})"
+            )
+
+    if denominator_fraction < 0.1:
+        warnings_list.append(
+            "positive and negative weights strongly cancel in the ratio denominator"
+        )
+
+    reliable = bool(
+        window_found
+        and np.isfinite(se_gamma)
+        and np.isfinite(effective_sample_size)
+        and effective_sample_size >= min_effective_samples
+        and denominator_fraction >= 0.1
+    )
+
+    bias = z_score = None
+    if exact is not None:
+        bias = float(mu - exact)
+        if np.isfinite(se_gamma) and se_gamma > 0.0:
+            z_score = float(bias / se_gamma)
+
+    out = {
+        "mu": mu,
+        "se_gamma": se_gamma,
+        "ci95_gamma": (float(ci95[0]), float(ci95[1])),
+        "window": int(window),
+        "window_found": window_found,
+        "tau_int": tau_int,
+        "tau_int_error": tau_int_error,
+        "effective_sample_size": effective_sample_size,
+        "se_error": se_error,
+        "long_run_variance": long_run_variance,
+        "variance_naive": variance_naive,
+        "autocovariance": autocovariance,
+        "autocorrelation": autocorrelation,
+        "tau_int_curve": tau_curve,
+        "tau_exp_curve": tau_exp_curve,
+        "window_criterion": window_criterion,
+        "influence": influence,
+        "denominator_fraction": denominator_fraction,
+        "reliable": reliable,
+        "warnings": tuple(warnings_list),
+        "bias": bias,
+        "z_score": z_score,
+    }
+
+    if print_q:
+        print(f"mu: {mu:.16g}  Gamma SE: {se_gamma:.16g}  " f"95% CI: {out['ci95_gamma']}")
+        print(
+            f"window: {window}  tau_int: {tau_int:.6g} +/- {tau_int_error:.3g}  "
+            f"N_eff: {effective_sample_size:.1f}  reliable: {reliable}"
+        )
+        for warning in warnings_list:
+            print(f"warning: {warning}")
+
+    if plot_q:
+        import matplotlib.pyplot as plt
+
+        lags = np.arange(search_limit + 1)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        ax1.plot(lags, autocorrelation, marker="o", ms=3, lw=1.2)
+        ax1.axhline(0.0, color="k", lw=0.8, alpha=0.5)
+        ax1.axvline(window, ls="--", color="k", alpha=0.85, label=f"W = {window}")
+        ax1.set_xlabel("lag (AFQMC blocks)")
+        ax1.set_ylabel(r"$\rho_x(t)$")
+        ax1.set_title(title or "Projected ratio autocorrelation")
+        ax1.grid(True, alpha=0.25)
+        ax1.legend()
+
+        ax2.plot(lags, tau_curve, marker="o", ms=3, lw=1.2)
+        ax2.axvline(window, ls="--", color="k", alpha=0.85, label=f"W = {window}")
+        if np.isfinite(tau_int):
+            ax2.axhline(tau_int, ls=":", color="k", alpha=0.7)
+        ax2.set_xlabel("summation window W")
+        ax2.set_ylabel(r"$\tau_\mathrm{int}(W)$")
+        ax2.set_title("Integrated autocorrelation time")
+        ax2.grid(True, alpha=0.25)
+        ax2.legend()
+        fig.tight_layout()
+
+    return out
+
+
 def reject_outliers(
     data: np.ndarray | jax.Array,
     obs: int,
