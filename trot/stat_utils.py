@@ -9,6 +9,39 @@ if TYPE_CHECKING:
     import jax
 
 
+def _pick_plateau_with_status(
+    Bs: np.ndarray,
+    SEs: np.ndarray,
+    Gs: np.ndarray,
+    *,
+    min_blocks: int = 20,
+    min_rise: float = 0.20,
+    flat_tol: float = 0.03,
+    k: int = 3,
+) -> tuple[int, float, int, bool, str]:
+    assert Bs.size > 0
+    Bs, SEs, Gs = map(np.asarray, (Bs, SEs, Gs))
+    ok = Gs >= min_blocks
+    Bs2, SEs2, Gs2 = Bs[ok], SEs[ok], Gs[ok]
+    if Bs2.size == 0:
+        return int(Bs[0]), float(SEs[0]), int(Gs[0]), False, "insufficient_blocks"
+    rise_ok = SEs2 >= (1.0 + min_rise) * SEs2[0]
+    for i in range(0, Bs2.size - k):
+        if not rise_ok[i]:
+            continue
+        window = SEs2[i : i + k + 1]
+        if np.all(np.abs(np.diff(window)) <= flat_tol * window[:-1]):
+            return int(Bs2[i]), float(SEs2[i]), int(Gs2[i]), True, "plateau"
+    finite = np.isfinite(SEs2)
+    if not np.any(finite):
+        return int(Bs[0]), float(SEs[0]), int(Gs[0]), False, "nonfinite_se_curve"
+    jmax = int(np.where(finite, SEs2, -np.inf).argmax())
+    thresh = 0.95 * SEs2[jmax]
+    candidates = np.where(SEs2 >= thresh)[0]
+    j = int(candidates[0]) if candidates.size > 0 else jmax
+    return int(Bs2[j]), float(SEs2[j]), int(Gs2[j]), False, "near_maximum_fallback"
+
+
 def _pick_plateau(
     Bs: np.ndarray,
     SEs: np.ndarray,
@@ -19,27 +52,18 @@ def _pick_plateau(
     flat_tol: float = 0.03,
     k: int = 3,
 ) -> tuple[int, float, int]:
-    assert Bs.size > 0
-    Bs, SEs, Gs = map(np.asarray, (Bs, SEs, Gs))
-    ok = Gs >= min_blocks
-    Bs2, SEs2, Gs2 = Bs[ok], SEs[ok], Gs[ok]
-    if Bs2.size == 0:
-        return int(Bs[0]), float(SEs[0]), int(Gs[0])
-    rise_ok = SEs2 >= (1.0 + min_rise) * SEs2[0]
-    for i in range(0, Bs2.size - k):
-        if not rise_ok[i]:
-            continue
-        window = SEs2[i : i + k + 1]
-        if np.all(np.abs(np.diff(window)) <= flat_tol * window[:-1]):
-            return int(Bs2[i]), float(SEs2[i]), int(Gs2[i])
-    finite = np.isfinite(SEs2)
-    if not np.any(finite):
-        return int(Bs[0]), float(SEs[0]), int(Gs[0])
-    jmax = int(np.where(finite, SEs2, -np.inf).argmax())
-    thresh = 0.95 * SEs2[jmax]
-    candidates = np.where(SEs2 >= thresh)[0]
-    j = int(candidates[0]) if candidates.size > 0 else jmax
-    return int(Bs2[j]), float(SEs2[j]), int(Gs2[j])
+    """Backward-compatible plateau selection without status metadata."""
+
+    B_star, se_star, G_star, _, _ = _pick_plateau_with_status(
+        Bs,
+        SEs,
+        Gs,
+        min_blocks=min_blocks,
+        min_rise=min_rise,
+        flat_tol=flat_tol,
+        k=k,
+    )
+    return B_star, se_star, G_star
 
 
 def blocking_analysis_ratio(
@@ -109,8 +133,10 @@ def blocking_analysis_ratio(
         B_star: int | None = None
         se_star: float | None = None
         G_star: int | None = None
+        plateau_found = False
+        selection_reason = "unavailable"
     else:
-        B_star, se_star, G_star = _pick_plateau(
+        B_star, se_star, G_star, plateau_found, selection_reason = _pick_plateau_with_status(
             Bs,
             SEs,
             Gs,
@@ -130,6 +156,8 @@ def blocking_analysis_ratio(
             "n_blocks": None,
             "B_star": None,
             "se_star": None,
+            "plateau_found": False,
+            "selection_reason": selection_reason,
             "ci95_star": (None, None),
             "estimator_scale_samples": None,
             "bias": None,
@@ -154,6 +182,8 @@ def blocking_analysis_ratio(
         "n_blocks": Gs,
         "B_star": int(B_star),
         "se_star": float(se_star),
+        "plateau_found": plateau_found,
+        "selection_reason": selection_reason,
         "ci95_star": (float(ci95[0]), float(ci95[1])),
         "estimator_scale_samples": est_samples,
         "bias": bias,
@@ -162,6 +192,7 @@ def blocking_analysis_ratio(
 
     if print_q:
         print(f"mu: {out['mu']:.16g}  SE*: {out['se_star']:.16g}  95% CI: {out['ci95_star']}")
+        print(f"selection: {out['selection_reason']}  " f"plateau_found: {out['plateau_found']}")
         if out["z_score"] is not None:
             print(f"bias: {out['bias']:.16g}  z: {out['z_score']:.6g}")
 
@@ -261,19 +292,19 @@ def gamma_analysis_ratio(
     Comput. Phys. Commun. 156, 143 (2004), with the paper's default
     ``s_tau=1.5``.  The search is capped at half of the trajectory.
 
-    This is a post-processing routine: it does not replace or alter the
-    existing blocking estimator used by the AFQMC driver.
+    The standard AFQMC driver evaluates this method alongside blocking and
+    uses it as the primary error estimate by default.
     """
 
     ene_raw = np.asarray(ene)
     wt_raw = np.asarray(wt)
-    if np.iscomplexobj(ene_raw) and np.any(np.abs(ene_raw.imag) > 0.0):
+    if np.iscomplexobj(ene_raw) and np.any(np.abs(np.imag(ene_raw)) > 0.0):
         raise ValueError("ene must be real-valued")
-    if np.iscomplexobj(wt_raw) and np.any(np.abs(wt_raw.imag) > 0.0):
+    if np.iscomplexobj(wt_raw) and np.any(np.abs(np.imag(wt_raw)) > 0.0):
         raise ValueError("wt must be real-valued")
 
-    ene_np = np.asarray(ene_raw.real, dtype=float).ravel()
-    wt_np = np.asarray(wt_raw.real, dtype=float).ravel()
+    ene_np = np.asarray(np.real(ene_raw), dtype=float).ravel()
+    wt_np = np.asarray(np.real(wt_raw), dtype=float).ravel()
     n = ene_np.size
     if wt_np.size != n:
         raise ValueError("ene and wt must contain the same number of samples")

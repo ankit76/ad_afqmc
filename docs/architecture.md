@@ -103,7 +103,9 @@ Job  (System + QmcParams + HamChol + trial_data + ops bundles)
 |  5. Sampling  (n_blocks)                                      |
 |       same as equilibration, but block energies are recorded  |
 |                                                               |
-|  6. Outlier rejection + blocking analysis                     |
+|  6. Outlier rejection + statistical analysis                  |
+|       - automatic-window Gamma error (reported by default)    |
+|       - blocking/jackknife error and plateau diagnostic       |
 +---------------------------------------------------------------+
   |
   v

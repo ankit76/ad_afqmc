@@ -8,6 +8,7 @@ from typing import Any, Callable, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -28,6 +29,7 @@ from .prop.types import PropOps, PropState, QmcParams, QmcParamsBase, QmcParamsF
 from .stat_utils import (
     blocking_analysis_ratio,
     clean_pt2ccsd,
+    gamma_analysis_ratio,
     jackknife_ratios,
     pt2ccsd_blocking,
     rebin_observable,
@@ -55,19 +57,142 @@ _COMPILER_MEMORY_ERROR_MARKERS = (
 class QmcResult(NamedTuple):
     """AFQMC estimates, block histories, observables, and raw diagnostics.
 
+    ``stderr_energy`` is selected by ``error_method``.  Standard importance-
+    sampled runs also retain the Gamma-method and blocking estimates and their
+    reliability diagnostics in the explicitly named fields below.
+
     ``block_diagnostics`` contains production-block estimator diagnostics. It
     is intentionally not filtered by the energy outlier mask, so rare sampling
     excursions remain visible to validation code.
     """
 
-    mean_energy: jax.Array
-    stderr_energy: jax.Array
+    mean_energy: jax.Array | float
+    stderr_energy: jax.Array | float
+    stderr_gamma: float | None
+    stderr_blocking: float | None
+    error_method: str
+    error_reliable: bool
+    gamma_window: int | None
+    gamma_window_found: bool
+    tau_int: float | None
+    effective_sample_size: float | None
+    gamma_warnings: tuple[str, ...]
+    blocking_B_star: int | None
+    blocking_plateau_found: bool
+    blocking_selection_reason: str
     block_energies: jax.Array
     block_weights: jax.Array
     block_observables: dict[str, jax.Array]
     observable_means: dict[str, jax.Array]
     observable_stderrs: dict[str, jax.Array]
     block_diagnostics: dict[str, jax.Array]
+
+
+class EnergyErrorAnalysis(NamedTuple):
+    """Primary energy error plus the two underlying analyses."""
+
+    mean: float
+    stderr: float
+    error_method: str
+    reliable: bool
+    gamma: dict[str, Any]
+    blocking: dict[str, Any]
+
+
+def _analyze_energy_errors(
+    energies: Any,
+    weights: Any,
+    *,
+    error_method: str,
+) -> EnergyErrorAnalysis:
+    """Evaluate blocking and Gamma errors without silently substituting either."""
+
+    if error_method not in ("gamma", "blocking"):
+        raise ValueError(
+            "error_method must be either 'gamma' or 'blocking'; " f"received {error_method!r}"
+        )
+
+    blocking = blocking_analysis_ratio(energies, weights, print_q=False)
+    n_samples = int(np.asarray(energies).size)
+    if n_samples < 4:
+        gamma = {
+            "mu": float(blocking["mu"]),
+            "se_gamma": float("nan"),
+            "window": None,
+            "window_found": False,
+            "tau_int": None,
+            "effective_sample_size": None,
+            "reliable": False,
+            "warnings": ("Gamma analysis requires at least four samples",),
+        }
+    else:
+        gamma = gamma_analysis_ratio(energies, weights, print_q=False)
+        if not np.isclose(
+            float(blocking["mu"]),
+            float(gamma["mu"]),
+            rtol=1.0e-12,
+            atol=1.0e-12,
+        ):
+            raise RuntimeError(
+                "blocking and Gamma analyses produced different weighted means: "
+                f"{blocking['mu']} versus {gamma['mu']}"
+            )
+
+    if error_method == "gamma":
+        stderr = float(gamma["se_gamma"])
+        reliable = bool(gamma["reliable"])
+    else:
+        blocking_se = blocking["se_star"]
+        stderr = float(blocking_se) if blocking_se is not None else float("nan")
+        reliable = bool(blocking["plateau_found"]) and np.isfinite(stderr)
+
+    return EnergyErrorAnalysis(
+        mean=float(blocking["mu"]),
+        stderr=stderr,
+        error_method=error_method,
+        reliable=reliable,
+        gamma=gamma,
+        blocking=blocking,
+    )
+
+
+def _print_energy_error_analysis(analysis: EnergyErrorAnalysis) -> None:
+    """Print the compact final summary for both energy-error estimators."""
+
+    gamma = analysis.gamma
+    blocking = analysis.blocking
+    gamma_label = "Gamma SE [primary]" if analysis.error_method == "gamma" else "Gamma SE"
+    blocking_label = (
+        "Blocking SE [primary]"
+        if analysis.error_method == "blocking"
+        else "Blocking SE [diagnostic]"
+    )
+    gamma_se = float(gamma["se_gamma"])
+    blocking_se = blocking["se_star"]
+    gamma_se_text = f"{gamma_se:.6e}" if np.isfinite(gamma_se) else "unavailable"
+    blocking_se_text = f"{float(blocking_se):.6e}" if blocking_se is not None else "unavailable"
+    tau = gamma["tau_int"]
+    n_eff = gamma["effective_sample_size"]
+
+    print(f"  mean                    = {analysis.mean:.12f}")
+    print(f"  {gamma_label:<25s}= {gamma_se_text}")
+    print(f"  Gamma reliable          = {'yes' if gamma['reliable'] else 'no'}")
+    print(f"  Gamma window W          = {gamma['window']}")
+    print(f"  tau_int                 = {tau if tau is not None else 'unavailable'}")
+    print(f"  effective samples       = {n_eff if n_eff is not None else 'unavailable'}")
+    print(f"  {blocking_label:<25s}= {blocking_se_text}")
+    print(f"  Blocking B              = {blocking['B_star']}")
+    print(
+        "  Blocking selection      = "
+        f"{blocking['selection_reason']} "
+        f"(plateau_found={blocking['plateau_found']})"
+    )
+    print(
+        f"  Reported method         = {analysis.error_method} "
+        f"(reliable={'yes' if analysis.reliable else 'no'})"
+    )
+    for warning in gamma["warnings"]:
+        print(f"  Gamma warning           = {warning}")
 
 
 class MixedQmcResult(NamedTuple):
@@ -639,11 +764,13 @@ def run_qmc(
         elapsed = time.perf_counter() - t0
         dt_per_block = (time.perf_counter() - t_mark) / float(n)
         t_mark = time.perf_counter()
-        stats = blocking_analysis_ratio(
-            jnp.asarray(block_e_s), jnp.asarray(block_w_s), print_q=False
+        error_analysis = _analyze_energy_errors(
+            jnp.asarray(block_e_s),
+            jnp.asarray(block_w_s),
+            error_method=params.error_method,
         )
-        mu = stats["mu"]
-        se = stats["se_star"]
+        mu = error_analysis.mean
+        se = error_analysis.stderr
         nodes = int(state.node_encounters)
         diagnostic_text = ""
         noise_chunks = block_diagnostics_s.get(d_energy_sampling_noise, [])
@@ -651,10 +778,11 @@ def run_qmc(
             noise_values = jnp.concatenate(noise_chunks)
             noise_rms_mha = 1000.0 * jnp.sqrt(jnp.mean(noise_values**2))
             diagnostic_text = f"  tail_rms={float(noise_rms_mha):.3f} mHa"
+        se_text = f"{se:10.3e}" if np.isfinite(se) else f"{'unavailable':>10s}"
         print(
             f"[blk {start + n:4d}/{params.n_blocks}]  "
             f"{mu:14.10f}  "
-            f"{(f'{se:10.3e}' if se is not None else ' ' * 10)}  "
+            f"{se_text}  "
             f"{float(e_chunk_avg):16.10f}  "
             f"{float(w_chunk_avg):12.6e}  "
             f"{nodes:10d}  "
@@ -662,7 +790,12 @@ def run_qmc(
             f"{elapsed:8.1f}"
             f"{diagnostic_text}"
         )
-        if se is not None and se <= target_error and target_error > 0.0:
+        if (
+            np.isfinite(se)
+            and (error_analysis.reliable or error_analysis.error_method == "blocking")
+            and se <= target_error
+            and target_error > 0.0
+        ):
             print(f"\nTarget error {target_error:.3e} reached at block {start + n}.")
             break
     block_e_s = jnp.asarray(block_e_s)
@@ -725,9 +858,16 @@ def run_qmc(
     block_obs_s = {
         name: (arr[keep_mask] if arr is not None else None) for name, arr in block_obs_s.items()
     }
-    print("\nFinal blocking analysis:")
-    stats = blocking_analysis_ratio(block_e_s, block_w_s, print_q=True)
-    mean, err = stats["mu"], stats["se_star"]
+    print("\nFinal statistical analysis:")
+    error_analysis = _analyze_energy_errors(
+        block_e_s,
+        block_w_s,
+        error_method=params.error_method,
+    )
+    _print_energy_error_analysis(error_analysis)
+    mean, err = error_analysis.mean, error_analysis.stderr
+    blocking_stats = error_analysis.blocking
+    gamma_stats = error_analysis.gamma
 
     block_e_all = jnp.concatenate([block_e_eq, block_e_s])
     block_w_all = jnp.concatenate([block_w_eq, block_w_s])
@@ -746,7 +886,7 @@ def run_qmc(
 
     obs_means: dict[str, jax.Array] = {}
     obs_stderrs: dict[str, jax.Array] = {}
-    b_star = stats.get("B_star")
+    b_star = blocking_stats.get("B_star")
     for name in observable_names:
         arr = block_obs_s[name]
         if arr is None:
@@ -755,8 +895,6 @@ def run_qmc(
             continue
         obs_means[name] = _weighted_block_mean(arr, block_w_s)
         if b_star is not None and b_star >= 1:
-            import numpy as np
-
             num, denom = rebin_observable(np.asarray(arr), np.asarray(block_w_s), b_star)
             if num.shape[0] >= 2:
                 _, se = jackknife_ratios(num, denom)
@@ -769,6 +907,20 @@ def run_qmc(
     return QmcResult(
         mean_energy=mean,
         stderr_energy=err,
+        stderr_gamma=float(gamma_stats["se_gamma"]),
+        stderr_blocking=(
+            float(blocking_stats["se_star"]) if blocking_stats["se_star"] is not None else None
+        ),
+        error_method=error_analysis.error_method,
+        error_reliable=error_analysis.reliable,
+        gamma_window=gamma_stats["window"],
+        gamma_window_found=bool(gamma_stats["window_found"]),
+        tau_int=gamma_stats["tau_int"],
+        effective_sample_size=gamma_stats["effective_sample_size"],
+        gamma_warnings=tuple(gamma_stats["warnings"]),
+        blocking_B_star=blocking_stats["B_star"],
+        blocking_plateau_found=bool(blocking_stats["plateau_found"]),
+        blocking_selection_reason=str(blocking_stats["selection_reason"]),
         block_energies=block_e_all,
         block_weights=block_w_all,
         block_observables=block_obs_all,
@@ -1155,7 +1307,7 @@ def run_qmc_energy(
     prop_ctx: Any | None = None,
     target_error: float | None = None,
     mesh: Mesh | None = None,
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+) -> tuple[float, float, jax.Array, jax.Array]:
     out = run_qmc(
         sys=sys,
         params=params,
@@ -1172,7 +1324,12 @@ def run_qmc_energy(
         mesh=mesh,
         observable_names=(),
     )
-    return out.mean_energy, out.stderr_energy, out.block_energies, out.block_weights
+    return (
+        float(out.mean_energy),
+        float(out.stderr_energy),
+        out.block_energies,
+        out.block_weights,
+    )
 
 
 def run_qmc_fp(
@@ -1302,6 +1459,18 @@ def run_qmc_fp(
     return QmcResult(
         mean_energy=mean,
         stderr_energy=err,
+        stderr_gamma=None,
+        stderr_blocking=None,
+        error_method="trajectory_standard_error",
+        error_reliable=bool(params.n_traj >= 2),
+        gamma_window=None,
+        gamma_window_found=False,
+        tau_int=None,
+        effective_sample_size=None,
+        gamma_warnings=("Gamma analysis is not defined for free-projection trajectory output",),
+        blocking_B_star=None,
+        blocking_plateau_found=False,
+        blocking_selection_reason="not_applicable",
         block_energies=block_e_all,
         block_weights=block_w_all,
         block_observables=block_obs_all,
@@ -1341,4 +1510,9 @@ def run_qmc_energy_fp(
         prop_ctx=prop_ctx,
         target_error=target_error,
     )
-    return out.mean_energy, out.stderr_energy, out.block_energies, out.block_weights
+    return (
+        cast(jax.Array, out.mean_energy),
+        cast(jax.Array, out.stderr_energy),
+        out.block_energies,
+        out.block_weights,
+    )

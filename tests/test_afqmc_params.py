@@ -20,15 +20,25 @@ def test_afqmc_defaults_match_qmc_params():
     assert af.n_eql_blocks == defaults.n_eql_blocks
     assert isinstance(af.seed, int)
     assert af.n_chunks == defaults.n_chunks
+    assert af.error_method == defaults.error_method == "gamma"
 
 
 def test_afqmc_custom_values_override_defaults():
-    af = Afqmc(DUMMY_MF, dt=0.01, n_walkers=50, n_blocks=100, seed=786, n_chunks=4)
+    af = Afqmc(
+        DUMMY_MF,
+        dt=0.01,
+        n_walkers=50,
+        n_blocks=100,
+        seed=786,
+        n_chunks=4,
+        error_method="blocking",
+    )
     assert af.dt == 0.01
     assert af.n_walkers == 50
     assert af.n_blocks == 100
     assert af.seed == 786
     assert af.n_chunks == 4
+    assert af.error_method == "blocking"
 
 
 def test_afqmc_partial_overrides():
@@ -77,6 +87,13 @@ def test_afqmc_make_params_rejects_wrong_type():
     af = Afqmc(DUMMY_MF)
     af.params = "not a params"  # type: ignore
     with pytest.raises(TypeError, match="Expected type QmcParams"):
+        af._make_params()
+
+
+def test_afqmc_make_params_rejects_invalid_error_method():
+    af = Afqmc(DUMMY_MF)
+    af.error_method = "unknown"
+    with pytest.raises(ValueError, match="error_method"):
         af._make_params()
 
 

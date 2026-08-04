@@ -8,7 +8,7 @@ import copy
 import dataclasses
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Union, cast
+from typing import Any, Callable, Literal, Union, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -95,6 +95,9 @@ class Afqmc:
         Number of walkers if params is not provided, by default None
     n_chunk : int | None, optional
         Number of chunks if params is not provided, by default 1
+    error_method : {"gamma", "blocking"} | None, optional
+        Primary energy-error estimator. Both analyses are always evaluated;
+        "gamma" is reported by default.
     """
 
     params_cls = QmcParams
@@ -115,6 +118,7 @@ class Afqmc:
         dt: float | None = None,
         n_walkers: int | None = None,
         n_chunks: int | None = None,
+        error_method: Literal["gamma", "blocking"] | None = None,
     ):
         self._obj = mf_or_cc
         self._cc: Any = None
@@ -149,6 +153,8 @@ class Afqmc:
         self.n_chunks = defaults.n_chunks if n_chunks is None else n_chunks
         if hasattr(defaults, "n_eql_blocks"):
             self.n_eql_blocks = defaults.n_eql_blocks if n_eql_blocks is None else n_eql_blocks
+        if hasattr(defaults, "error_method"):
+            self.error_method = defaults.error_method if error_method is None else error_method
 
         self._staged: StagedInputs | None = None
         self._job: Job | None = None
@@ -294,6 +300,11 @@ class Afqmc:
     #    return staged
 
     def _validate_params(self, params: QmcParamsBase) -> QmcParamsBase:
+        if isinstance(params, QmcParams) and params.error_method not in ("gamma", "blocking"):
+            raise ValueError(
+                "error_method must be either 'gamma' or 'blocking'; "
+                f"received {params.error_method!r}"
+            )
         return params
 
     def _make_params(self) -> QmcParamsBase:
@@ -362,8 +373,11 @@ class Afqmc:
         return float(value)
 
     def kernel(self, **driver_kwargs: Any) -> tuple[Any, Any]:
-        """
-        Runs AFQMC, returns (e_tot, e_err), and stores samples.
+        """Run AFQMC and return ``(e_tot, e_err)``.
+
+        For standard importance-sampled AFQMC, ``e_err`` uses ``error_method``
+        (the Gamma method by default).  Both Gamma and blocking estimates and
+        their diagnostics are retained on ``self.qmc_result``.
         """
         print(banner_afqmc())
         print_runtime_provenance()
@@ -409,6 +423,7 @@ class Afqmc:
         dt: float | None = None,
         n_walkers: int | None = None,
         n_chunks: int = 1,
+        error_method: Literal["gamma", "blocking"] | None = None,
     ) -> Afqmc:
         """
         Returns a new AFQMC object from a previously staged calculations
@@ -428,6 +443,7 @@ class Afqmc:
             dt=dt,
             n_walkers=n_walkers,
             n_chunks=n_chunks,
+            error_method=error_method,
         )
 
 
@@ -553,6 +569,7 @@ class AfqmcLnoFrag(Afqmc):
         n_walkers: int | None = None,
         n_chunks: int | None = None,
         prjlo: NDArray | None = None,
+        error_method: Literal["gamma", "blocking"] | None = None,
     ):
         super().__init__(
             mf_or_cc,
@@ -565,6 +582,7 @@ class AfqmcLnoFrag(Afqmc):
             dt=dt,
             n_walkers=n_walkers,
             n_chunks=n_chunks,
+            error_method=error_method,
         )
 
         self.mixed_precision = False
@@ -622,6 +640,7 @@ class AfqmcLnoFrag(Afqmc):
         n_walkers: int | None = None,
         n_chunks: int = 1,
         prjlo: NDArray | None = None,
+        error_method: Literal["gamma", "blocking"] | None = None,
     ) -> "AfqmcLnoFrag":
         staged = load_staged(path)
         meta = staged.meta
@@ -640,6 +659,7 @@ class AfqmcLnoFrag(Afqmc):
             n_walkers=n_walkers,
             n_chunks=n_chunks,
             prjlo=prjlo,
+            error_method=error_method,
         )
         af._staged = staged
         af.source_kind = meta["source_kind"]

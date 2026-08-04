@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, NamedTuple, Protocol
+from typing import Any, Callable, Literal, NamedTuple, Protocol
 
 import jax
 import numpy as np
@@ -49,6 +49,7 @@ class QmcParams(QmcParamsBase):
     weight_cap: float = 100.0
     shift_ema: float = 0.1
     n_eql_blocks: int = 20
+    error_method: Literal["gamma", "blocking"] = "gamma"
 
 
 @dataclass(frozen=True)

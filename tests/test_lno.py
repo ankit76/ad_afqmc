@@ -93,6 +93,7 @@ def params():
         n_blocks=20,
         seed=1234,
         n_walkers=5,
+        error_method="blocking",
     )
 
 

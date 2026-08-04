@@ -294,3 +294,12 @@ def test_driver_rebuilds_blocks_after_post_equilibration_retune(monkeypatch):
     np.testing.assert_allclose(result.block_energies[:5], np.asarray([0.0, 1.0, 1.0, 2.0, 2.0]))
     np.testing.assert_allclose(result.block_energies[5:], 2.0)
     np.testing.assert_allclose(result.block_diagnostics[d_energy_sampling_noise], 0.002)
+    assert result.error_method == "gamma"
+    assert result.stderr_energy == result.stderr_gamma
+    assert result.stderr_blocking is not None
+    assert result.blocking_selection_reason in {
+        "plateau",
+        "near_maximum_fallback",
+        "insufficient_blocks",
+        "nonfinite_se_curve",
+    }

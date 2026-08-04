@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from trot.stat_utils import _autocovariance_fft, gamma_analysis_ratio
+from trot.stat_utils import (
+    _autocovariance_fft,
+    _pick_plateau_with_status,
+    gamma_analysis_ratio,
+)
 
 
 def _stationary_ar1(n: int, phi: float, seed: int) -> np.ndarray:
@@ -27,6 +31,25 @@ def test_autocovariance_fft_matches_direct_calculation():
     )
 
     np.testing.assert_allclose(_autocovariance_fft(values, 8), expected, atol=1.0e-14)
+
+
+def test_blocking_plateau_status_distinguishes_plateau_from_fallback():
+    block_sizes = np.asarray([1, 2, 4, 8, 16])
+    n_blocks = np.asarray([320, 160, 80, 40, 20])
+
+    plateau = _pick_plateau_with_status(
+        block_sizes,
+        np.asarray([1.0, 1.3, 1.3, 1.3, 1.3]),
+        n_blocks,
+    )
+    fallback = _pick_plateau_with_status(
+        block_sizes,
+        np.asarray([1.0, 1.1, 1.2, 1.3, 1.4]),
+        n_blocks,
+    )
+
+    assert plateau[3:] == (True, "plateau")
+    assert fallback[3:] == (False, "near_maximum_fallback")
 
 
 def test_gamma_ratio_is_invariant_to_rescaling_weights():
