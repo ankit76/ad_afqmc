@@ -88,8 +88,6 @@ def test_ml_fp():
         p2,
     )
 
-    af.build_job(force=True, block_fn=block_fn)
-
     # Avoid computing the energy at 0 a.u. since it does not use the ml scheme
     def always_zero(*args, **kwargs) -> jax.Array:
         return jnp.array(0.0)
@@ -100,6 +98,12 @@ def test_ml_fp():
         kernels={
             k_energy: always_zero,
         },
+    )
+
+    af.build_job(
+        force=True,
+        block_fn=block_fn,
+        meas_ops=job.meas_ops,
     )
 
     e, err = af.kernel()

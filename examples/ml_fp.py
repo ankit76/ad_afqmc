@@ -68,6 +68,10 @@ betas, w_betas = quadrature_s2(
 overlap_u_s2 = make_overlap_u_s2(betas, w_betas, overlap_g)
 energy_kernel_uw_rh_s2 = make_energy_kernel_uw_rh_s2(betas, w_betas, overlap_g, energy_kernel_gw_rh)
 
+# Avoid computing the energy at 0 a.u. since it does not use the ml scheme
+def always_zero(*args, **kwargs) -> jax.Array:
+    return jnp.array(0.0)
+
 ## Trucation 1: No trunation + spin projection
 level1 = TmpLevelSpec(norb_keep=None, nchol_keep=None)
 p1 = make_level_pack(
@@ -99,20 +103,18 @@ block_fn = make_block_ml_fp(
     p2,
 )
 
-af.build_job(force=True, block_fn=block_fn)
-
-job = af._job
-
-# Avoid computing the energy at 0 a.u. since it does not use the ml scheme
-def always_zero(*args, **kwargs) -> jax.Array:
-    return jnp.array(0.0)
-
 job.meas_ops = dataclasses.replace(
     job.meas_ops,
     overlap=overlap_u_s2,
     kernels={
         k_energy: always_zero,
     },
+)
+
+af.build_job(
+    force=True,
+    block_fn=block_fn,
+    meas_ops=job.meas_ops,
 )
 
 e, err = af.kernel()
