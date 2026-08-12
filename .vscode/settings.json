@@ -12,5 +12,6 @@
         "--config",
         "pyproject.toml"
     ],
-    "ruff.configuration": "pyproject.toml"
+    "ruff.configuration": "pyproject.toml",
+    "files.autoSave": "onFocusChange"
 }

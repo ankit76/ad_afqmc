@@ -216,6 +216,9 @@ def make_cisd_trial_data(data: dict, sys: System) -> CisdTrial:
 def slice_trial_level(trial: CisdTrial, nvir_keep: int | None) -> CisdTrial:
     """
     Return a trial object whose ci1/ci2 are sliced to keep only the first nvir_keep virtuals.
+
+    The full orbital space is preserved: active virtuals outside the kept amplitude
+    prefix are moved into nvir_t_outer.
     """
     if nvir_keep is None:
         return trial
@@ -228,3 +231,23 @@ def slice_trial_level(trial: CisdTrial, nvir_keep: int | None) -> CisdTrial:
         ci2=ci2,
         nvir_t_outer=trial.nvir_t_outer + (trial.nvir - nvir_keep),
     )
+
+
+def slice_trial_orbital_prefix(trial: CisdTrial, nvir_keep: int | None) -> CisdTrial:
+    """
+    Return a trial object for an orbital-prefix level with nocc_full+nvir_keep orbitals.
+
+    This is different from slice_trial_level: here the orbital space itself is
+    truncated, so nvir_t_outer is kept only when the requested virtual prefix
+    extends beyond the active CI-amplitude virtual block.
+    """
+    if nvir_keep is None:
+        return trial
+    if nvir_keep < 0 or nvir_keep > trial.nvir_full:
+        raise ValueError(f"nvir_keep={nvir_keep} must be in [0, {trial.nvir_full}] for this trial.")
+
+    nvir_amp_keep = min(int(nvir_keep), trial.nvir)
+    nvir_outer_keep = int(nvir_keep) - nvir_amp_keep
+    ci1 = trial.ci1[:, :nvir_amp_keep]
+    ci2 = trial.ci2[:, :nvir_amp_keep, :, :nvir_amp_keep]
+    return replace(trial, ci1=ci1, ci2=ci2, nvir_t_outer=nvir_outer_keep)

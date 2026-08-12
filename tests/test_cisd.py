@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from pyscf import cc, gto, scf
+from pyscf import ao2mo, cc, gto, mcscf, scf
 
 from trot import testing
 from trot.afqmc import Afqmc
@@ -34,6 +34,7 @@ from trot.runtime_layout import (
     _make_ham_data,
 )
 from trot.setup import setup as setup_job
+from trot.staging import _freeze_core_from_mo_cholesky
 from trot.trial.cisd import (
     CisdTrial,
     make_cisd_trial_data,
@@ -44,6 +45,16 @@ from trot.trial.cisd import (
     overlap_r_high_realimag,
     overlap_r_low,
 )
+
+
+def _exact_cholesky_from_mo_eri(eri: np.ndarray) -> np.ndarray:
+    nmo = int(eri.shape[0])
+    eri_pair = np.asarray(eri).reshape(nmo * nmo, nmo * nmo)
+    eri_pair = 0.5 * (eri_pair + eri_pair.T)
+    eig, vec = np.linalg.eigh(eri_pair)
+    keep = eig > 1.0e-12
+    chol = np.sqrt(eig[keep])[:, None] * vec[:, keep].T
+    return chol.reshape(-1, nmo, nmo)
 
 
 def _make_cisd_trial(
@@ -471,6 +482,47 @@ def test_stage_infers_integer_cc_frozen_for_hamiltonian_and_trial(mycc_frozen_in
     assert staged.trial.kind == "cisd"
     assert staged.trial.frozen == 1
     assert staged.trial.data["ci1"].shape == mycc_frozen_int.t1.shape
+
+
+def test_freeze_core_from_mo_cholesky_matches_pyscf_get_h1eff():
+    mol = gto.M(
+        atom="""
+        O        0.0000000000      0.0000000000      0.0000000000
+        H        0.9562300000      0.0000000000      0.0000000000
+        H       -0.2353791634      0.9268076728      0.0000000000
+        """,
+        basis="sto-6g",
+    )
+    mf = scf.RHF(mol)
+    mf.kernel()
+
+    norb_frozen = 1
+    mo_coeff = np.asarray(mf.mo_coeff)
+    nmo = int(mo_coeff.shape[1])
+    ncas = nmo - norb_frozen
+    nelecas = mol.nelectron - 2 * norb_frozen
+
+    mc = mcscf.CASSCF(mf, ncas, nelecas)
+    mc.mo_coeff = mo_coeff  # type: ignore
+    h1_ref, ecore_ref = mc.get_h1eff()  # type: ignore
+
+    hcore = np.asarray(mf.get_hcore())
+    h1 = mo_coeff.T.conj() @ hcore @ mo_coeff
+    eri = ao2mo.restore(1, ao2mo.kernel(mol, mo_coeff), nmo)
+    chol = _exact_cholesky_from_mo_eri(eri)
+
+    ecore, h1_eff, chol_act, nelec = _freeze_core_from_mo_cholesky(
+        h0=float(mf.energy_nuc()),
+        h1=np.asarray(h1),
+        chol=chol,
+        norb_frozen=norb_frozen,
+        nelec=tuple(int(x) for x in mol.nelec),  # type: ignore
+    )
+
+    assert np.allclose(h1_eff, h1_ref, atol=1e-9)
+    assert np.isclose(ecore, ecore_ref, atol=1e-9)
+    assert chol_act.shape[1:] == h1_ref.shape
+    assert nelec == tuple(int(x) for x in mc.nelecas)  # type: ignore
 
 
 def test_stage_prefers_cc_mo_coeff_for_hamiltonian(mycc_rotated_basis):

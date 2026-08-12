@@ -10,7 +10,7 @@ from ..core.levels import LevelPack, LevelSpec
 from ..core.ops import MeasOps, k_energy, k_force_bias, o_rdm1
 from ..core.system import System
 from ..ham.chol import HamChol, slice_ham_level
-from ..trial.cisd import CisdTrial, slice_trial_level
+from ..trial.cisd import CisdTrial, slice_trial_orbital_prefix
 from ..trial.cisd import overlap_r as cisd_overlap_r
 
 _CISD_MEAS_CFG_ATTR = "_cisd_meas_cfg"
@@ -500,7 +500,7 @@ def make_level_pack(
         trial_orb = trial_data
         norb_keep = None
     else:
-        trial_orb = slice_trial_level(trial_data, level.nvir_keep)
+        trial_orb = slice_trial_orbital_prefix(trial_data, level.nvir_keep)
         norb_keep = int(trial_data.nocc_full) + int(level.nvir_keep)
 
     if orb_fullchol_ham is None:

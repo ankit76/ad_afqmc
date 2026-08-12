@@ -19,8 +19,8 @@ dependencies = [
 [project.optional-dependencies]
 gpu = ["jaxlib[cuda]"] 
 
-[tool.setuptools]
-packages = ["trot"]
+[tool.setuptools.packages.find]
+include = ["trot*"]
 
 [tool.black]
 line-length = 100
