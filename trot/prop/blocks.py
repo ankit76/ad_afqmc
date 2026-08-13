@@ -10,7 +10,7 @@ from jax import lax, tree_util
 from jax.experimental import io_callback
 
 from .. import walkers as wk
-from ..core.levels import LevelPack
+from ..core.levels import LevelPack, TmpLevelPack
 from ..core.ops import MeasOps, TrialOps, k_energy
 from ..core.system import System
 from ..walkers import SrFn
@@ -689,3 +689,102 @@ def block_mlmc(
         observables={},
     )
     return state, obs
+
+
+def make_block_ml_fp(
+    p1: TmpLevelPack,
+    p2: TmpLevelPack | None = None,
+):
+
+    def block_ml_fp(
+        state: PropState,
+        *,
+        sys: System,
+        params: QmcParamsFp,
+        ham_data: Any,
+        trial_data: Any,
+        trial_ops: TrialOps,
+        meas_ops: MeasOps,
+        meas_ctx: Any,
+        prop_ops: PropOps,
+        prop_ctx: Any,
+        sr_fn: Callable = wk.stochastic_reconfiguration,
+        observable_names: tuple[str, ...] = (),
+    ) -> tuple[PropState, BlockObs]:
+        """
+        propagation + measurement
+        """
+        assert params.n_prop_steps % params.n_qr_blocks == 0
+
+        step_fp = lambda st: prop_ops.step(
+            st,
+            params=params,
+            ham_data=ham_data,
+            trial_data=trial_data,
+            trial_ops=trial_ops,
+            meas_ops=meas_ops,
+            prop_ctx=prop_ctx,
+            meas_ctx=meas_ctx,
+        )
+
+        def _scan_step(carry: PropState, _x: Any):
+            carry = step_fp(carry)
+            return carry, None
+
+        def _qr_blocks(state: PropState, _x: Any):
+            state, _ = lax.scan(
+                _scan_step, state, xs=None, length=params.n_prop_steps // params.n_qr_blocks
+            )
+            wk_kind = sys.walker_kind.lower()
+            q, norms = wk.orthogonalize(state.walkers, wk_kind)
+            weights_new = state.weights * norms.real
+            state = state._replace(weights=weights_new, walkers=q)
+            return state, None
+
+        # state, _ = lax.scan(_scan_step, state, xs=None, length=params.n_prop_steps)
+        state, _ = lax.scan(_qr_blocks, state, xs=None, length=params.n_qr_blocks)
+
+        overlaps_new = wk.vmap_chunked(
+            meas_ops.overlap, n_chunks=params.n_chunks, in_axes=(0, None)
+        )(state.walkers, trial_data)
+        state = state._replace(overlaps=overlaps_new)
+
+        ene0 = params.ene0
+        assert ene0 is not None
+        thresh = jnp.sqrt(2.0 / jnp.asarray(params.dt))
+
+        walkers_1 = wk.slice_walkers(state.walkers, sys.walker_kind, p1.level.norb_keep)
+
+        e1 = wk.vmap_chunked(p1.e_kernel, n_chunks=params.n_chunks, in_axes=(0, None, None, None))(
+            walkers_1, p1.ham_data, p1.meas_ctx, p1.trial_data
+        )
+        replace = jnp.where(jnp.abs(e1 - ene0) > thresh, True, False)
+        e1 = jnp.where(replace, ene0, e1)
+        e1 = jnp.array(e1)
+
+        if p2 is not None:
+            walkers_2 = wk.slice_walkers(state.walkers, sys.walker_kind, p2.level.norb_keep)
+            e2 = wk.vmap_chunked(
+                p2.e_kernel, n_chunks=params.n_chunks, in_axes=(0, None, None, None)
+            )(walkers_2, p2.ham_data, p2.meas_ctx, p2.trial_data)
+            e2 = jnp.where(replace, ene0, e2)
+            e2 = jnp.array(e2)
+        else:
+            e2 = 0.0
+
+        e_samples = jnp.array(e1 - e2)
+
+        weights = state.weights
+        overlaps = state.overlaps
+        w_sum = jnp.sum(weights * overlaps)
+        e_block = jnp.sum(weights * overlaps * e_samples) / w_sum
+        ov = jnp.sum(overlaps)
+        abs_ov = jnp.sum(jnp.abs(overlaps))
+
+        obs = BlockObs(
+            scalars={"energy": e_block, "weight": w_sum, "overlap": ov, "abs_overlap": abs_ov},
+            observables={},
+        )
+        return state, obs
+
+    return block_ml_fp

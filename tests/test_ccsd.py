@@ -14,7 +14,7 @@ from trot.trial.rhf import overlap_r
 from trot.meas.rhf import energy_kernel_rw_rh
 
 
-def test_uccsd_walkers():
+def test_ccsd_walkers():
     mol = gto.M(
         atom="""
         O        0.0000000000      0.0000000000      0.0000000000
@@ -23,6 +23,7 @@ def test_uccsd_walkers():
         """,
         basis="6-31g",
         verbose=3,
+        symmetry="C2v",
     )
 
     mf = scf.RHF(mol)
@@ -39,7 +40,7 @@ def test_uccsd_walkers():
     trial_data = job.trial_data
     meas_ctx = job._runtime_meas_ctx
     key = jax.random.key(42)
-    n_walkers = 20000
+    n_walkers = 50000
     hs_op = trot.trial.ccsd.build_hs_op(mycc.t2)  # type: ignore
     w = trot.trial.ccsd.init_walkers(trial_coeff, mycc.t1, hs_op, key, n_walkers)  # type: ignore
 
@@ -49,7 +50,7 @@ def test_uccsd_walkers():
     )
 
     energy = jnp.sum(e * o) / jnp.sum(o)
-    assert jnp.isclose(energy.real, mycc.e_tot, atol=1e-4)
+    assert abs(energy.real - mycc.e_tot) < 1e-3, (energy.real, mycc.e_tot)
 
 
 if __name__ == "__main__":

@@ -1,30 +1,25 @@
-from trot import config
-
-config.configure_once()
-
-import jax.numpy as jnp
-import pytest
-from pyscf import gto, scf
-
 from trot.afqmc import AfqmcFp
 from trot.prop.types import QmcParamsFp
+
+import pytest
+from pyscf import gto, scf
 
 
 @pytest.mark.parametrize(
     "walker_kind, e_ref, err_ref",
     [
-        ("unrestricted", -55.5896739004, 4.9120152e-03),
+        ("unrestricted", -55.5954082490, 1.0973513e-02),
     ],
 )
 def test_calc_uhf_hamiltonian(mf, params, walker_kind, e_ref, err_ref):
-    myafqmc = AfqmcFp(mf)
-    myafqmc.params = params
-    myafqmc.walker_kind = walker_kind
-    myafqmc.mixed_precision = False
-    myafqmc.chol_cut = 1e-6
-    mean, err = myafqmc.kernel()
-    assert jnp.isclose(mean[-1].real, e_ref), (mean[-1].real, e_ref, mean[-1].real - e_ref)
-    assert jnp.isclose(err[-1].real, err_ref), (err[-1].real, err_ref, err[-1].real - err_ref)
+    af = AfqmcFp(mf)
+    af.params = params
+    af.walker_kind = walker_kind
+    af.mixed_precision = False
+    af.chol_cut = 1e-6
+    e, err = af.kernel()
+    assert abs(e[-1].real - e_ref) < 1e-6, (e[-1].real, e_ref)
+    assert abs(err[-1].real - err_ref) < 1e-6, (err[-1].real, err_ref)
 
 
 @pytest.fixture(scope="module")
@@ -46,11 +41,11 @@ def mf():
 @pytest.fixture(scope="module")
 def params():
     return QmcParamsFp(
-        n_blocks=10,
-        n_prop_steps=50,
+        n_blocks=1,
+        n_prop_steps=100,
         seed=6,
         n_walkers=5,
-        n_traj=2,
+        n_traj=10,
         dt=0.05,
         ene0=-55.60298562645659,
     )

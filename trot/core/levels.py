@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from jax import tree_util
 
@@ -10,6 +10,14 @@ from jax import tree_util
 class LevelSpec:
     # orbital truncation in MO basis: keep first nvir virtuals (occupied always kept)
     nvir_keep: int | None = None
+    # cholesky truncation: keep first nchol vectors
+    nchol_keep: int | None = None
+
+
+@dataclass(frozen=True)
+class TmpLevelSpec:
+    # orbital truncation in MO basis: keep first norb orbitals
+    norb_keep: int | None = None
     # cholesky truncation: keep first nchol vectors
     nchol_keep: int | None = None
 
@@ -42,4 +50,35 @@ class LevelPack:
             trial_data=trial_data,
             meas_ctx=meas_ctx,
             norb_keep=norb_keep,
+        )
+
+
+@tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class TmpLevelPack:
+    """
+    Bundle of level-specific inputs for measurement kernels.
+    """
+
+    level: TmpLevelSpec
+    ham_data: Any
+    trial_data: Any
+    meas_ctx: Any
+    e_kernel: Callable
+
+    def tree_flatten(self):
+        children = (self.ham_data, self.trial_data, self.meas_ctx)
+        aux = (self.level, self.e_kernel)
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        ham_data, trial_data, meas_ctx = children
+        level, e_kernel = aux
+        return cls(
+            level=level,
+            ham_data=ham_data,
+            trial_data=trial_data,
+            meas_ctx=meas_ctx,
+            e_kernel=e_kernel,
         )

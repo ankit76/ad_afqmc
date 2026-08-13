@@ -1,14 +1,10 @@
-from trot import config
-
-config.configure_once()
+from trot.afqmc import Afqmc, AfqmcFp
+from trot.prop.types import QmcParams, QmcParamsFp
 
 from typing import Any
 
 import pytest
-import jax.numpy as jnp
 from pyscf import gto, scf
-from trot.afqmc import Afqmc, AfqmcFp
-from trot.prop.types import QmcParams, QmcParamsFp
 
 
 def build_mf() -> Any:
@@ -21,8 +17,13 @@ def build_mf() -> Any:
         basis="sto-6g",
         spin=1,
     )
-    mf = scf.UHF(mol).newton()
+    mf = scf.UHF(mol)
     mf.kernel()
+
+    for i in range(2):
+        mo1 = mf.stability()[0]
+        mf = mf.newton().run(mo1, mf.mo_occ)  # type: ignore
+    mf.stability()
     return mf
 
 
@@ -30,24 +31,27 @@ mf_obj = build_mf()
 
 
 @pytest.mark.parametrize(
-    "mf, walker_kind, e_ref, err_ref",
+    "mf, walker_kind",
     [
-        (mf_obj, "unrestricted", -55.43066756011652, 0.00761980459817991),
+        (mf_obj, "unrestricted"),
     ],
 )
-def test_io(mf, tmp_path, params, walker_kind, e_ref, err_ref):
+def test_io(mf, tmp_path, params, walker_kind):
     h5_file = str(tmp_path / "nh2.h5")
-    myafqmc = Afqmc(mf)
-    myafqmc.chol_cut = 1e-6
-    myafqmc.save_staged(h5_file)
+    af = Afqmc(mf)
+    af.params = params
+    af.mixed_precision = False
+    af.walker_kind = walker_kind
+    af.save_staged(h5_file)
+    e1, err1 = af.kernel()
 
     af = Afqmc.from_staged(h5_file)
     af.params = params
     af.mixed_precision = False
     af.walker_kind = walker_kind
-    mean, err = af.kernel()
-    assert jnp.isclose(mean, e_ref), (mean, e_ref, mean - e_ref)
-    assert jnp.isclose(err, err_ref), (err, err_ref, err - err_ref)
+    e2, err2 = af.kernel()
+    assert abs(e1 - e2) < 1e-6, (e1, e2)
+    assert abs(err1 - err2) < 1e-6, (err1, err2)
 
 
 @pytest.fixture(scope="module")
@@ -61,24 +65,27 @@ def params():
 
 
 @pytest.mark.parametrize(
-    "mf, walker_kind, e_ref, err_ref",
+    "mf, walker_kind",
     [
-        (mf_obj, "unrestricted", -55.4067231213, 1.8318234e-02),
+        (mf_obj, "unrestricted"),
     ],
 )
-def test_io_fp(mf, tmp_path, params_fp, walker_kind, e_ref, err_ref):
+def test_io_fp(mf, tmp_path, params_fp, walker_kind):
     h5_file = str(tmp_path / "nh2.h5")
-    myafqmc = AfqmcFp(mf)
-    myafqmc.chol_cut = 1e-6
-    myafqmc.save_staged(h5_file)
+    af = AfqmcFp(mf)
+    af.params = params_fp
+    af.mixed_precision = False
+    af.walker_kind = walker_kind
+    af.save_staged(h5_file)
+    e1, err1 = af.kernel()
 
     af = AfqmcFp.from_staged(h5_file)
     af.params = params_fp
     af.mixed_precision = False
     af.walker_kind = walker_kind
-    mean, err = af.kernel()
-    assert jnp.isclose(mean[-1].real, e_ref), (mean[-1].real, e_ref, mean[-1].real - e_ref)
-    assert jnp.isclose(err[-1].real, err_ref), (err[-1].real, err_ref, err[-1].real - err_ref)
+    e2, err2 = af.kernel()
+    assert abs(e1[-1].real - e2[-1].real) < 1e-6, (e1[-1].real, e2[-1].real)
+    assert abs(err1[-1].real - err2[-1].real) < 1e-6, (err1[-1].real, err2[-1].real)
 
 
 @pytest.fixture(scope="module")
@@ -87,7 +94,7 @@ def params_fp():
         n_blocks=1,
         seed=1234,
         n_walkers=5,
-        n_traj=4,
+        n_traj=10,
         ene0=mf_obj.e_tot,
     )
 

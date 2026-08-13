@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import time
 from dataclasses import dataclass
@@ -90,7 +89,7 @@ def _copy_scf_with_cc_mo_coeff(cc: Any, mf: Any) -> Any:
             f"{cc_sig} != {mf_sig}."
         )
 
-    mf_copy = copy.copy(mf)
+    mf_copy = mf.copy()
     mf_copy.mo_coeff = cc.mo_coeff
     return mf_copy
 

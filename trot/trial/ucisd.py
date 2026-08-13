@@ -193,6 +193,35 @@ def overlap_g(walker: jax.Array, trial_data: UcisdTrial) -> jax.Array:
     return (1.0 + o1 + 0.5 * o2) * o0
 
 
+def slice_trial_level(trial: UcisdTrial, norb_keep: int | None) -> UcisdTrial:
+    """
+    Return a trial object whose coefficients are sliced to keep only the first norb_keep orbitals.
+    """
+    norb = trial.norb
+    na, nb = trial.nocc
+
+    norb_keep = norb if norb_keep is None else norb_keep
+    if norb_keep > norb:
+        raise ValueError(f"norb_keep ({norb_keep}) must be <= norb ({norb}).")
+    if norb_keep < na or norb_keep < nb:
+        raise ValueError(f"norb_keep ({norb_keep}) must be >= nocc ({trial.nocc}).")
+
+    nvir_a_keep = norb_keep - na
+    nvir_b_keep = norb_keep - nb
+
+    tr_trial = UcisdTrial(
+        mo_coeff_a=trial.mo_coeff_a[:norb_keep, :norb_keep],
+        mo_coeff_b=trial.mo_coeff_b[:norb_keep, :norb_keep],
+        c1a=trial.c1a[:, :nvir_a_keep],
+        c1b=trial.c1b[:, :nvir_b_keep],
+        c2aa=trial.c2aa[:, :nvir_a_keep, :, :nvir_a_keep],
+        c2ab=trial.c2ab[:, :nvir_a_keep, :, :nvir_b_keep],
+        c2bb=trial.c2bb[:, :nvir_b_keep, :, :nvir_b_keep],
+    )
+
+    return tr_trial
+
+
 def make_ucisd_trial_ops(sys: System) -> TrialOps:
     wk = sys.walker_kind.lower()
 
