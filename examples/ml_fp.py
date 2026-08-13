@@ -68,9 +68,11 @@ betas, w_betas = quadrature_s2(
 overlap_u_s2 = make_overlap_u_s2(betas, w_betas, overlap_g)
 energy_kernel_uw_rh_s2 = make_energy_kernel_uw_rh_s2(betas, w_betas, overlap_g, energy_kernel_gw_rh)
 
+
 # Avoid computing the energy at 0 a.u. since it does not use the ml scheme
 def always_zero(*args, **kwargs) -> jax.Array:
     return jnp.array(0.0)
+
 
 ## Trucation 1: No trunation + spin projection
 level1 = TmpLevelSpec(norb_keep=None, nchol_keep=None)
