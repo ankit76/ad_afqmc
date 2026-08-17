@@ -20,9 +20,9 @@ from trot.core.ops import (
 from trot.core.system import System
 from trot.driver import run_mixed_estimator_qmc
 from trot.ham.chol import HamChol
-from trot.prop.blocks import block_mixed_estimator
+from trot.prop.blocks import BlockObs, block_mixed_estimator
 from trot.prop.types import PropOps, PropState, QmcParams
-from trot.stat_utils import blocking_analysis_components
+from trot.stat_utils import blocking_analysis_components, component_estimator_outlier_mask
 
 
 def _guide_overlap(walker, trial_data):
@@ -64,6 +64,26 @@ def _step(state, **kwargs):
 def _identity_sr(walkers, weights, zeta, walker_kind):
     del zeta, walker_kind
     return walkers, weights
+
+
+def _outlier_mixed_block(state, **kwargs):
+    del kwargs
+    block_index = state.node_encounters
+    components = jnp.where(
+        block_index == 12,
+        jnp.asarray([1000.0, 2.0]),
+        jnp.asarray([1.0, 2.0]),
+    )
+    state = state._replace(node_encounters=block_index + 1)
+    return state, BlockObs(
+        scalars={
+            "guide_energy": jnp.asarray(5.75),
+            "guide_weight": jnp.asarray(4.0),
+            "estimator_weight": jnp.asarray(1.0 + 0.0j),
+            "estimator_components": components,
+        },
+        observables={},
+    )
 
 
 def _make_case(*, n_blocks: int = 25, n_eql_blocks: int = 2):
@@ -195,6 +215,25 @@ def test_component_blocking_preserves_nonlinear_component_covariance():
     assert np.isfinite(result["se_star"])
 
 
+def test_component_estimator_outlier_mask_matches_historical_zeta_rule():
+    weights = np.ones(25)
+    components = np.tile(np.asarray([1.0, 2.0]), (25, 1))
+    components[12, 0] = 1000.0
+
+    proxy_energies, keep = component_estimator_outlier_mask(
+        0.5,
+        weights,
+        components,
+        _combine,
+        zeta=20.0,
+    )
+
+    np.testing.assert_allclose(proxy_energies[:12], 2.5)
+    np.testing.assert_allclose(proxy_energies[12], 2000.5)
+    assert np.count_nonzero(keep) == 24
+    assert not keep[12]
+
+
 def test_generic_mixed_estimator_driver_returns_named_components(capsys):
     (
         sys,
@@ -228,6 +267,9 @@ def test_generic_mixed_estimator_driver_returns_named_components(capsys):
     assert result.estimator_component_names == ("left", "right")
     assert result.guide_block_energies.shape == (params.n_blocks,)
     assert result.estimator_block_components.shape == (params.n_blocks, 2)
+    assert result.estimator_block_proxy_energies.shape == (params.n_blocks,)
+    assert np.all(result.estimator_block_keep_mask)
+    assert result.estimator_analysis["n_rejected_blocks"] == 0
     np.testing.assert_allclose(result.guide_mean_energy, 5.75)
     np.testing.assert_allclose(result.estimator_mean_components, expected_components)
     np.testing.assert_allclose(result.estimator_mean_energy, expected_energy)
@@ -242,6 +284,47 @@ def test_generic_mixed_estimator_driver_returns_named_components(capsys):
     assert "Estimator_E_avg" in output
     assert "[blk    2/25]" in output
     assert "[blk   25/25]" in output
+
+
+def test_generic_mixed_estimator_driver_cleans_outlier_and_preserves_raw_blocks(capsys):
+    (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        guide_meas_ops,
+        guide_prop_ops,
+        estimator_ops,
+    ) = _make_case(n_blocks=25, n_eql_blocks=0)
+    result = run_mixed_estimator_qmc(
+        sys=sys,
+        params=params,
+        ham_data=ham_data,
+        guide_data=jnp.asarray(0.0),
+        guide_ops=guide_ops,
+        guide_prop_ops=guide_prop_ops,
+        guide_meas_ops=guide_meas_ops,
+        estimator_data=jnp.asarray(0.0),
+        estimator_ops=estimator_ops,
+        mixed_block_fn=_outlier_mixed_block,
+        state=state,
+        guide_meas_ctx=jnp.asarray(0.0),
+        guide_prop_ctx=jnp.asarray(0.0),
+        estimator_ctx=jnp.asarray(0.0),
+    )
+
+    assert result.estimator_block_components.shape == (25, 2)
+    np.testing.assert_allclose(result.estimator_block_components[12], [1000.0, 2.0])
+    np.testing.assert_allclose(result.estimator_block_proxy_energies[12], 2000.5)
+    assert np.count_nonzero(result.estimator_block_keep_mask) == 24
+    assert not result.estimator_block_keep_mask[12]
+    np.testing.assert_allclose(result.estimator_mean_components, [1.0, 2.0])
+    np.testing.assert_allclose(result.estimator_mean_energy, 2.5)
+    assert result.estimator_analysis["n_raw_blocks"] == 25
+    assert result.estimator_analysis["n_retained_blocks"] == 24
+    assert result.estimator_analysis["n_rejected_blocks"] == 1
+    assert "rejected 1/25 projected-estimator blocks" in capsys.readouterr().out
 
 
 def test_mixed_estimator_retuning_advance_uses_guide_scalar_contract(capsys):

@@ -387,6 +387,67 @@ def blocking_analysis_components(
     return result
 
 
+def component_estimator_outlier_mask(
+    h0: float | complex,
+    weights: np.ndarray | jax.Array,
+    components: np.ndarray | jax.Array,
+    combine_energy: Callable[[Any, Any], Any],
+    *,
+    zeta: float | None = 20.0,
+    min_scale: float = 1.0e-10,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return block proxy energies and the robust component-estimator keep mask.
+
+    The proxy applies ``combine_energy`` independently to each block's component
+    means.  For finite blocks, the historical PT2-CCSD rule keeps blocks whose
+    absolute deviation from the median is less than ``zeta`` times the median
+    absolute deviation.  ``zeta=None`` disables robust rejection while still
+    excluding nonfinite weights, components, and proxy energies.
+
+    The proxy is used only to identify exceptional blocks.  Final energies must
+    still be formed from the retained weighted component ratios so nonlinear
+    component covariance is preserved.
+    """
+
+    weights_array = np.asarray(weights).reshape(-1)
+    components_array = np.asarray(components)
+    if components_array.ndim != 2:
+        raise ValueError(
+            "components must have shape (n_blocks, n_components); "
+            f"got {components_array.shape}."
+        )
+    if components_array.shape[0] != weights_array.shape[0]:
+        raise ValueError(
+            f"weights length {weights_array.shape[0]} does not match components "
+            f"length {components_array.shape[0]}."
+        )
+    if zeta is not None and (not np.isfinite(zeta) or zeta <= 0.0):
+        raise ValueError("zeta must be positive and finite, or None.")
+    if not np.isfinite(min_scale) or min_scale <= 0.0:
+        raise ValueError("min_scale must be positive and finite.")
+
+    proxy_energies = np.real(np.asarray(combine_energy(h0, components_array))).reshape(-1)
+    if proxy_energies.shape[0] != weights_array.shape[0]:
+        raise ValueError(
+            "combine_energy must return one proxy energy per component block; "
+            f"got {proxy_energies.shape}."
+        )
+    finite = (
+        np.isfinite(weights_array)
+        & np.all(np.isfinite(components_array), axis=1)
+        & np.isfinite(proxy_energies)
+    )
+    if zeta is None or not np.any(finite):
+        return proxy_energies, finite
+
+    finite_energies = proxy_energies[finite]
+    deviations = np.abs(proxy_energies - np.median(finite_energies))
+    median_absolute_deviation = float(np.median(deviations[finite]))
+    scale = max(median_absolute_deviation, min_scale)
+    keep = finite & (deviations / scale < zeta)
+    return proxy_energies, keep
+
+
 def _autocovariance_fft(data: np.ndarray, max_lag: int) -> np.ndarray:
     """Return autocovariances through ``max_lag`` using the ``n - lag`` normalization."""
     data = np.asarray(data, dtype=float).ravel()

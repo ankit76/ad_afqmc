@@ -31,6 +31,7 @@ from .stat_utils import (
     blocking_analysis_components,
     blocking_analysis_ratio,
     clean_pt2ccsd,
+    component_estimator_outlier_mask,
     gamma_analysis_ratio,
     jackknife_ratios,
     pt2ccsd_blocking,
@@ -212,7 +213,11 @@ class MixedQmcResult(NamedTuple):
 
 
 class MixedEstimatorQmcResult(NamedTuple):
-    """Guide and projected-estimator results from one AFQMC trajectory."""
+    """Guide and projected-estimator results from one AFQMC trajectory.
+
+    Projected-estimator block arrays are always raw. The proxy energies and
+    keep mask record the robust cleanup used for the reported estimator result.
+    """
 
     guide_mean_energy: float
     guide_stderr_energy: float
@@ -224,6 +229,8 @@ class MixedEstimatorQmcResult(NamedTuple):
     guide_block_weights: jax.Array
     estimator_block_weights: jax.Array
     estimator_block_components: jax.Array
+    estimator_block_proxy_energies: jax.Array
+    estimator_block_keep_mask: jax.Array
     guide_block_diagnostics: dict[str, jax.Array]
     final_state: PropState
     guide_analysis: EnergyErrorAnalysis
@@ -1116,6 +1123,7 @@ def run_mixed_estimator_qmc(
     guide_prop_ctx: Any | None = None,
     estimator_ctx: Any | None = None,
     target_error: float | None = None,
+    estimator_outlier_zeta: float | None = 20.0,
     mesh: Mesh | None = None,
 ) -> MixedEstimatorQmcResult:
     """Run one guide trajectory and evaluate arbitrary projected components.
@@ -1128,7 +1136,9 @@ def run_mixed_estimator_qmc(
 
     This keeps estimator algebra out of the driver and supports nonlinear
     energy combinations while retaining component covariance in the blocking
-    analysis.
+    analysis. By default, the reported projected estimate also applies the
+    historical PT2-CCSD block cleanup at ``zeta=20``. Raw block arrays are
+    retained in the result, together with the proxy energies and keep mask.
     """
 
     if params.n_blocks <= 0:
@@ -1419,12 +1429,46 @@ def run_mixed_estimator_qmc(
         guide_block_weights,
         error_method=params.error_method,
     )
+    estimator_block_proxy_energies, estimator_block_keep_mask = (
+        component_estimator_outlier_mask(
+            ham_data.h0,
+            estimator_block_weights,
+            estimator_block_components,
+            estimator_ops.combine_energy,
+            zeta=estimator_outlier_zeta,
+        )
+    )
+    n_estimator_blocks = int(estimator_block_keep_mask.size)
+    n_estimator_blocks_retained = int(np.count_nonzero(estimator_block_keep_mask))
+    n_estimator_blocks_rejected = n_estimator_blocks - n_estimator_blocks_retained
+    if n_estimator_blocks_retained == 0:
+        raise ValueError("Projected-estimator cleanup rejected every production block.")
+    if estimator_outlier_zeta is None:
+        print(
+            "  projected-estimator robust cleanup disabled; "
+            f"retained {n_estimator_blocks_retained}/{n_estimator_blocks} finite blocks."
+        )
+    else:
+        print(
+            f"  rejected {n_estimator_blocks_rejected}/{n_estimator_blocks} "
+            "projected-estimator blocks "
+            f"with zeta={estimator_outlier_zeta:g} median-deviation cleanup."
+        )
+
     estimator_analysis = blocking_analysis_components(
         ham_data.h0,
-        estimator_block_weights,
-        estimator_block_components,
+        estimator_block_weights[estimator_block_keep_mask],
+        estimator_block_components[estimator_block_keep_mask],
         estimator_ops.combine_energy,
         print_q=False,
+    )
+    estimator_analysis.update(
+        {
+            "outlier_zeta": estimator_outlier_zeta,
+            "n_raw_blocks": n_estimator_blocks,
+            "n_retained_blocks": n_estimator_blocks_retained,
+            "n_rejected_blocks": n_estimator_blocks_rejected,
+        }
     )
     estimator_stderr = estimator_analysis["se_star"]
     estimator_stderr = (
@@ -1448,6 +1492,8 @@ def run_mixed_estimator_qmc(
         guide_block_weights=guide_block_weights,
         estimator_block_weights=estimator_block_weights,
         estimator_block_components=estimator_block_components,
+        estimator_block_proxy_energies=jnp.asarray(estimator_block_proxy_energies),
+        estimator_block_keep_mask=jnp.asarray(estimator_block_keep_mask),
         guide_block_diagnostics=guide_block_diagnostics,
         final_state=state,
         guide_analysis=guide_analysis,
