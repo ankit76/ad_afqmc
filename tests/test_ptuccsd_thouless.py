@@ -183,28 +183,28 @@ def test_ptuccsd_restricted_limit_matches_pt2ccsd_dense_kernels():
 
 def test_restricted_wrapper_preserves_spin_resolved_ucc_trial():
     rng = np.random.default_rng(2411)
-    norb, nocc = 5, 2
-    nvir = norb - nocc
+    norb, noa, nob = 5, 2, 1
+    nva, nvb = norb - noa, norb - nob
     beta_rotation, _ = np.linalg.qr(
         np.eye(norb) + 0.15 * rng.standard_normal((norb, norb))
     )
-    mo_t_a = np.vstack([np.eye(nocc), 0.08 * rng.standard_normal((nvir, nocc))])
-    mo_t_b = np.vstack([np.eye(nocc), 0.08 * rng.standard_normal((nvir, nocc))])
+    mo_t_a = np.vstack([np.eye(noa), 0.08 * rng.standard_normal((nva, noa))])
+    mo_t_b = np.vstack([np.eye(nob), 0.08 * rng.standard_normal((nvb, nob))])
     trial = PtuccsdThoulessTrial(
         mo_t_a=jnp.asarray(mo_t_a),
         mo_t_b=jnp.asarray(mo_t_b),
         mo_coeff_b=jnp.asarray(beta_rotation),
-        t2aa=jnp.asarray(0.02 * _same_spin_tensor(rng, nocc, nvir)),
-        t2ab=jnp.asarray(0.02 * rng.standard_normal((nocc, nvir, nocc, nvir))),
-        t2bb=jnp.asarray(0.02 * _same_spin_tensor(rng, nocc, nvir)),
+        t2aa=jnp.asarray(0.02 * _same_spin_tensor(rng, noa, nva)),
+        t2ab=jnp.asarray(0.02 * rng.standard_normal((noa, nva, nob, nvb))),
+        t2bb=jnp.asarray(0.02 * _same_spin_tensor(rng, nob, nvb)),
     )
     walker = mo_t_a + 0.1 * (
-        rng.standard_normal((norb, nocc)) + 1.0j * rng.standard_normal((norb, nocc))
+        rng.standard_normal((norb, noa)) + 1.0j * rng.standard_normal((norb, noa))
     )
     ham = _random_ham(rng, norb, nchol=5)
     ctx = build_ptuccsd_thouless_meas_ctx(ham, trial, _double_cfg())
     walker_r = jnp.asarray(walker)
-    walker_u = (walker_r, walker_r)
+    walker_u = (walker_r[:, :noa], walker_r[:, :nob])
 
     np.testing.assert_allclose(reference_overlap_r(walker_r, trial), reference_overlap_u(walker_u, trial))
     np.testing.assert_allclose(overlap_r(walker_r, trial), overlap_u(walker_u, trial))
@@ -222,7 +222,7 @@ def test_restricted_wrapper_preserves_spin_resolved_ucc_trial():
     )
 
 
-def test_trial_data_and_factories_support_closed_shell_restricted_walkers():
+def test_trial_data_and_factories_support_restricted_walkers():
     rng = np.random.default_rng(2423)
     norb, nocc = 4, 2
     nvir = norb - nocc
@@ -249,12 +249,17 @@ def test_trial_data_and_factories_support_closed_shell_restricted_walkers():
     assert estimator_ops.component_names == ("theta", "electronic_0", "h_t")
 
     open_shell = System(norb=norb, nelec=(nocc, nocc - 1), walker_kind="restricted")
-    with pytest.raises(ValueError, match="nup == ndn"):
-        make_pt2uccsd_trial_ops(open_shell)
-    with pytest.raises(ValueError, match="nup == ndn"):
-        make_pt2uccsd_meas_ops(open_shell)
-    with pytest.raises(ValueError, match="closed-shell restricted"):
-        make_pt2uccsd_estimator_ops(open_shell)
+    assert make_pt2uccsd_trial_ops(open_shell).overlap is overlap_r
+    assert make_pt2uccsd_meas_ops(open_shell).overlap is overlap_r
+    assert make_pt2uccsd_estimator_ops(open_shell).reference_overlap is reference_overlap_r
+
+    reversed_spin = System(norb=norb, nelec=(nocc - 1, nocc), walker_kind="restricted")
+    with pytest.raises(ValueError, match="nup >= ndn"):
+        make_pt2uccsd_trial_ops(reversed_spin)
+    with pytest.raises(ValueError, match="nup >= ndn"):
+        make_pt2uccsd_meas_ops(reversed_spin)
+    with pytest.raises(ValueError, match="nup >= ndn"):
+        make_pt2uccsd_estimator_ops(reversed_spin)
 
 
 def _identity_step(state, **kwargs):
@@ -274,33 +279,33 @@ def _zero_energy(walker, ham_data, meas_ctx, trial_data):
 
 def test_ptuccsd_estimator_reweights_from_ucisd_mode_guide():
     rng = np.random.default_rng(2437)
-    norb, nocc = 4, 2
-    nvir = norb - nocc
+    norb, noa, nob = 4, 2, 1
+    nva, nvb = norb - noa, norb - nob
     beta_rotation, _ = np.linalg.qr(
         np.eye(norb) + 0.1 * rng.standard_normal((norb, norb))
     )
-    pair_dim = 2 * nocc * nvir
+    pair_dim = noa * nva + nob * nvb
     guide = UcisdKModeTrial(
         mo_coeff_a=jnp.eye(norb),
         mo_coeff_b=jnp.asarray(beta_rotation),
-        c1a=jnp.asarray(0.02 * rng.standard_normal((nocc, nvir))),
-        c1b=jnp.asarray(0.02 * rng.standard_normal((nocc, nvir))),
+        c1a=jnp.asarray(0.02 * rng.standard_normal((noa, nva))),
+        c1b=jnp.asarray(0.02 * rng.standard_normal((nob, nvb))),
         eigenvalues=jnp.asarray([0.03, -0.02]),
         modes=jnp.asarray(0.1 * rng.standard_normal((2, pair_dim))),
     )
     estimator = PtuccsdThoulessTrial(
         mo_t_a=jnp.vstack(
-            [jnp.eye(nocc), jnp.asarray(0.03 * rng.standard_normal((nvir, nocc)))]
+            [jnp.eye(noa), jnp.asarray(0.03 * rng.standard_normal((nva, noa)))]
         ),
         mo_t_b=jnp.vstack(
-            [jnp.eye(nocc), jnp.asarray(0.03 * rng.standard_normal((nvir, nocc)))]
+            [jnp.eye(nob), jnp.asarray(0.03 * rng.standard_normal((nvb, nob)))]
         ),
         mo_coeff_b=jnp.asarray(beta_rotation),
-        t2aa=jnp.asarray(0.02 * _same_spin_tensor(rng, nocc, nvir)),
-        t2ab=jnp.asarray(0.02 * rng.standard_normal((nocc, nvir, nocc, nvir))),
-        t2bb=jnp.asarray(0.02 * _same_spin_tensor(rng, nocc, nvir)),
+        t2aa=jnp.asarray(0.02 * _same_spin_tensor(rng, noa, nva)),
+        t2ab=jnp.asarray(0.02 * rng.standard_normal((noa, nva, nob, nvb))),
+        t2bb=jnp.asarray(0.02 * _same_spin_tensor(rng, nob, nvb)),
     )
-    sys = System(norb=norb, nelec=(nocc, nocc), walker_kind="restricted")
+    sys = System(norb=norb, nelec=(noa, nob), walker_kind="restricted")
     ham = _random_ham(rng, norb, nchol=4)
     guide_ops = make_ucisd_k_mode_trial_ops(sys)
     guide_meas_ops = MeasOps(overlap=guide_ops.overlap, kernels={k_energy: _zero_energy})
@@ -309,8 +314,8 @@ def test_ptuccsd_estimator_reweights_from_ucisd_mode_guide():
     walkers = jnp.asarray(
         np.stack(
             [
-                np.vstack([np.eye(nocc), 0.15 * rng.standard_normal((nvir, nocc))])
-                + 0.04j * rng.standard_normal((norb, nocc))
+                np.vstack([np.eye(noa), 0.15 * rng.standard_normal((nva, noa))])
+                + 0.04j * rng.standard_normal((norb, noa))
                 for _ in range(3)
             ]
         )

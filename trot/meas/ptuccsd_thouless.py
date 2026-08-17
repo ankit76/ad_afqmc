@@ -342,8 +342,8 @@ def make_ptuccsd_thouless_meas_ops(
 
     walker_kind = sys.walker_kind.lower()
     if walker_kind == "restricted":
-        if sys.nup != sys.ndn:
-            raise ValueError("Restricted PT2-UCCSD measurements require nup == ndn.")
+        if sys.nup < sys.ndn:
+            raise ValueError("Restricted PT2-UCCSD measurements require nup >= ndn.")
         overlap_fn = overlap_r
         kernels = {k_force_bias: force_bias_kernel_rw_rh, k_energy: energy_kernel_rw_rh}
         components_fn = components_ptuccsd_thouless_rw_rh
@@ -374,8 +374,8 @@ def make_ptuccsd_thouless_estimator_ops(
     testing: bool = False,
 ) -> EstimatorOps:
     """Build a PT2-UCCSD estimator for a separately chosen propagation guide."""
-    if sys.walker_kind.lower() != "restricted" or sys.nup != sys.ndn:
-        raise ValueError("PT2-UCCSD estimators require a closed-shell restricted walker.")
+    if sys.walker_kind.lower() != "restricted" or sys.nup < sys.ndn:
+        raise ValueError("PT2-UCCSD estimators require a restricted walker with nup >= ndn.")
 
     cfg = PtuccsdThoulessMeasCfg(
         memory_mode=memory_mode,

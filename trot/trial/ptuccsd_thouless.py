@@ -224,8 +224,8 @@ def overlap_r(walker: jax.Array, trial_data: PtuccsdThoulessTrial) -> jax.Array:
 def make_ptuccsd_thouless_trial_ops(sys: System) -> TrialOps:
     walker_kind = sys.walker_kind.lower()
     if walker_kind == "restricted":
-        if sys.nup != sys.ndn:
-            raise ValueError("Restricted PT2-UCCSD trials require nup == ndn.")
+        if sys.nup < sys.ndn:
+            raise ValueError("Restricted PT2-UCCSD trials require nup >= ndn.")
         overlap_fn = overlap_r
     elif walker_kind == "unrestricted":
         overlap_fn = overlap_u
