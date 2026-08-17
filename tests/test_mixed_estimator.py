@@ -10,7 +10,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from trot.core.ops import EstimatorOps, MeasOps, TrialOps, k_energy
+from trot.core.ops import (
+    BlockEnergyRetuneResult,
+    EstimatorOps,
+    MeasOps,
+    TrialOps,
+    k_energy,
+)
 from trot.core.system import System
 from trot.driver import run_mixed_estimator_qmc
 from trot.ham.chol import HamChol
@@ -225,3 +231,74 @@ def test_generic_mixed_estimator_driver_returns_named_components():
     np.testing.assert_allclose(result.guide_mean_energy, 5.75)
     np.testing.assert_allclose(result.estimator_mean_components, expected_components)
     np.testing.assert_allclose(result.estimator_mean_energy, expected_energy)
+
+
+def test_mixed_estimator_retuning_advance_uses_guide_scalar_contract():
+    (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        guide_meas_ops,
+        guide_prop_ops,
+        estimator_ops,
+    ) = _make_case()
+    retune_calls = []
+
+    def retune(
+        state_i,
+        equilibration_energies,
+        equilibration_weights,
+        params_i,
+        ham_data_i,
+        meas_ctx_i,
+        guide_data_i,
+        *,
+        advance_blocks,
+        target_error=None,
+    ):
+        del params_i, ham_data_i, guide_data_i, target_error
+        state_n, scalars, observables = advance_blocks(state_i, n_blocks=1)
+        assert set(scalars) == {"energy", "weight"}
+        np.testing.assert_allclose(scalars["energy"], 5.75)
+        np.testing.assert_allclose(scalars["weight"], 4.0)
+        assert observables == ()
+        retune_calls.append(
+            (
+                np.asarray(equilibration_energies),
+                np.asarray(equilibration_weights),
+            )
+        )
+        return BlockEnergyRetuneResult(
+            state=state_n,
+            meas_ctx=meas_ctx_i,
+            initial_n_chunks=1,
+            settling_blocks=0,
+        )
+
+    guide_meas_ops = MeasOps(
+        overlap=guide_meas_ops.overlap,
+        kernels=guide_meas_ops.kernels,
+        retune_block_energy=retune,
+    )
+    run_mixed_estimator_qmc(
+        sys=sys,
+        params=params,
+        ham_data=ham_data,
+        guide_data=jnp.asarray(0.0),
+        guide_ops=guide_ops,
+        guide_prop_ops=guide_prop_ops,
+        guide_meas_ops=guide_meas_ops,
+        estimator_data=jnp.asarray(0.0),
+        estimator_ops=estimator_ops,
+        mixed_block_fn=partial(block_mixed_estimator, sr_fn=_identity_sr),
+        state=state,
+        guide_meas_ctx=jnp.asarray(0.0),
+        guide_prop_ctx=jnp.asarray(0.0),
+        estimator_ctx=jnp.asarray(0.0),
+    )
+
+    assert len(retune_calls) == 1
+    np.testing.assert_allclose(retune_calls[0][0], 5.75)
+    np.testing.assert_allclose(retune_calls[0][1], 4.0)

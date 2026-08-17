@@ -1223,7 +1223,11 @@ def run_mixed_estimator_qmc(
 
         def advance_for_retune(state_i, *, n_blocks: int):
             state_n, scalars_n = advance(state_i, n_blocks)
-            return state_n, scalars_n, ()
+            guide_scalars = {
+                "energy": scalars_n["guide_energy"],
+                "weight": scalars_n["guide_weight"],
+            }
+            return state_n, guide_scalars, ()
 
         retuned = guide_meas_ops.retune_block_energy(
             state,
