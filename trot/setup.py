@@ -208,6 +208,19 @@ def _make_trial_bundle(
         _setup_end(t_bundle, "trial bundle ready", details=f"kind={kind}")
         return trial_data, trial_ops, meas_ops
 
+    if kind == "pt2uccsd":
+        from .meas.pt2uccsd import make_pt2uccsd_meas_ops
+        from .trial.pt2uccsd import make_pt2uccsd_trial_data, make_pt2uccsd_trial_ops
+
+        trial_data = make_pt2uccsd_trial_data(data, sys)
+        trial_ops = make_pt2uccsd_trial_ops(sys=sys)
+        meas_ops = make_pt2uccsd_meas_ops(
+            sys=sys,
+            mixed_precision=mixed_precision,
+        )
+        _setup_end(t_bundle, "trial bundle ready", details=f"kind={kind}")
+        return trial_data, trial_ops, meas_ops
+
     if kind == "ucisdt":
         from .meas.ucisdt import make_ucisdt_meas_ops
         from .trial.ucisdt import make_ucisdt_trial_data, make_ucisdt_trial_ops

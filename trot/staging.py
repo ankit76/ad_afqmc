@@ -1310,6 +1310,36 @@ def _stage_pt2ccsd_input(obj):
     )
 
 
+def _stage_pt2uccsd_input(obj: StagedMfOrCc) -> TrialInput:
+    """Stage a PySCF UCCSD object for the spin-resolved PT2 estimator.
+
+    The AFQMC Hamiltonian is expressed in the alpha UHF MO basis.  The beta
+    orbital rotation therefore accompanies the spin-resolved amplitudes, while
+    the singles are absorbed into separate alpha and beta Thouless references
+    when the trial data are constructed.
+    """
+    if obj.kind != "uccsd":
+        raise ValueError(f"PT2-UCCSD staging requires a UCCSD object, got {obj.kind!r}.")
+
+    t1a, t1b = obj.t1
+    t2aa, t2ab, t2bb = obj.t2
+    uhf_input = _stage_mf_input(obj)
+    data = {
+        "t1a": np.asarray(t1a),
+        "t1b": np.asarray(t1b),
+        "t2aa": np.asarray(t2aa),
+        "t2ab": np.asarray(t2ab),
+        "t2bb": np.asarray(t2bb),
+        "mo_coeff_b": np.asarray(uhf_input.data["mo_b"]),
+    }
+    return TrialInput(
+        kind="pt2uccsd",
+        data=data,
+        frozen=obj.trial_frozen,
+        source_kind=obj.source,
+    )
+
+
 # ---------------------------------------------------------------------------
 # ccpy interface helpers
 # ---------------------------------------------------------------------------
