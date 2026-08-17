@@ -1200,19 +1200,59 @@ def run_mixed_estimator_qmc(
             n_blocks=n_blocks,
         )
 
-    print("\nMixed-estimator equilibration:")
+    def combined_estimator_energy(
+        weights: jax.Array,
+        components: jax.Array,
+    ) -> float:
+        mean_components = _weighted_block_mean(components, weights)
+        energy = estimator_ops.combine_energy(ham_data.h0, mean_components)
+        return float(np.real(np.asarray(energy).reshape(())))
+
+    run_started = time.perf_counter()
+    print("\nMixed-estimator equilibration:\n")
     if params.n_eql_blocks > 0:
-        state, equilibration_scalars = advance(state, params.n_eql_blocks)
-        equilibration_energies = equilibration_scalars["guide_energy"]
-        equilibration_weights = equilibration_scalars["guide_weight"]
-        equilibration_energy = _weighted_block_mean(
-            equilibration_energies,
-            equilibration_weights,
-        )
-        print(
-            f"  completed {params.n_eql_blocks} blocks; "
-            f"guide E={float(equilibration_energy):.10f}."
-        )
+        print_every = params.n_eql_blocks // 5 if params.n_eql_blocks >= 5 else 0
+        equilibration_energy_chunks = []
+        equilibration_weight_chunks = []
+        if print_every:
+            print(
+                f"{'':4s}{'block':>9s}  "
+                f"{'Guide_E_blk':>14s}  "
+                f"{'Guide_W_blk':>12s}  "
+                f"{'Estimator_E_blk':>16s}  "
+                f"{'Estimator_W_blk':>15s}  "
+                f"{'nodes':>10s}  "
+                f"{'t[s]':>8s}"
+            )
+        equilibration_chunk = print_every if print_every > 0 else 1
+        for start in range(0, params.n_eql_blocks, equilibration_chunk):
+            n = min(equilibration_chunk, params.n_eql_blocks - start)
+            state, scalars_chunk = advance(state, n)
+            guide_energies_chunk = scalars_chunk["guide_energy"]
+            guide_weights_chunk = scalars_chunk["guide_weight"]
+            estimator_weights_chunk = scalars_chunk["estimator_weight"]
+            estimator_components_chunk = scalars_chunk["estimator_components"]
+            equilibration_energy_chunks.append(guide_energies_chunk)
+            equilibration_weight_chunks.append(guide_weights_chunk)
+            guide_energy_chunk = _weighted_block_mean(
+                guide_energies_chunk,
+                guide_weights_chunk,
+            )
+            estimator_energy_chunk = combined_estimator_energy(
+                estimator_weights_chunk,
+                estimator_components_chunk,
+            )
+            print(
+                f"[eql {start + n:4d}/{params.n_eql_blocks}]  "
+                f"{float(guide_energy_chunk):14.10f}  "
+                f"{float(jnp.mean(guide_weights_chunk)):12.6e}  "
+                f"{estimator_energy_chunk:16.10f}  "
+                f"{float(jnp.real(jnp.mean(estimator_weights_chunk))):15.6e}  "
+                f"{int(state.node_encounters):10d}  "
+                f"{time.perf_counter() - run_started:8.1f}"
+            )
+        equilibration_energies = jnp.concatenate(equilibration_energy_chunks)
+        equilibration_weights = jnp.concatenate(equilibration_weight_chunks)
     else:
         equilibration_energies = jnp.zeros((0,), dtype=jnp.result_type(state.e_estimate))
         equilibration_weights = jnp.zeros((0,), dtype=jnp.result_type(state.weights))
@@ -1253,28 +1293,125 @@ def run_mixed_estimator_qmc(
         )
         params, run_blocks = build_blocks(params, state, guide_meas_ctx)
         if retuned.settling_blocks > 0:
-            state, _ = advance(state, retuned.settling_blocks)
-            print(f"  completed {retuned.settling_blocks} post-tuning settling blocks.")
+            print(f"\nPost-tuning settling: {retuned.settling_blocks} blocks")
+            settling_chunk = max(1, retuned.settling_blocks // 5)
+            for start in range(0, retuned.settling_blocks, settling_chunk):
+                n = min(settling_chunk, retuned.settling_blocks - start)
+                batch_started = time.perf_counter()
+                state, scalars_chunk = advance(state, n)
+                guide_energy_chunk = _weighted_block_mean(
+                    scalars_chunk["guide_energy"],
+                    scalars_chunk["guide_weight"],
+                )
+                estimator_energy_chunk = combined_estimator_energy(
+                    scalars_chunk["estimator_weight"],
+                    scalars_chunk["estimator_components"],
+                )
+                print(
+                    f"[settle {start + n:4d}/{retuned.settling_blocks}]  "
+                    f"Guide_E={float(guide_energy_chunk):14.10f}  "
+                    f"Estimator_E={estimator_energy_chunk:14.10f}  "
+                    f"dt={(time.perf_counter() - batch_started) / n:.3f} s/block"
+                )
 
-    print("\nMixed-estimator sampling:")
-    start = time.perf_counter()
-    state, sampling_scalars = advance(state, params.n_blocks)
-    elapsed = time.perf_counter() - start
-
-    guide_block_energies = sampling_scalars["guide_energy"]
-    guide_block_weights = sampling_scalars["guide_weight"]
-    estimator_block_weights = sampling_scalars["estimator_weight"]
-    estimator_block_components = sampling_scalars["estimator_components"]
-    guide_block_diagnostics = {
-        name: values
-        for name, values in sampling_scalars.items()
-        if name
-        not in (
-            "guide_energy",
-            "guide_weight",
-            "estimator_weight",
-            "estimator_components",
+    print("\nMixed-estimator sampling:\n")
+    sampling_started = time.perf_counter()
+    sampling_mark = sampling_started
+    print_every = params.n_blocks // 10 if params.n_blocks >= 10 else 0
+    guide_energy_chunks = []
+    guide_weight_chunks = []
+    estimator_weight_chunks = []
+    estimator_component_chunks = []
+    guide_diagnostic_chunks: dict[str, list[jax.Array]] = {}
+    if print_every:
+        print(
+            f"{'':4s}{'block':>9s}  "
+            f"{'Guide_E_avg':>14s}  "
+            f"{'Guide_E_err':>11s}  "
+            f"{'Guide_W':>12s}  "
+            f"{'Estimator_E_avg':>16s}  "
+            f"{'Estimator_E_err':>15s}  "
+            f"{'nodes':>10s}  "
+            f"{'dt[s/bl]':>10s}  "
+            f"{'t[s]':>8s}"
         )
+
+    sampling_chunk = print_every if print_every > 0 else 1
+    for start in range(0, params.n_blocks, sampling_chunk):
+        n = min(sampling_chunk, params.n_blocks - start)
+        state, scalars_chunk = advance(state, n)
+        guide_energy_chunks.append(scalars_chunk["guide_energy"])
+        guide_weight_chunks.append(scalars_chunk["guide_weight"])
+        estimator_weight_chunks.append(scalars_chunk["estimator_weight"])
+        estimator_component_chunks.append(scalars_chunk["estimator_components"])
+        for name, values in scalars_chunk.items():
+            if name not in (
+                "guide_energy",
+                "guide_weight",
+                "estimator_weight",
+                "estimator_components",
+            ):
+                guide_diagnostic_chunks.setdefault(name, []).append(values)
+
+        guide_block_energies_so_far = jnp.concatenate(guide_energy_chunks)
+        guide_block_weights_so_far = jnp.concatenate(guide_weight_chunks)
+        estimator_block_weights_so_far = jnp.concatenate(estimator_weight_chunks)
+        estimator_block_components_so_far = jnp.concatenate(estimator_component_chunks)
+        guide_progress = _analyze_energy_errors(
+            guide_block_energies_so_far,
+            guide_block_weights_so_far,
+            error_method=params.error_method,
+        )
+        estimator_progress = blocking_analysis_components(
+            ham_data.h0,
+            estimator_block_weights_so_far,
+            estimator_block_components_so_far,
+            estimator_ops.combine_energy,
+            print_q=False,
+        )
+        estimator_progress_stderr = estimator_progress["se_star"]
+        guide_stderr_text = (
+            f"{guide_progress.stderr:11.3e}"
+            if np.isfinite(guide_progress.stderr)
+            else f"{'unavailable':>11s}"
+        )
+        estimator_stderr_text = (
+            f"{float(estimator_progress_stderr):15.3e}"
+            if estimator_progress_stderr is not None
+            and np.isfinite(estimator_progress_stderr)
+            else f"{'unavailable':>15s}"
+        )
+        batch_finished = time.perf_counter()
+        diagnostic_text = ""
+        noise_chunks = guide_diagnostic_chunks.get(
+            f"guide_{d_energy_sampling_noise}",
+            [],
+        )
+        if noise_chunks:
+            noise_values = jnp.concatenate(noise_chunks)
+            noise_rms_mha = 1000.0 * jnp.sqrt(jnp.mean(noise_values**2))
+            diagnostic_text = f"  tail_rms={float(noise_rms_mha):.3f} mHa"
+        print(
+            f"[blk {start + n:4d}/{params.n_blocks}]  "
+            f"{guide_progress.mean:14.10f}  "
+            f"{guide_stderr_text}  "
+            f"{float(jnp.mean(scalars_chunk['guide_weight'])):12.6e}  "
+            f"{float(estimator_progress['mu']):16.10f}  "
+            f"{estimator_stderr_text}  "
+            f"{int(state.node_encounters):10d}  "
+            f"{(batch_finished - sampling_mark) / n:10.3f}  "
+            f"{batch_finished - run_started:8.1f}"
+            f"{diagnostic_text}"
+        )
+        sampling_mark = batch_finished
+
+    elapsed = time.perf_counter() - sampling_started
+    guide_block_energies = jnp.concatenate(guide_energy_chunks)
+    guide_block_weights = jnp.concatenate(guide_weight_chunks)
+    estimator_block_weights = jnp.concatenate(estimator_weight_chunks)
+    estimator_block_components = jnp.concatenate(estimator_component_chunks)
+    guide_block_diagnostics = {
+        name: jnp.concatenate(chunks) for name, chunks in guide_diagnostic_chunks.items()
     }
 
     guide_analysis = _analyze_energy_errors(

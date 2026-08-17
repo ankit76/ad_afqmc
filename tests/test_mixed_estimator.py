@@ -66,13 +66,13 @@ def _identity_sr(walkers, weights, zeta, walker_kind):
     return walkers, weights
 
 
-def _make_case(*, n_blocks: int = 25):
+def _make_case(*, n_blocks: int = 25, n_eql_blocks: int = 2):
     sys = System(norb=2, nelec=(1, 1), walker_kind="restricted")
     params = QmcParams(
         dt=0.005,
         n_walkers=2,
         n_prop_steps=1,
-        n_eql_blocks=2,
+        n_eql_blocks=n_eql_blocks,
         n_blocks=n_blocks,
         n_chunks=1,
         shift_ema=0.25,
@@ -195,7 +195,7 @@ def test_component_blocking_preserves_nonlinear_component_covariance():
     assert np.isfinite(result["se_star"])
 
 
-def test_generic_mixed_estimator_driver_returns_named_components():
+def test_generic_mixed_estimator_driver_returns_named_components(capsys):
     (
         sys,
         params,
@@ -205,7 +205,7 @@ def test_generic_mixed_estimator_driver_returns_named_components():
         guide_meas_ops,
         guide_prop_ops,
         estimator_ops,
-    ) = _make_case()
+    ) = _make_case(n_eql_blocks=10)
     result = run_mixed_estimator_qmc(
         sys=sys,
         params=params,
@@ -231,9 +231,20 @@ def test_generic_mixed_estimator_driver_returns_named_components():
     np.testing.assert_allclose(result.guide_mean_energy, 5.75)
     np.testing.assert_allclose(result.estimator_mean_components, expected_components)
     np.testing.assert_allclose(result.estimator_mean_energy, expected_energy)
+    output = capsys.readouterr().out
+    assert "Mixed-estimator equilibration:" in output
+    assert "Guide_E_blk" in output
+    assert "Estimator_E_blk" in output
+    assert "[eql    2/10]" in output
+    assert "[eql   10/10]" in output
+    assert "Mixed-estimator sampling:" in output
+    assert "Guide_E_avg" in output
+    assert "Estimator_E_avg" in output
+    assert "[blk    2/25]" in output
+    assert "[blk   25/25]" in output
 
 
-def test_mixed_estimator_retuning_advance_uses_guide_scalar_contract():
+def test_mixed_estimator_retuning_advance_uses_guide_scalar_contract(capsys):
     (
         sys,
         params,
@@ -274,7 +285,7 @@ def test_mixed_estimator_retuning_advance_uses_guide_scalar_contract():
             state=state_n,
             meas_ctx=meas_ctx_i,
             initial_n_chunks=1,
-            settling_blocks=0,
+            settling_blocks=2,
         )
 
     guide_meas_ops = MeasOps(
@@ -302,3 +313,7 @@ def test_mixed_estimator_retuning_advance_uses_guide_scalar_contract():
     assert len(retune_calls) == 1
     np.testing.assert_allclose(retune_calls[0][0], 5.75)
     np.testing.assert_allclose(retune_calls[0][1], 4.0)
+    output = capsys.readouterr().out
+    assert "Post-tuning settling: 2 blocks" in output
+    assert "[settle    1/2]" in output
+    assert "[settle    2/2]" in output
