@@ -113,6 +113,17 @@ class MeasKernel(Protocol):
     def __call__(self, walker: Any, ham_data: Any, meas_ctx: Any, trial_data: Any) -> jax.Array: ...
 
 
+class CombineEnergyComponentsFn(Protocol):
+    """Combine final component ratios into an energy.
+
+    The last axis of ``components`` is the component axis; leading axes are
+    preserved so the same callable can evaluate a single estimate or a batch
+    of leave-one-out estimates.
+    """
+
+    def __call__(self, h0: Any, components: Any) -> Any: ...
+
+
 class BlockEnergyFn(Protocol):
     """Population-level block-energy estimator.
 
@@ -246,3 +257,27 @@ class MeasOps:
 
     def available_observables(self) -> tuple[str, ...]:
         return tuple(sorted(self.observables.keys()))
+
+
+@dataclass(frozen=True)
+class EstimatorOps:
+    """Projected-energy estimator independent of the propagation guide.
+
+    ``reference_overlap`` defines the bra relative to which the per-walker
+    sufficient statistics are normalized. Mixed propagation reweights from
+    the guide overlap to this reference overlap before averaging components.
+    """
+
+    reference_overlap: OverlapFn
+    components: MeasKernel
+    combine_energy: CombineEnergyComponentsFn
+    component_names: tuple[str, ...]
+    build_estimator_ctx: Callable[[ham_data, trial_data], Any] = (
+        lambda ham_data, trial_data: None
+    )
+
+    def __post_init__(self) -> None:
+        if not self.component_names:
+            raise ValueError("EstimatorOps.component_names must be nonempty.")
+        if len(set(self.component_names)) != len(self.component_names):
+            raise ValueError("EstimatorOps.component_names must be unique.")

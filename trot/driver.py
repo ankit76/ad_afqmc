@@ -14,6 +14,7 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from .core.ops import (
+    EstimatorOps,
     MeasOps,
     TrialOps,
     d_energy_head_guard_count,
@@ -24,9 +25,10 @@ from .core.ops import (
 )
 from .core.system import System
 from .meas.pt2ccsd import get_init_pt2trial_energy
-from .prop.blocks import BlockFn, MixedBlockFn
+from .prop.blocks import BlockFn, MixedBlockFn, MixedEstimatorBlockFn
 from .prop.types import PropOps, PropState, QmcParams, QmcParamsBase, QmcParamsFp
 from .stat_utils import (
+    blocking_analysis_components,
     blocking_analysis_ratio,
     clean_pt2ccsd,
     gamma_analysis_ratio,
@@ -207,6 +209,25 @@ class MixedQmcResult(NamedTuple):
     trial_block_t2s: jax.Array
     trial_block_e0s: jax.Array
     trial_block_e1s: jax.Array
+
+
+class MixedEstimatorQmcResult(NamedTuple):
+    """Guide and projected-estimator results from one AFQMC trajectory."""
+
+    guide_mean_energy: float
+    guide_stderr_energy: float
+    estimator_mean_energy: float
+    estimator_stderr_energy: float
+    estimator_mean_components: jax.Array
+    estimator_component_names: tuple[str, ...]
+    guide_block_energies: jax.Array
+    guide_block_weights: jax.Array
+    estimator_block_weights: jax.Array
+    estimator_block_components: jax.Array
+    guide_block_diagnostics: dict[str, jax.Array]
+    final_state: PropState
+    guide_analysis: EnergyErrorAnalysis
+    estimator_analysis: dict[str, Any]
 
 
 def _weighted_block_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
@@ -529,6 +550,154 @@ def make_run_mixed_blocks(
         return stateN, scalars, obs
 
     return run_mixed_blocks
+
+
+def make_run_mixed_estimator_blocks(
+    *,
+    mixed_block_fn: MixedEstimatorBlockFn,
+    sys: System,
+    params: QmcParams,
+    guide_ops: TrialOps,
+    guide_meas_ops: MeasOps,
+    guide_prop_ops: PropOps,
+    estimator_ops: EstimatorOps,
+) -> Callable:
+    """Build a jitted block scanner for guide-independent estimators."""
+
+    @partial(jax.jit, static_argnames=("n_blocks",))
+    def run_mixed_estimator_blocks(
+        state0,
+        *,
+        ham_data,
+        guide_data,
+        guide_meas_ctx,
+        guide_prop_ctx,
+        estimator_data,
+        estimator_ctx,
+        n_blocks: int,
+    ):
+        def one_block(state, _):
+            state, obs = mixed_block_fn(
+                state,
+                sys=sys,
+                params=params,
+                ham_data=ham_data,
+                guide_data=guide_data,
+                guide_ops=guide_ops,
+                guide_meas_ops=guide_meas_ops,
+                guide_meas_ctx=guide_meas_ctx,
+                guide_prop_ops=guide_prop_ops,
+                guide_prop_ctx=guide_prop_ctx,
+                estimator_data=estimator_data,
+                estimator_ops=estimator_ops,
+                estimator_ctx=estimator_ctx,
+            )
+            return state, obs.scalars
+
+        return lax.scan(one_block, state0, xs=None, length=n_blocks)
+
+    return run_mixed_estimator_blocks
+
+
+def _make_run_mixed_estimator_blocks_with_auto_chunks(
+    *,
+    mixed_block_fn: MixedEstimatorBlockFn,
+    sys: System,
+    params: QmcParams,
+    guide_ops: TrialOps,
+    guide_meas_ops: MeasOps,
+    guide_prop_ops: PropOps,
+    estimator_ops: EstimatorOps,
+    state: PropState,
+    ham_data: Any,
+    guide_data: Any,
+    guide_meas_ctx: Any,
+    guide_prop_ctx: Any,
+    estimator_data: Any,
+    estimator_ctx: Any,
+) -> tuple[QmcParams, Callable]:
+    """Build the mixed scanner and optionally select walker chunking."""
+
+    def build(candidate_params: QmcParams) -> Callable:
+        return make_run_mixed_estimator_blocks(
+            mixed_block_fn=mixed_block_fn,
+            sys=sys,
+            params=candidate_params,
+            guide_ops=guide_ops,
+            guide_meas_ops=guide_meas_ops,
+            guide_prop_ops=guide_prop_ops,
+            estimator_ops=estimator_ops,
+        )
+
+    if not params.auto_n_chunks:
+        return params, build(params)
+    if params.n_chunks <= 0:
+        raise ValueError("QmcParams.n_chunks must be positive.")
+
+    memory_limit = _device_memory_limit_bytes(state)
+    if memory_limit is None:
+        print(
+            "[chunks] automatic selection unavailable: the backend did not "
+            "report a device memory limit; using "
+            f"n_chunks={params.n_chunks}."
+        )
+        return params, build(params)
+
+    budget = int(_AUTO_CHUNK_MEMORY_FRACTION * memory_limit)
+    if budget <= 0:
+        raise RuntimeError("Automatic chunk memory budget is not positive.")
+
+    n_walkers = max(1, int(params.n_walkers))
+    candidate = min(int(params.n_chunks), n_walkers)
+    probe_n_blocks = _auto_chunk_probe_n_blocks(params)
+    print(
+        "[chunks] selecting n_chunks automatically for mixed estimation: "
+        f"allocator_limit={_format_mib(memory_limit)}, "
+        f"budget={_format_mib(budget)}, probe_blocks={probe_n_blocks}."
+    )
+
+    while True:
+        candidate_params = dataclasses.replace(params, n_chunks=candidate)
+        run_blocks = build(candidate_params)
+        start = time.perf_counter()
+        try:
+            compiled = run_blocks.lower(
+                state,
+                ham_data=ham_data,
+                guide_data=guide_data,
+                guide_meas_ctx=guide_meas_ctx,
+                guide_prop_ctx=guide_prop_ctx,
+                estimator_data=estimator_data,
+                estimator_ctx=estimator_ctx,
+                n_blocks=probe_n_blocks,
+            ).compile()
+        except jax.errors.JaxRuntimeError as exc:
+            if not _is_compiler_memory_error(exc):
+                raise
+            if candidate >= n_walkers:
+                raise MemoryError(
+                    "The one-walker mixed-estimator chunk failed to compile "
+                    "because the compiler or autotuner ran out of memory."
+                ) from exc
+            candidate = min(n_walkers, 2 * candidate)
+            continue
+
+        estimated_bytes = _compiled_memory_bytes(compiled)
+        if estimated_bytes is None or estimated_bytes <= budget:
+            print(f"[chunks] selected n_chunks={candidate}.")
+            return candidate_params, run_blocks
+        if candidate >= n_walkers:
+            raise MemoryError(
+                "The compiler estimates that a one-walker mixed-estimator "
+                f"chunk requires {_format_mib(estimated_bytes)}, exceeding "
+                f"the automatic budget of {_format_mib(budget)}."
+            )
+        candidate = _next_auto_n_chunks(
+            candidate,
+            estimated_bytes,
+            budget,
+            n_walkers,
+        )
 
 
 def run_qmc(
@@ -927,6 +1096,221 @@ def run_qmc(
         observable_means=obs_means,
         observable_stderrs=obs_stderrs,
         block_diagnostics=block_diagnostics,
+    )
+
+
+def run_mixed_estimator_qmc(
+    *,
+    sys: System,
+    params: QmcParams,
+    ham_data: Any,
+    guide_data: Any,
+    guide_ops: TrialOps,
+    guide_prop_ops: PropOps,
+    guide_meas_ops: MeasOps,
+    estimator_data: Any,
+    estimator_ops: EstimatorOps,
+    mixed_block_fn: MixedEstimatorBlockFn,
+    state: PropState | None = None,
+    guide_meas_ctx: Any | None = None,
+    guide_prop_ctx: Any | None = None,
+    estimator_ctx: Any | None = None,
+    target_error: float | None = None,
+    mesh: Mesh | None = None,
+) -> MixedEstimatorQmcResult:
+    """Run one guide trajectory and evaluate arbitrary projected components.
+
+    The propagation and population control always use ``guide_*``. The
+    estimator supplies a reference overlap and sufficient statistics; each
+    block is reweighted by
+
+    ``guide_weight * reference_overlap / guide_overlap``.
+
+    This keeps estimator algebra out of the driver and supports nonlinear
+    energy combinations while retaining component covariance in the blocking
+    analysis.
+    """
+
+    if params.n_blocks <= 0:
+        raise ValueError("QmcParams.n_blocks must be positive.")
+    if params.n_eql_blocks < 0:
+        raise ValueError("QmcParams.n_eql_blocks must be nonnegative.")
+
+    if guide_prop_ctx is None:
+        guide_prop_ctx = guide_prop_ops.build_prop_ctx(
+            ham_data,
+            guide_ops.get_rdm1(guide_data),
+            params,
+        )
+    if guide_meas_ctx is None:
+        guide_meas_ctx = guide_meas_ops.build_meas_ctx(ham_data, guide_data)
+    if estimator_ctx is None:
+        estimator_ctx = estimator_ops.build_estimator_ctx(ham_data, estimator_data)
+    if state is None:
+        state = guide_prop_ops.init_prop_state(
+            sys=sys,
+            ham_data=ham_data,
+            trial_ops=guide_ops,
+            trial_data=guide_data,
+            meas_ops=guide_meas_ops,
+            params=params,
+            mesh=mesh,
+        )
+
+    if mesh is None or mesh.size == 1:
+        mixed_block_fn_sr = mixed_block_fn
+    else:
+        data_sh = NamedSharding(mesh, P("data"))
+        sr_sharded = partial(stochastic_reconfiguration, data_sharding=data_sh)
+        mixed_block_fn_sr = partial(mixed_block_fn, sr_fn=sr_sharded)
+
+    def build_blocks(
+        params_i: QmcParams,
+        state_i: PropState,
+        guide_meas_ctx_i: Any,
+    ) -> tuple[QmcParams, Callable]:
+        return _make_run_mixed_estimator_blocks_with_auto_chunks(
+            mixed_block_fn=mixed_block_fn_sr,
+            sys=sys,
+            params=params_i,
+            guide_ops=guide_ops,
+            guide_meas_ops=guide_meas_ops,
+            guide_prop_ops=guide_prop_ops,
+            estimator_ops=estimator_ops,
+            state=state_i,
+            ham_data=ham_data,
+            guide_data=guide_data,
+            guide_meas_ctx=guide_meas_ctx_i,
+            guide_prop_ctx=guide_prop_ctx,
+            estimator_data=estimator_data,
+            estimator_ctx=estimator_ctx,
+        )
+
+    params, run_blocks = build_blocks(params, state, guide_meas_ctx)
+
+    def advance(state_i: PropState, n_blocks: int):
+        return run_blocks(
+            state_i,
+            ham_data=ham_data,
+            guide_data=guide_data,
+            guide_meas_ctx=guide_meas_ctx,
+            guide_prop_ctx=guide_prop_ctx,
+            estimator_data=estimator_data,
+            estimator_ctx=estimator_ctx,
+            n_blocks=n_blocks,
+        )
+
+    print("\nMixed-estimator equilibration:")
+    if params.n_eql_blocks > 0:
+        state, equilibration_scalars = advance(state, params.n_eql_blocks)
+        equilibration_energies = equilibration_scalars["guide_energy"]
+        equilibration_weights = equilibration_scalars["guide_weight"]
+        equilibration_energy = _weighted_block_mean(
+            equilibration_energies,
+            equilibration_weights,
+        )
+        print(
+            f"  completed {params.n_eql_blocks} blocks; "
+            f"guide E={float(equilibration_energy):.10f}."
+        )
+    else:
+        equilibration_energies = jnp.zeros((0,), dtype=jnp.result_type(state.e_estimate))
+        equilibration_weights = jnp.zeros((0,), dtype=jnp.result_type(state.weights))
+        print("  no equilibration blocks requested.")
+
+    if guide_meas_ops.retune_block_energy is not None:
+        print("\nRetuning guide block-energy sampling after equilibration:")
+
+        def advance_for_retune(state_i, *, n_blocks: int):
+            state_n, scalars_n = advance(state_i, n_blocks)
+            return state_n, scalars_n, ()
+
+        retuned = guide_meas_ops.retune_block_energy(
+            state,
+            equilibration_energies,
+            equilibration_weights,
+            params,
+            ham_data,
+            guide_meas_ctx,
+            guide_data,
+            advance_blocks=advance_for_retune,
+            target_error=target_error,
+        )
+        if retuned.initial_n_chunks <= 0:
+            raise ValueError("retuned initial_n_chunks must be positive.")
+        if retuned.settling_blocks < 0:
+            raise ValueError("retuned settling_blocks must be nonnegative.")
+        state = cast(PropState, retuned.state)
+        guide_meas_ctx = retuned.meas_ctx
+        params = dataclasses.replace(
+            params,
+            n_chunks=retuned.initial_n_chunks,
+            n_eql_blocks=retuned.settling_blocks,
+        )
+        params, run_blocks = build_blocks(params, state, guide_meas_ctx)
+        if retuned.settling_blocks > 0:
+            state, _ = advance(state, retuned.settling_blocks)
+            print(f"  completed {retuned.settling_blocks} post-tuning settling blocks.")
+
+    print("\nMixed-estimator sampling:")
+    start = time.perf_counter()
+    state, sampling_scalars = advance(state, params.n_blocks)
+    elapsed = time.perf_counter() - start
+
+    guide_block_energies = sampling_scalars["guide_energy"]
+    guide_block_weights = sampling_scalars["guide_weight"]
+    estimator_block_weights = sampling_scalars["estimator_weight"]
+    estimator_block_components = sampling_scalars["estimator_components"]
+    guide_block_diagnostics = {
+        name: values
+        for name, values in sampling_scalars.items()
+        if name
+        not in (
+            "guide_energy",
+            "guide_weight",
+            "estimator_weight",
+            "estimator_components",
+        )
+    }
+
+    guide_analysis = _analyze_energy_errors(
+        guide_block_energies,
+        guide_block_weights,
+        error_method=params.error_method,
+    )
+    estimator_analysis = blocking_analysis_components(
+        ham_data.h0,
+        estimator_block_weights,
+        estimator_block_components,
+        estimator_ops.combine_energy,
+        print_q=False,
+    )
+    estimator_stderr = estimator_analysis["se_star"]
+    estimator_stderr = (
+        float(estimator_stderr) if estimator_stderr is not None else float("nan")
+    )
+
+    print(
+        f"  completed {params.n_blocks} blocks in {elapsed:.1f} s; "
+        f"guide E={guide_analysis.mean:.10f} +/- {guide_analysis.stderr:.3e}; "
+        f"estimator E={float(estimator_analysis['mu']):.10f} +/- "
+        f"{estimator_stderr:.3e}."
+    )
+    return MixedEstimatorQmcResult(
+        guide_mean_energy=guide_analysis.mean,
+        guide_stderr_energy=guide_analysis.stderr,
+        estimator_mean_energy=float(estimator_analysis["mu"]),
+        estimator_stderr_energy=estimator_stderr,
+        estimator_mean_components=jnp.asarray(estimator_analysis["mean_components"]),
+        estimator_component_names=estimator_ops.component_names,
+        guide_block_energies=guide_block_energies,
+        guide_block_weights=guide_block_weights,
+        estimator_block_weights=estimator_block_weights,
+        estimator_block_components=estimator_block_components,
+        guide_block_diagnostics=guide_block_diagnostics,
+        final_state=state,
+        guide_analysis=guide_analysis,
+        estimator_analysis=estimator_analysis,
     )
 
 

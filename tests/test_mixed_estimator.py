@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+from functools import partial
+
+from trot import config
+
+config.configure_once()
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from trot.core.ops import EstimatorOps, MeasOps, TrialOps, k_energy
+from trot.core.system import System
+from trot.driver import run_mixed_estimator_qmc
+from trot.ham.chol import HamChol
+from trot.prop.blocks import block_mixed_estimator
+from trot.prop.types import PropOps, PropState, QmcParams
+from trot.stat_utils import blocking_analysis_components
+
+
+def _guide_overlap(walker, trial_data):
+    del trial_data
+    return 1.0 + walker[1, 0]
+
+
+def _reference_overlap(walker, estimator_data):
+    del estimator_data
+    guide_overlap = 1.0 + walker[1, 0]
+    return guide_overlap * (2.0 + walker[1, 0])
+
+
+def _guide_energy(walker, ham_data, meas_ctx, guide_data):
+    del ham_data, meas_ctx, guide_data
+    return 5.0 + walker[1, 0]
+
+
+def _components(walker, ham_data, estimator_ctx, estimator_data):
+    del ham_data, estimator_ctx, estimator_data
+    marker = walker[1, 0]
+    return jnp.stack([10.0 + 2.0 * marker, 4.0 - marker])
+
+
+def _combine(h0, components):
+    return h0 + components[..., 0] * components[..., 1]
+
+
+def _get_rdm1(trial_data):
+    del trial_data
+    return jnp.stack([jnp.diag(jnp.asarray([1.0, 0.0]))] * 2)
+
+
+def _step(state, **kwargs):
+    del kwargs
+    return state
+
+
+def _identity_sr(walkers, weights, zeta, walker_kind):
+    del zeta, walker_kind
+    return walkers, weights
+
+
+def _make_case(*, n_blocks: int = 25):
+    sys = System(norb=2, nelec=(1, 1), walker_kind="restricted")
+    params = QmcParams(
+        dt=0.005,
+        n_walkers=2,
+        n_prop_steps=1,
+        n_eql_blocks=2,
+        n_blocks=n_blocks,
+        n_chunks=1,
+        shift_ema=0.25,
+        error_method="blocking",
+        seed=7,
+    )
+    ham_data = HamChol(
+        h0=jnp.asarray(0.5),
+        h1=jnp.zeros((2, 2)),
+        chol=jnp.zeros((1, 2, 2)),
+        basis="restricted",
+    )
+    walkers = jnp.asarray(
+        [
+            [[1.0], [0.0]],
+            [[0.0], [1.0]],
+        ],
+        dtype=jnp.complex128,
+    )
+    weights = jnp.asarray([1.0, 3.0])
+    state = PropState(
+        walkers=walkers,
+        weights=weights,
+        overlaps=jnp.asarray([1.0, 2.0], dtype=jnp.complex128),
+        rng_key=jax.random.PRNGKey(17),
+        pop_control_ene_shift=jnp.asarray(0.0),
+        e_estimate=jnp.asarray(5.5),
+        node_encounters=jnp.asarray(0),
+    )
+    guide_ops = TrialOps(overlap=_guide_overlap, get_rdm1=_get_rdm1)
+    guide_meas_ops = MeasOps(
+        overlap=_guide_overlap,
+        kernels={k_energy: _guide_energy},
+    )
+    guide_prop_ops = PropOps(
+        init_prop_state=lambda **kwargs: state,
+        build_prop_ctx=lambda ham_data, rdm1, params: None,
+        step=_step,
+    )
+    estimator_ops = EstimatorOps(
+        reference_overlap=_reference_overlap,
+        components=_components,
+        combine_energy=_combine,
+        component_names=("left", "right"),
+    )
+    return (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        guide_meas_ops,
+        guide_prop_ops,
+        estimator_ops,
+    )
+
+
+def test_mixed_estimator_block_reweights_reference_independently_of_guide():
+    (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        guide_meas_ops,
+        guide_prop_ops,
+        estimator_ops,
+    ) = _make_case()
+
+    state_new, obs = jax.jit(
+        lambda state_i: block_mixed_estimator(
+            state_i,
+            sys=sys,
+            params=params,
+            ham_data=ham_data,
+            guide_data=jnp.asarray(0.0),
+            guide_ops=guide_ops,
+            guide_meas_ops=guide_meas_ops,
+            guide_meas_ctx=None,
+            guide_prop_ops=guide_prop_ops,
+            guide_prop_ctx=None,
+            estimator_data=jnp.asarray(0.0),
+            estimator_ops=estimator_ops,
+            estimator_ctx=None,
+            sr_fn=_identity_sr,
+        )
+    )(state)
+
+    estimator_weights = np.asarray([2.0, 9.0])
+    component_samples = np.asarray([[10.0, 4.0], [12.0, 3.0]])
+    expected_components = np.sum(
+        estimator_weights[:, None] * component_samples,
+        axis=0,
+    ) / np.sum(estimator_weights)
+
+    np.testing.assert_allclose(obs.scalars["guide_energy"], 5.75)
+    np.testing.assert_allclose(obs.scalars["guide_weight"], 4.0)
+    np.testing.assert_allclose(obs.scalars["estimator_weight"], 11.0)
+    np.testing.assert_allclose(obs.scalars["estimator_components"], expected_components)
+    np.testing.assert_allclose(state_new.weights, state.weights)
+
+
+def test_component_blocking_preserves_nonlinear_component_covariance():
+    weights = np.linspace(0.7, 1.3, 40)
+    x = np.linspace(-0.2, 0.2, 40)
+    components = np.column_stack((1.5 + x, 2.0 - 0.5 * x))
+    result = blocking_analysis_components(
+        0.25,
+        weights,
+        components,
+        _combine,
+        print_q=False,
+    )
+
+    expected_components = np.sum(weights[:, None] * components, axis=0) / np.sum(weights)
+    expected_energy = _combine(0.25, expected_components)
+    np.testing.assert_allclose(result["mean_components"], expected_components)
+    np.testing.assert_allclose(result["mu"], expected_energy)
+    assert result["se_star"] is not None
+    assert np.isfinite(result["se_star"])
+
+
+def test_generic_mixed_estimator_driver_returns_named_components():
+    (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        guide_meas_ops,
+        guide_prop_ops,
+        estimator_ops,
+    ) = _make_case()
+    result = run_mixed_estimator_qmc(
+        sys=sys,
+        params=params,
+        ham_data=ham_data,
+        guide_data=jnp.asarray(0.0),
+        guide_ops=guide_ops,
+        guide_prop_ops=guide_prop_ops,
+        guide_meas_ops=guide_meas_ops,
+        estimator_data=jnp.asarray(0.0),
+        estimator_ops=estimator_ops,
+        mixed_block_fn=partial(block_mixed_estimator, sr_fn=_identity_sr),
+        state=state,
+        guide_meas_ctx=jnp.asarray(0.0),
+        guide_prop_ctx=jnp.asarray(0.0),
+        estimator_ctx=jnp.asarray(0.0),
+    )
+
+    expected_components = np.asarray([128.0 / 11.0, 35.0 / 11.0])
+    expected_energy = _combine(ham_data.h0, expected_components)
+    assert result.estimator_component_names == ("left", "right")
+    assert result.guide_block_energies.shape == (params.n_blocks,)
+    assert result.estimator_block_components.shape == (params.n_blocks, 2)
+    np.testing.assert_allclose(result.guide_mean_energy, 5.75)
+    np.testing.assert_allclose(result.estimator_mean_components, expected_components)
+    np.testing.assert_allclose(result.estimator_mean_energy, expected_energy)

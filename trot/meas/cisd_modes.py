@@ -4,7 +4,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -404,10 +404,11 @@ def force_bias_kernel_rw_rh(
     return (2.0 * lg + 4.0 * ci1g * lg + 2.0 * lg * gkg + correction) / overlap
 
 
-def _mode_quadratic_matrices(
-    trial_data: CisdModeTrial,
-    meas_ctx: CisdModeMeasCtx,
+def mode_quadratic_matrices(
+    trial_data: Any,
     matrices: jax.Array,
+    *,
+    n_mode_chunks: int = 1,
 ) -> jax.Array:
     """Evaluate ``x.T @ K @ x`` for a batch of pair-space matrices.
 
@@ -443,7 +444,9 @@ def _mode_quadratic_matrices(
             dtype=reduction_dtype,
         )
 
-    n_mode_chunks = min(meas_ctx.n_mode_chunks, rank)
+    if n_mode_chunks <= 0:
+        raise ValueError("n_mode_chunks must be positive.")
+    n_mode_chunks = min(int(n_mode_chunks), rank)
     if n_mode_chunks == 1:
         values = evaluate_chunk(trial_data.eigenvalues, trial_data.modes)
         return values.reshape(leading_shape)
@@ -474,6 +477,20 @@ def _mode_quadratic_matrices(
         jnp.arange(n_mode_chunks, dtype=jnp.int32),
     )
     return values.reshape(leading_shape)
+
+
+def _mode_quadratic_matrices(
+    trial_data: CisdModeTrial,
+    meas_ctx: CisdModeMeasCtx,
+    matrices: jax.Array,
+) -> jax.Array:
+    """Backward-compatible wrapper around the trial-independent mode kernel."""
+
+    return mode_quadratic_matrices(
+        trial_data,
+        matrices,
+        n_mode_chunks=meas_ctx.n_mode_chunks,
+    )
 
 
 def _cisd_mode_energy_common(

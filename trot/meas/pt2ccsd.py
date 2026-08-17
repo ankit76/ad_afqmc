@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax, tree_util
 
-from ..core.ops import MeasOps, k_energy
+from ..core.ops import EstimatorOps, MeasOps, k_energy
 from ..core.system import System
 from ..ham.chol import HamChol
 from ..trial.pt2ccsd import Pt2ccsdTrial
@@ -121,6 +121,15 @@ def energy_kernel_rw_rh(
     return jnp.stack([t2, e0, e1])
 
 
+def combine_first_order_energy(h0, components):
+    """Combine ``[theta, electronic_0, h_t]`` component ratios."""
+
+    theta = components[..., 0]
+    electronic_0 = components[..., 1]
+    h_t = components[..., 2]
+    return h0 + electronic_0 + h_t - theta * electronic_0
+
+
 def make_pt2ccsd_meas_ops(
     sys: System,
     memory_mode: str = "low",
@@ -147,6 +156,29 @@ def make_pt2ccsd_meas_ops(
     )
 
 
+def make_pt2ccsd_estimator_ops(
+    sys: System,
+    memory_mode: str = "low",
+    mixed_precision: bool = False,
+    testing: bool = False,
+) -> EstimatorOps:
+    """Build guide-independent dense pt2CCSD estimator operations."""
+
+    meas_ops = make_pt2ccsd_meas_ops(
+        sys,
+        memory_mode=memory_mode,
+        mixed_precision=mixed_precision,
+        testing=testing,
+    )
+    return EstimatorOps(
+        reference_overlap=overlap_r,
+        components=energy_kernel_rw_rh,
+        combine_energy=combine_first_order_energy,
+        component_names=("theta", "electronic_0", "h_t"),
+        build_estimator_ctx=meas_ops.build_meas_ctx,
+    )
+
+
 def get_init_pt2trial_energy(
     init_state: PropState,
     ham_data: HamChol,
@@ -167,6 +199,6 @@ def get_init_pt2trial_energy(
     )(walker_0, trial_data)
     guide_overlap = init_state.overlaps[0]
     trial_weights = init_state.weights * trial_overlap / guide_overlap
-    trial_energy = (ham_data.h0 + e0 + e1 - t2 * e1).mean()
+    trial_energy = combine_first_order_energy(ham_data.h0, pt2results).mean()
 
     return trial_energy + 0j, jnp.sum(trial_weights)

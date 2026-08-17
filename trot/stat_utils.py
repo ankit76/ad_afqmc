@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Iterable, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, cast
 
 import numpy as np
 import jax.numpy as jnp
@@ -246,6 +246,145 @@ def blocking_analysis_ratio(
         fig.tight_layout()
 
     return out
+
+
+def blocking_analysis_components(
+    h0: float | complex,
+    weights: np.ndarray | jax.Array,
+    components: np.ndarray | jax.Array,
+    combine_energy: Callable[[Any, Any], Any],
+    block_grid: Iterable[int] | None = None,
+    *,
+    min_blocks: int = 20,
+    min_rise: float = 0.20,
+    flat_tol: float = 0.03,
+    k: int = 3,
+    print_q: bool = True,
+) -> Dict[str, Any]:
+    """Blocking/jackknife analysis for a nonlinear energy of component ratios.
+
+    Each input row contains a block-level component mean and ``weights``
+    contains the corresponding denominator. The full estimate first forms
+
+    ``c = sum_b weights[b] * components[b] / sum_b weights[b]``
+
+    and then evaluates ``combine_energy(h0, c)``. Leave-one-superblock-out
+    estimates apply the same nonlinear combination, retaining all covariance
+    among components.
+    """
+
+    weights_array = np.asarray(weights).reshape(-1)
+    components_array = np.asarray(components)
+    if components_array.ndim != 2:
+        raise ValueError(
+            "components must have shape (n_blocks, n_components); "
+            f"got {components_array.shape}."
+        )
+    if components_array.shape[0] != weights_array.shape[0]:
+        raise ValueError(
+            f"weights length {weights_array.shape[0]} does not match components "
+            f"length {components_array.shape[0]}."
+        )
+    finite = np.isfinite(weights_array) & np.all(np.isfinite(components_array), axis=1)
+    weights_array = weights_array[finite]
+    components_array = components_array[finite]
+    n = int(weights_array.shape[0])
+    if n == 0:
+        raise ValueError("No finite component blocks are available for analysis.")
+
+    weighted_components = weights_array[:, None] * components_array
+    total_weight = weights_array.sum()
+    if abs(total_weight) <= 1.0e-18:
+        raise ValueError("The total component-estimator weight is numerically zero.")
+    total_components = weighted_components.sum(axis=0)
+    mean_components = total_components / total_weight
+    mean_energy = float(
+        np.real(np.asarray(combine_energy(h0, mean_components)).reshape(()))
+    )
+
+    if block_grid is None:
+        raw = np.unique(np.rint(np.geomspace(1, max(2, n // min_blocks), 18)).astype(int))
+        block_grid = [int(b) for b in raw if b >= 1 and (n // b) >= min_blocks]
+        if raw.size > 0 and (n // raw[-1]) >= 5 and raw[-1] not in block_grid:
+            block_grid.append(int(raw[-1]))
+
+    block_sizes: list[int] = []
+    block_errors: list[float] = []
+    group_counts: list[int] = []
+    for block_size in block_grid:
+        n_groups = n // int(block_size)
+        if n_groups < 5:
+            continue
+        usable = n_groups * int(block_size)
+        group_weights = weights_array[:usable].reshape(n_groups, int(block_size)).sum(axis=1)
+        group_components = (
+            weighted_components[:usable]
+            .reshape(n_groups, int(block_size), components_array.shape[1])
+            .sum(axis=1)
+        )
+        used_weight = group_weights.sum()
+        used_components = group_components.sum(axis=0)
+        loo_weight = used_weight - group_weights
+        safe = np.abs(loo_weight) > 1.0e-18
+        fallback = used_components / used_weight
+        loo_components = np.where(
+            safe[:, None],
+            (used_components[None, :] - group_components) / loo_weight[:, None],
+            fallback[None, :],
+        )
+        loo_energy = np.real(np.asarray(combine_energy(h0, loo_components))).reshape(n_groups)
+        loo_mean = float(np.mean(loo_energy))
+        variance = (n_groups - 1) / n_groups * np.sum((loo_energy - loo_mean) ** 2)
+        block_sizes.append(int(block_size))
+        block_errors.append(float(np.sqrt(max(float(variance), 0.0))))
+        group_counts.append(n_groups)
+
+    sizes = np.asarray(block_sizes, dtype=int)
+    errors = np.asarray(block_errors, dtype=float)
+    groups = np.asarray(group_counts, dtype=int)
+    if sizes.size == 0:
+        result = {
+            "mu": mean_energy,
+            "mean_components": mean_components,
+            "block_sizes": None,
+            "se_curve": None,
+            "n_blocks": None,
+            "B_star": None,
+            "se_star": None,
+            "plateau_found": False,
+            "selection_reason": "unavailable",
+        }
+    else:
+        block_star, error_star, _, plateau_found, selection_reason = _pick_plateau_with_status(
+            sizes,
+            errors,
+            groups,
+            min_blocks=min_blocks,
+            min_rise=min_rise,
+            flat_tol=flat_tol,
+            k=k,
+        )
+        result = {
+            "mu": mean_energy,
+            "mean_components": mean_components,
+            "block_sizes": sizes,
+            "se_curve": errors,
+            "n_blocks": groups,
+            "B_star": int(block_star),
+            "se_star": float(error_star),
+            "plateau_found": bool(plateau_found),
+            "selection_reason": str(selection_reason),
+        }
+
+    if print_q:
+        error = result["se_star"]
+        error_text = f"{float(error):.6e}" if error is not None else "unavailable"
+        print(
+            "component estimator: "
+            f"energy={mean_energy:.12f}, SE={error_text}, "
+            f"selection={result['selection_reason']}."
+        )
+    return result
 
 
 def _autocovariance_fft(data: np.ndarray, max_lag: int) -> np.ndarray:

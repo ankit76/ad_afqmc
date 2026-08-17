@@ -11,7 +11,7 @@ from jax.experimental import io_callback
 
 from .. import walkers as wk
 from ..core.levels import LevelPack
-from ..core.ops import BlockEnergyEstimate, MeasOps, TrialOps, k_energy
+from ..core.ops import BlockEnergyEstimate, EstimatorOps, MeasOps, TrialOps, k_energy
 from ..core.system import System
 from ..walkers import SrFn
 from .types import PropOps, PropState, QmcParams, QmcParamsFp
@@ -54,6 +54,27 @@ class MixedBlockFn(Protocol):
         trial_meas_ops: MeasOps,
         trial_meas_ctx: Any,
         observable_names: tuple[str, ...] = (),
+        sr_fn: Callable = wk.stochastic_reconfiguration,
+    ) -> tuple[PropState, BlockObs]: ...
+
+
+class MixedEstimatorBlockFn(Protocol):
+    def __call__(
+        self,
+        state: PropState,
+        *,
+        sys: System,
+        params: QmcParams,
+        ham_data: Any,
+        guide_data: Any,
+        guide_ops: TrialOps,
+        guide_meas_ops: MeasOps,
+        guide_meas_ctx: Any,
+        guide_prop_ops: PropOps,
+        guide_prop_ctx: Any,
+        estimator_data: Any,
+        estimator_ops: EstimatorOps,
+        estimator_ctx: Any,
         sr_fn: Callable = wk.stochastic_reconfiguration,
     ) -> tuple[PropState, BlockObs]: ...
 
@@ -443,6 +464,174 @@ def block_mixed(
         observables=obs_samples,
     )
     return state, obs
+
+
+def block_mixed_estimator(
+    state: PropState,
+    *,
+    sys: System,
+    params: QmcParams,
+    ham_data: Any,
+    guide_data: Any,
+    guide_ops: TrialOps,
+    guide_meas_ops: MeasOps,
+    guide_meas_ctx: Any,
+    guide_prop_ops: PropOps,
+    guide_prop_ctx: Any,
+    estimator_data: Any,
+    estimator_ops: EstimatorOps,
+    estimator_ctx: Any,
+    sr_fn: Callable = wk.stochastic_reconfiguration,
+) -> tuple[PropState, BlockObs]:
+    """Propagate with one guide and accumulate another estimator's statistics."""
+
+    step = lambda st: guide_prop_ops.step(
+        st,
+        params=params,
+        ham_data=ham_data,
+        trial_data=guide_data,
+        trial_ops=guide_ops,
+        meas_ops=guide_meas_ops,
+        prop_ctx=guide_prop_ctx,
+        meas_ctx=guide_meas_ctx,
+    )
+
+    def scan_step(carry: PropState, _x: Any):
+        return step(carry), None
+
+    state, _ = lax.scan(scan_step, state, xs=None, length=params.n_prop_steps)
+    walkers_new = wk.orthonormalize(state.walkers, sys.walker_kind)
+    guide_overlaps = wk.vmap_chunked(
+        guide_meas_ops.overlap,
+        n_chunks=params.n_chunks,
+        in_axes=(0, None),
+    )(walkers_new, guide_data)
+    state = state._replace(walkers=walkers_new, overlaps=guide_overlaps)
+
+    threshold = jnp.sqrt(2.0 / jnp.asarray(params.dt))
+    energy_reference = state.e_estimate
+    guide_diagnostics: dict[str, jax.Array] = {}
+    if guide_meas_ops.block_energy is None:
+        guide_energy_kernel = guide_meas_ops.require_kernel(k_energy)
+        guide_energy_samples = wk.vmap_chunked(
+            guide_energy_kernel,
+            n_chunks=params.n_chunks,
+            in_axes=(0, None, None, None),
+        )(state.walkers, ham_data, guide_meas_ctx, guide_data)
+        guide_energy_samples = jnp.real(guide_energy_samples)
+        invalid_guide = ~jnp.isfinite(guide_energy_samples)
+        guide_energy_samples = jnp.where(
+            invalid_guide
+            | (jnp.abs(guide_energy_samples - energy_reference) > threshold),
+            energy_reference,
+            guide_energy_samples,
+        )
+        guide_weights = jnp.where(invalid_guide, 0.0, state.weights)
+        guide_weight = jnp.sum(guide_weights)
+        guide_weight_safe = jnp.where(guide_weight == 0.0, 1.0, guide_weight)
+        guide_energy = jnp.sum(guide_weights * guide_energy_samples) / guide_weight_safe
+        guide_energy = jnp.where(guide_weight == 0.0, energy_reference, guide_energy)
+        key_next, key_sr = jax.random.split(state.rng_key)
+    else:
+        key_next, key_energy, key_sr = jax.random.split(state.rng_key, 3)
+        guide_weights = state.weights
+        guide_weight = jnp.sum(guide_weights)
+        estimate = guide_meas_ops.block_energy(
+            state.walkers,
+            guide_weights,
+            state.overlaps,
+            key_energy,
+            params.n_chunks,
+            ham_data,
+            guide_meas_ctx,
+            guide_data,
+            energy_reference,
+            threshold,
+        )
+        if isinstance(estimate, BlockEnergyEstimate):
+            guide_energy = jnp.real(estimate.energy)
+            guide_diagnostics = {
+                f"guide_{name}": value for name, value in estimate.diagnostics.items()
+            }
+        else:
+            guide_energy = jnp.real(estimate)
+        invalid_energy = (~jnp.isfinite(guide_energy)) | (
+            jnp.abs(guide_energy - energy_reference) > threshold
+        )
+        guide_energy = jnp.where(
+            (guide_weight == 0.0) | invalid_energy,
+            energy_reference,
+            guide_energy,
+        )
+
+    alpha = jnp.asarray(params.shift_ema, dtype=jnp.result_type(guide_energy))
+    state = state._replace(
+        weights=guide_weights,
+        e_estimate=(1.0 - alpha) * state.e_estimate + alpha * guide_energy,
+    )
+
+    component_samples = wk.vmap_chunked(
+        estimator_ops.components,
+        n_chunks=params.n_chunks,
+        in_axes=(0, None, None, None),
+    )(state.walkers, ham_data, estimator_ctx, estimator_data)
+    if component_samples.ndim != 2 or component_samples.shape[1] != len(
+        estimator_ops.component_names
+    ):
+        raise ValueError(
+            "Estimator component kernel must return one vector per walker with "
+            f"length {len(estimator_ops.component_names)}; got {component_samples.shape}."
+        )
+    reference_overlaps = wk.vmap_chunked(
+        estimator_ops.reference_overlap,
+        n_chunks=params.n_chunks,
+        in_axes=(0, None),
+    )(state.walkers, estimator_data)
+    overlap_ratio = reference_overlaps / guide_overlaps
+    finite_components = jnp.all(jnp.isfinite(component_samples), axis=1)
+    finite_ratio = jnp.isfinite(overlap_ratio)
+    valid_estimator = finite_components & finite_ratio
+    estimator_weights = jnp.where(valid_estimator, guide_weights * overlap_ratio, 0.0)
+    safe_components = jnp.where(valid_estimator[:, None], component_samples, 0.0)
+    estimator_weight = jnp.sum(estimator_weights)
+    estimator_weight_safe = jnp.where(estimator_weight == 0.0, 1.0, estimator_weight)
+    estimator_components = (
+        jnp.sum(estimator_weights[:, None] * safe_components, axis=0)
+        / estimator_weight_safe
+    )
+    estimator_components = jnp.where(
+        estimator_weight == 0.0,
+        jnp.zeros_like(estimator_components),
+        estimator_components,
+    )
+
+    zeta = jax.random.uniform(key_sr)
+    walkers_sr, weights_sr = sr_fn(
+        state.walkers,
+        state.weights,
+        zeta,
+        sys.walker_kind,
+    )
+    overlaps_sr = wk.vmap_chunked(
+        guide_meas_ops.overlap,
+        n_chunks=params.n_chunks,
+        in_axes=(0, None),
+    )(walkers_sr, guide_data)
+    state = state._replace(
+        walkers=walkers_sr,
+        weights=weights_sr,
+        overlaps=overlaps_sr,
+        rng_key=key_next,
+    )
+
+    scalars = {
+        "guide_energy": guide_energy,
+        "guide_weight": guide_weight,
+        "estimator_weight": estimator_weight,
+        "estimator_components": estimator_components,
+    }
+    scalars.update(guide_diagnostics)
+    return state, BlockObs(scalars=scalars, observables={})
 
 
 def block_fp(
