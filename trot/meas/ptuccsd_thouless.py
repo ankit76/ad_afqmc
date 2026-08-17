@@ -270,9 +270,14 @@ def _energy_components_uw_rh(
         e23_acc += l2t2_a + l2t2_b + l2t2_ab
         return (e222_acc, e23_acc), None
 
-    zero = jnp.array(0.0, dtype=cfg.mixed_complex_dtype)
+    # The exchange-like term follows the dtype of the uncast Green's-function
+    # contractions, while the quartic T2 term deliberately uses the lower
+    # ``testing`` precision.  Keeping separate scan seeds is required when the
+    # Hamiltonian and walkers are double precision but mixed precision is on.
+    zero_e222 = jnp.zeros_like(e2_2_2_1)
+    zero_e23 = jnp.array(0.0, dtype=cfg.mixed_complex_dtype_testing)
     (e2_2_2_2, e2_2_3), _ = jax.lax.scan(
-        scan_over_chol, (zero, zero), (chol_a, chol_b)
+        scan_over_chol, (zero_e222, zero_e23), (chol_a, chol_b)
     )
     e2_2 = e2_2_1 + e2_2_2_1 + e2_2_2_2 + e2_2_3
 

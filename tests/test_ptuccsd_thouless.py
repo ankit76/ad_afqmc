@@ -222,6 +222,40 @@ def test_restricted_wrapper_preserves_spin_resolved_ucc_trial():
     )
 
 
+def test_open_shell_restricted_components_compile_with_mixed_precision():
+    rng = np.random.default_rng(2417)
+    norb, noa, nob = 5, 2, 1
+    nva, nvb = norb - noa, norb - nob
+    beta_rotation, _ = np.linalg.qr(
+        np.eye(norb) + 0.15 * rng.standard_normal((norb, norb))
+    )
+    trial = PtuccsdThoulessTrial(
+        mo_t_a=jnp.asarray(
+            np.vstack([np.eye(noa), 0.08 * rng.standard_normal((nva, noa))])
+        ),
+        mo_t_b=jnp.asarray(
+            np.vstack([np.eye(nob), 0.08 * rng.standard_normal((nvb, nob))])
+        ),
+        mo_coeff_b=jnp.asarray(beta_rotation),
+        t2aa=jnp.asarray(0.02 * _same_spin_tensor(rng, noa, nva)),
+        t2ab=jnp.asarray(0.02 * rng.standard_normal((noa, nva, nob, nvb))),
+        t2bb=jnp.asarray(0.02 * _same_spin_tensor(rng, nob, nvb)),
+    )
+    walker = jnp.asarray(
+        np.vstack([np.eye(noa), 0.1 * rng.standard_normal((nva, noa))])
+        + 0.04j * rng.standard_normal((norb, noa))
+    )
+    ham = _random_ham(rng, norb, nchol=5)
+    sys = System(norb=norb, nelec=(noa, nob), walker_kind="restricted")
+    estimator_ops = make_pt2uccsd_estimator_ops(sys, mixed_precision=True)
+    ctx = estimator_ops.build_estimator_ctx(ham, trial)
+
+    components = jax.jit(estimator_ops.components)(walker, ham, ctx, trial)
+
+    assert components.shape == (3,)
+    assert np.all(np.isfinite(np.asarray(components)))
+
+
 def test_trial_data_and_factories_support_restricted_walkers():
     rng = np.random.default_rng(2423)
     norb, nocc = 4, 2
