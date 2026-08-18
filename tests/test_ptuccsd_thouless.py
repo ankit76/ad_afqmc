@@ -22,6 +22,7 @@ from trot.meas.ptccsd_thouless import (
     force_bias_pt_rw_rh as ptccsd_thouless_force_bias,
 )
 from trot.meas.ptuccsd_thouless import (
+    _energy_components_uw_rh_full,
     PtuccsdThoulessMeasCfg,
     build_ptuccsd_thouless_meas_ctx,
     components_ptuccsd_thouless_rw_rh,
@@ -55,8 +56,9 @@ from trot.trial.ptuccsd_thouless import (
 from trot.trial.ucisd_k_modes import UcisdKModeTrial, make_ucisd_k_mode_trial_ops
 
 
-def _double_cfg() -> PtuccsdThoulessMeasCfg:
+def _double_cfg(memory_mode: str = "high") -> PtuccsdThoulessMeasCfg:
     return PtuccsdThoulessMeasCfg(
+        memory_mode=memory_mode,
         mixed_real_dtype=jnp.float64,
         mixed_complex_dtype=jnp.complex128,
         mixed_real_dtype_testing=jnp.float64,
@@ -222,6 +224,60 @@ def test_restricted_wrapper_preserves_spin_resolved_ucc_trial():
     )
 
 
+def test_ptuccsd_high_and_low_memory_match_full_green_oracle_open_shell():
+    rng = np.random.default_rng(2413)
+    norb, noa, nob = 6, 3, 2
+    nva, nvb = norb - noa, norb - nob
+    beta_rotation, _ = np.linalg.qr(
+        np.eye(norb) + 0.12 * rng.standard_normal((norb, norb))
+    )
+    trial = PtuccsdThoulessTrial(
+        mo_t_a=jnp.asarray(
+            np.vstack([np.eye(noa), 0.07 * rng.standard_normal((nva, noa))])
+        ),
+        mo_t_b=jnp.asarray(
+            np.vstack([np.eye(nob), 0.07 * rng.standard_normal((nvb, nob))])
+        ),
+        mo_coeff_b=jnp.asarray(beta_rotation),
+        t2aa=jnp.asarray(0.02 * _same_spin_tensor(rng, noa, nva)),
+        t2ab=jnp.asarray(0.02 * rng.standard_normal((noa, nva, nob, nvb))),
+        t2bb=jnp.asarray(0.02 * _same_spin_tensor(rng, nob, nvb)),
+    )
+    walker_r = jnp.asarray(
+        np.vstack([np.eye(noa), 0.09 * rng.standard_normal((nva, noa))])
+        + 0.05j * rng.standard_normal((norb, noa))
+    )
+    walker_u = (walker_r[:, :noa], walker_r[:, :nob])
+    ham = _random_ham(rng, norb, nchol=7)
+    high_ctx = build_ptuccsd_thouless_meas_ctx(ham, trial, _double_cfg("high"))
+    low_ctx = build_ptuccsd_thouless_meas_ctx(ham, trial, _double_cfg("low"))
+
+    full_components = jnp.stack(_energy_components_uw_rh_full(walker_u, ham, high_ctx, trial))
+    high_components = components_ptuccsd_thouless_uw_rh(walker_u, ham, high_ctx, trial)
+    low_components = components_ptuccsd_thouless_uw_rh(walker_u, ham, low_ctx, trial)
+    restricted_high = components_ptuccsd_thouless_rw_rh(walker_r, ham, high_ctx, trial)
+    restricted_low = components_ptuccsd_thouless_rw_rh(walker_r, ham, low_ctx, trial)
+
+    np.testing.assert_allclose(high_components, full_components, rtol=3.0e-11, atol=3.0e-11)
+    np.testing.assert_allclose(low_components, full_components, rtol=3.0e-11, atol=3.0e-11)
+    np.testing.assert_allclose(restricted_high, full_components, rtol=3.0e-11, atol=3.0e-11)
+    np.testing.assert_allclose(restricted_low, full_components, rtol=3.0e-11, atol=3.0e-11)
+
+    full_energy = ham.h0 + full_components[1] + full_components[2] - full_components[0] * full_components[1]
+    np.testing.assert_allclose(
+        energy_kernel_uw_rh(walker_u, ham, high_ctx, trial),
+        full_energy,
+        rtol=3.0e-11,
+        atol=3.0e-11,
+    )
+    np.testing.assert_allclose(
+        energy_kernel_rw_rh(walker_r, ham, low_ctx, trial),
+        full_energy,
+        rtol=3.0e-11,
+        atol=3.0e-11,
+    )
+
+
 def test_open_shell_restricted_components_compile_with_mixed_precision():
     rng = np.random.default_rng(2417)
     norb, noa, nob = 5, 2, 1
@@ -249,11 +305,22 @@ def test_open_shell_restricted_components_compile_with_mixed_precision():
     sys = System(norb=norb, nelec=(noa, nob), walker_kind="restricted")
     estimator_ops = make_pt2uccsd_estimator_ops(sys, mixed_precision=True)
     ctx = estimator_ops.build_estimator_ctx(ham, trial)
+    low_ops = make_pt2uccsd_estimator_ops(
+        sys,
+        memory_mode="low",
+        mixed_precision=True,
+    )
+    low_ctx = low_ops.build_estimator_ctx(ham, trial)
 
     components = jax.jit(estimator_ops.components)(walker, ham, ctx, trial)
+    low_components = jax.jit(low_ops.components)(walker, ham, low_ctx, trial)
 
+    assert ctx.cfg.memory_mode == "high"
+    assert low_ctx.cfg.memory_mode == "low"
     assert components.shape == (3,)
+    assert low_components.shape == (3,)
     assert np.all(np.isfinite(np.asarray(components)))
+    assert np.all(np.isfinite(np.asarray(low_components)))
 
 
 def test_trial_data_and_factories_support_restricted_walkers():

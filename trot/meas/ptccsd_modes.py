@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -16,7 +17,7 @@ from ..trial.ptccsd_modes import (
     det_overlap_thouless_r,
     greenp_thouless,
     greens_pt_r,
-    greens_thouless_r,
+    half_green_thouless_r,
     hf_overlap_r,
     overlap_pt_r,
     overlap_ptccsd_thouless_r,
@@ -46,16 +47,22 @@ class PtccsdModeMeasCtx:
 @tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class PtccsdThoulessModeMeasCtx:
+    rot_chol: jax.Array
     n_mode_chunks: int
+    memory_mode: Literal["low", "high"]
 
     def tree_flatten(self):
-        return (), (self.n_mode_chunks,)
+        return (self.rot_chol,), (self.n_mode_chunks, self.memory_mode)
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        del children
-        (n_mode_chunks,) = aux
-        return cls(n_mode_chunks=n_mode_chunks)
+        n_mode_chunks, memory_mode = aux
+        (rot_chol,) = children
+        return cls(
+            rot_chol=rot_chol,
+            n_mode_chunks=n_mode_chunks,
+            memory_mode=memory_mode,
+        )
 
 
 def build_ptccsd_mode_meas_ctx(
@@ -87,13 +94,23 @@ def build_ptccsd_thouless_mode_meas_ctx(
     trial_data: PtccsdThoulessModeTrial,
     *,
     n_mode_chunks: int = 1,
+    memory_mode: Literal["low", "high"] = "high",
 ) -> PtccsdThoulessModeMeasCtx:
     if ham_data.basis != "restricted":
         raise ValueError("PT-CCSD Thouless mode kernels require a restricted Hamiltonian.")
     if n_mode_chunks <= 0:
         raise ValueError("n_mode_chunks must be positive.")
+    if memory_mode not in {"low", "high"}:
+        raise ValueError("memory_mode must be 'low' or 'high'.")
     return PtccsdThoulessModeMeasCtx(
-        n_mode_chunks=min(int(n_mode_chunks), trial_data.mode_rank)
+        rot_chol=jnp.einsum(
+            "pi,gpq->giq",
+            trial_data.mo_t.conj(),
+            ham_data.chol,
+            optimize="optimal",
+        ),
+        n_mode_chunks=min(int(n_mode_chunks), trial_data.mode_rank),
+        memory_mode=memory_mode,
     )
 
 
@@ -120,9 +137,28 @@ def _thouless_green_blocks(
     walker: jax.Array,
     trial_data: PtccsdThoulessModeTrial,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    green = greens_thouless_r(walker, trial_data)
+    _, green, _, green_occ, greenp = _thouless_half_green_blocks(walker, trial_data)
+    return green, green_occ, greenp
+
+
+def _thouless_half_green_blocks(
+    walker: jax.Array,
+    trial_data: PtccsdThoulessModeTrial,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Return half- and full-Green blocks for a Thouless reference.
+
+    If ``C`` is ``trial_data.mo_t`` and ``R`` is the half Green function, the
+    full transition Green function factors as ``G = C.conj() @ R``.  Keeping
+    ``R`` makes it possible for the energy kernel to avoid intermediates with
+    shape ``(n_chol, norb, norb)``.
+    """
+
+    half_green = half_green_thouless_r(walker, trial_data)
+    green = trial_data.mo_t.conj() @ half_green
+    green_rows = green[: trial_data.nocc, :]
     green_occ = green[: trial_data.nocc, trial_data.nocc :]
-    return green, green_occ, greenp_thouless(green, trial_data)
+    greenp = greenp_thouless(green, trial_data)
+    return half_green, green, green_rows, green_occ, greenp
 
 
 def _mode_t2_green(
@@ -133,10 +169,30 @@ def _mode_t2_green(
     *,
     green_rows: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
+    del green
+    _, t2_green, theta2 = _mode_t2_green_factors(
+        trial_data,
+        green_occ,
+        greenp,
+        green_rows=green_rows,
+    )
+    return t2_green, theta2
+
+
+def _mode_t2_green_factors(
+    trial_data,
+    green_occ: jax.Array,
+    greenp: jax.Array,
+    *,
+    green_rows: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Return the left factor, full correction, and scalar T2 contraction."""
+
     projections, kg = mode_apply(trial_data, green_occ)
     theta2 = mode_quadratic(trial_data, green_occ, projections)
-    t2_green = (greenp @ kg.T) @ green_rows
-    return t2_green, theta2
+    t2_left = greenp @ kg.T
+    t2_green = t2_left @ green_rows
+    return t2_left, t2_green, theta2
 
 
 def force_bias_pt_rw_rh(
@@ -246,12 +302,14 @@ def inverse_guide_components_pt_rw_rh(
     return jnp.concatenate([reweight[None], reweight * components])
 
 
-def force_bias_pt_thouless_rw_rh(
+def _force_bias_pt_thouless_rw_rh_full(
     walker: jax.Array,
     ham_data: HamChol,
     meas_ctx: PtccsdThoulessModeMeasCtx,
     trial_data: PtccsdThoulessModeTrial,
 ) -> jax.Array:
+    """Reference full-Green implementation retained as a test oracle."""
+
     del meas_ctx
     green, green_occ, greenp = _thouless_green_blocks(walker, trial_data)
     f0 = 2.0 * jnp.einsum("gpq,pq->g", ham_data.chol, green, optimize="optimal")
@@ -265,13 +323,40 @@ def force_bias_pt_thouless_rw_rh(
     return f0 + _chol_contract(ham_data.chol, -2.0 * t2_green)
 
 
-def components_pt_thouless_rw_rh(
+def force_bias_pt_thouless_rw_rh(
     walker: jax.Array,
     ham_data: HamChol,
     meas_ctx: PtccsdThoulessModeMeasCtx,
     trial_data: PtccsdThoulessModeTrial,
 ) -> jax.Array:
-    """Return ``[theta2, electronic_0, h_t]`` for PT2/Thouless estimators."""
+    """Restricted exponential-guide force bias using a half Green function."""
+
+    half_green, _, green_rows, green_occ, greenp = _thouless_half_green_blocks(
+        walker,
+        trial_data,
+    )
+    f0 = 2.0 * jnp.einsum(
+        "giq,iq->g",
+        meas_ctx.rot_chol,
+        half_green,
+        optimize="optimal",
+    )
+    _, t2_green, _ = _mode_t2_green_factors(
+        trial_data,
+        green_occ,
+        greenp,
+        green_rows=green_rows,
+    )
+    return f0 + _chol_contract(ham_data.chol, -2.0 * t2_green)
+
+
+def _components_pt_thouless_rw_rh_full(
+    walker: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: PtccsdThoulessModeMeasCtx,
+    trial_data: PtccsdThoulessModeTrial,
+) -> jax.Array:
+    """Reference full-Green components retained as a test oracle."""
 
     green, green_occ, greenp = _thouless_green_blocks(walker, trial_data)
     h1 = ham_data.h1
@@ -307,6 +392,133 @@ def components_pt_thouless_rw_rh(
         )
     )
     e2_2 = e2_0 * theta2 + 4.0 * (-(lt2g @ lg) + e2_2_2_2) + e2_2_3
+
+    electronic_0 = e1_0 + e2_0
+    h_t = e1_2 + e2_2
+    return jnp.stack([theta2, electronic_0, h_t])
+
+
+def components_pt_thouless_rw_rh(
+    walker: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: PtccsdThoulessModeMeasCtx,
+    trial_data: PtccsdThoulessModeTrial,
+) -> jax.Array:
+    """Return PT2/Thouless components using half-Green Cholesky contractions.
+
+    With ``G = C.conj() @ R``, the full-Green implementation forms Cholesky
+    intermediates of shape ``(n_chol, norb, norb)``.  This implementation
+    factors those contractions through ``R`` and keeps their largest shape at
+    ``(n_chol, nocc, norb)`` without changing the estimator algebra.
+    """
+
+    half_green, green, green_rows, green_occ, greenp = _thouless_half_green_blocks(
+        walker,
+        trial_data,
+    )
+    h1 = ham_data.h1
+    chol = ham_data.chol
+
+    hg = jnp.einsum("pq,pq->", h1, green, optimize="optimal")
+    e1_0 = 2.0 * hg
+    _, t2_green, theta2 = _mode_t2_green_factors(
+        trial_data,
+        green_occ,
+        greenp,
+        green_rows=green_rows,
+    )
+    e1_2 = 2.0 * hg * theta2 - 2.0 * jnp.einsum(
+        "pq,pq->", h1, t2_green, optimize="optimal"
+    )
+
+    # The determinant-reference terms have the same half-rotated form as the
+    # corresponding CISD contractions.
+    lg = jnp.einsum(
+        "giq,iq->g",
+        meas_ctx.rot_chol,
+        half_green,
+        optimize="optimal",
+    )
+    lg1 = jnp.einsum(
+        "gip,jp->gij",
+        meas_ctx.rot_chol,
+        half_green,
+        optimize="optimal",
+    )
+    e2_0 = 2.0 * (lg @ lg) - jnp.sum(lg1 * jnp.swapaxes(lg1, -1, -2))
+
+    lt2g = _chol_contract(chol, t2_green)
+    e2_2_2_1 = -(lt2g @ lg)
+
+    reference_occ = trial_data.mo_t.conj()[: trial_data.nocc, :]
+    if meas_ctx.memory_mode == "low":
+        zero = jnp.zeros((), dtype=jnp.result_type(half_green, chol, t2_green))
+
+        def scan_doubles(carry, xs):
+            e222_acc, e223_acc = carry
+            chol_i, rot_chol_i = xs
+            gl_half_i = jnp.einsum(
+                "ir,qr->iq",
+                half_green,
+                chol_i,
+                optimize="optimal",
+            )
+            lt2_half_i = jnp.einsum(
+                "ir,qr->iq",
+                rot_chol_i,
+                t2_green,
+                optimize="optimal",
+            )
+            e222_acc = e222_acc + 0.5 * jnp.einsum(
+                "iq,iq->", gl_half_i, lt2_half_i, optimize="optimal"
+            )
+
+            gl_occ_i = reference_occ @ gl_half_i
+            glgp_i = jnp.einsum("pi,it->pt", gl_occ_i, greenp, optimize="optimal")
+            e223_i = mode_quadratic_matrices(
+                trial_data,
+                glgp_i[None, ...],
+                n_mode_chunks=meas_ctx.n_mode_chunks,
+            )[0]
+            return (e222_acc, e223_acc + e223_i), None
+
+        (e2_2_2_2, e2_2_3), _ = jax.lax.scan(
+            scan_doubles,
+            (zero, zero),
+            (chol, meas_ctx.rot_chol),
+        )
+    else:
+        gl_half = jnp.einsum(
+            "ir,gqr->giq",
+            half_green,
+            chol,
+            optimize="optimal",
+        )
+        lt2_half = jnp.einsum(
+            "gir,qr->giq",
+            meas_ctx.rot_chol,
+            t2_green,
+            optimize="optimal",
+        )
+        e2_2_2_2 = 0.5 * jnp.einsum(
+            "giq,giq->", gl_half, lt2_half, optimize="optimal"
+        )
+
+        gl_occ = jnp.einsum(
+            "ji,gip->gjp",
+            reference_occ,
+            gl_half,
+            optimize="optimal",
+        )
+        glgp = jnp.einsum("gpi,it->gpt", gl_occ, greenp, optimize="optimal")
+        e2_2_3 = jnp.sum(
+            mode_quadratic_matrices(
+                trial_data,
+                glgp,
+                n_mode_chunks=meas_ctx.n_mode_chunks,
+            )
+        )
+    e2_2 = e2_0 * theta2 + 4.0 * (e2_2_2_1 + e2_2_2_2) + e2_2_3
 
     electronic_0 = e1_0 + e2_0
     h_t = e1_2 + e2_2
@@ -380,6 +592,7 @@ def make_ptccsd_thouless_mode_meas_ops(
     *,
     n_mode_chunks: int = 1,
     exponentiate_t2: bool = True,
+    memory_mode: Literal["low", "high"] = "high",
 ) -> MeasOps:
     if sys.nup != sys.ndn or sys.walker_kind.lower() != "restricted":
         raise ValueError(
@@ -397,6 +610,7 @@ def make_ptccsd_thouless_mode_meas_ops(
             ham_data,
             trial_data,
             n_mode_chunks=n_mode_chunks,
+            memory_mode=memory_mode,
         ),
         kernels={
             k_force_bias: force_bias_pt_thouless_rw_rh,
@@ -410,6 +624,7 @@ def make_ptccsd_thouless_mode_estimator_ops(
     sys: System,
     *,
     n_mode_chunks: int = 1,
+    memory_mode: Literal["low", "high"] = "high",
 ) -> EstimatorOps:
     """Build the common mode-native PT2/Thouless projected estimator."""
 
@@ -426,5 +641,6 @@ def make_ptccsd_thouless_mode_estimator_ops(
             ham_data,
             trial_data,
             n_mode_chunks=n_mode_chunks,
+            memory_mode=memory_mode,
         ),
     )

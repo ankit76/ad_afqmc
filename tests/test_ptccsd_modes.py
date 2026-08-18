@@ -21,6 +21,8 @@ from trot.meas.ptccsd import energy_components_pt_rw_rh as pt_dense_inverse_comp
 from trot.meas.ptccsd import energy_pt_rw_rh as pt_dense_energy
 from trot.meas.ptccsd import force_bias_pt_rw_rh as pt_dense_force_bias
 from trot.meas.ptccsd_modes import (
+    _components_pt_thouless_rw_rh_full,
+    _force_bias_pt_thouless_rw_rh_full,
     build_ptccsd_mode_meas_ctx,
     build_ptccsd_thouless_mode_meas_ctx,
     components_pt_rw_rh,
@@ -221,6 +223,98 @@ def test_dense_pt2_components_and_full_rank_modes_match(pt_cases: PtCases):
     np.testing.assert_allclose(combine(mode_avg), combine(dense_avg), rtol=3.0e-10, atol=3.0e-10)
 
 
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+@pytest.mark.parametrize("n_mode_chunks", [1, 2, 5])
+def test_half_green_thouless_kernels_match_full_green_oracle(
+    pt_cases: PtCases,
+    n_mode_chunks: int,
+    memory_mode: str,
+):
+    case = pt_cases
+    ctx = build_ptccsd_thouless_mode_meas_ctx(
+        case.ham,
+        case.mode_thouless,
+        n_mode_chunks=n_mode_chunks,
+        memory_mode=memory_mode,
+    )
+
+    full_force_bias = jax.vmap(
+        _force_bias_pt_thouless_rw_rh_full,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, case.mode_thouless)
+    half_force_bias = jax.vmap(
+        pt_thouless_mode_force_bias,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, case.mode_thouless)
+    np.testing.assert_allclose(half_force_bias, full_force_bias, rtol=3.0e-10, atol=3.0e-10)
+
+    full_components = jax.vmap(
+        _components_pt_thouless_rw_rh_full,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, case.mode_thouless)
+    half_components = jax.vmap(
+        components_pt_thouless_rw_rh,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, case.mode_thouless)
+    np.testing.assert_allclose(half_components, full_components, rtol=3.0e-10, atol=3.0e-10)
+
+    half_energy = jax.vmap(
+        pt_thouless_mode_energy,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, case.mode_thouless)
+    full_energy = (
+        case.ham.h0
+        + full_components[:, 1]
+        + full_components[:, 2]
+        - full_components[:, 0] * full_components[:, 1]
+    )
+    np.testing.assert_allclose(half_energy, full_energy, rtol=3.0e-10, atol=3.0e-10)
+
+
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+def test_half_green_thouless_kernels_match_full_oracle_in_complex_gauge(
+    pt_cases: PtCases,
+    memory_mode: str,
+):
+    """Exercise the identities without assuming the occupied block of C is I."""
+
+    case = pt_cases
+    occupied_gauge = jnp.asarray(
+        [[1.1 + 0.2j, -0.1 + 0.05j], [0.08 - 0.04j, 0.9 - 0.15j]]
+    )
+    trial = PtccsdThoulessModeTrial(
+        mo_t=case.mode_thouless.mo_t @ occupied_gauge,
+        eigenvalues=case.mode_thouless.eigenvalues,
+        modes=case.mode_thouless.modes,
+    )
+    ctx = build_ptccsd_thouless_mode_meas_ctx(
+        case.ham,
+        trial,
+        n_mode_chunks=2,
+        memory_mode=memory_mode,
+    )
+
+    full_force_bias = jax.vmap(
+        _force_bias_pt_thouless_rw_rh_full,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, trial)
+    half_force_bias = jax.vmap(
+        pt_thouless_mode_force_bias,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, trial)
+    np.testing.assert_allclose(half_force_bias, full_force_bias, rtol=3.0e-10, atol=3.0e-10)
+
+    full_components = jax.vmap(
+        _components_pt_thouless_rw_rh_full,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, trial)
+    half_components = jax.vmap(
+        components_pt_thouless_rw_rh,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, trial)
+    np.testing.assert_allclose(half_components, full_components, rtol=3.0e-10, atol=3.0e-10)
+
+
 def test_mode_meas_factories_expose_guide_kernels(pt_cases: PtCases):
     from trot.meas.ptccsd_modes import (
         make_ptccsd_mode_meas_ops,
@@ -231,3 +325,4 @@ def test_mode_meas_factories_expose_guide_kernels(pt_cases: PtCases):
     thouless_ops = make_ptccsd_thouless_mode_meas_ops(pt_cases.sys)
     assert pt_ops.has_kernel(k_force_bias) and pt_ops.has_kernel(k_energy)
     assert thouless_ops.has_kernel(k_force_bias) and thouless_ops.has_kernel(k_energy)
+    assert thouless_ops.build_meas_ctx(pt_cases.ham, pt_cases.mode_thouless).memory_mode == "high"

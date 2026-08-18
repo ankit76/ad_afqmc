@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -12,7 +13,6 @@ from ..ham.chol import HamChol
 from ..trial.ptuccsd_thouless import (
     PtuccsdThoulessTrial,
     greenp_from_green,
-    greens_unrestricted,
     overlap_r,
     overlap_u,
     reference_overlap_r,
@@ -24,11 +24,15 @@ o_pt_components = "pt_components"
 
 @dataclass(frozen=True)
 class PtuccsdThoulessMeasCfg:
-    memory_mode: str = "low"
+    memory_mode: Literal["low", "high"] = "high"
     mixed_real_dtype: jnp.dtype = jnp.float64
     mixed_complex_dtype: jnp.dtype = jnp.complex128
     mixed_real_dtype_testing: jnp.dtype = jnp.float32
     mixed_complex_dtype_testing: jnp.dtype = jnp.complex64
+
+    def __post_init__(self) -> None:
+        if self.memory_mode not in {"low", "high"}:
+            raise ValueError("memory_mode must be 'low' or 'high'.")
 
 
 @tree_util.register_pytree_node_class
@@ -36,16 +40,24 @@ class PtuccsdThoulessMeasCfg:
 class PtuccsdThoulessMeasCtx:
     h1_b: jax.Array
     chol_b: jax.Array
+    rot_chol_a: jax.Array
+    rot_chol_b: jax.Array
     cfg: PtuccsdThoulessMeasCfg
 
     def tree_flatten(self):
-        return (self.h1_b, self.chol_b), (self.cfg,)
+        return (self.h1_b, self.chol_b, self.rot_chol_a, self.rot_chol_b), (self.cfg,)
 
     @classmethod
     def tree_unflatten(cls, aux, children):
         (cfg,) = aux
-        h1_b, chol_b = children
-        return cls(h1_b=h1_b, chol_b=chol_b, cfg=cfg)
+        h1_b, chol_b, rot_chol_a, rot_chol_b = children
+        return cls(
+            h1_b=h1_b,
+            chol_b=chol_b,
+            rot_chol_a=rot_chol_a,
+            rot_chol_b=rot_chol_b,
+            cfg=cfg,
+        )
 
 
 def build_ptuccsd_thouless_meas_ctx(
@@ -62,20 +74,75 @@ def build_ptuccsd_thouless_meas_ctx(
     h1_sym = 0.5 * (ham_data.h1 + ham_data.h1.T.conj())
     h1_b = cbh @ h1_sym @ cb
     chol_b = jnp.einsum("pi,gij,jq->gpq", cbh, ham_data.chol, cb, optimize="optimal")
-    return PtuccsdThoulessMeasCtx(h1_b=h1_b, chol_b=chol_b, cfg=cfg)
+    rot_chol_a = jnp.einsum(
+        "pi,gpq->giq",
+        trial_data.mo_t_a.conj(),
+        ham_data.chol,
+        optimize="optimal",
+    )
+    rot_chol_b = jnp.einsum(
+        "pi,gpq->giq",
+        trial_data.mo_t_b.conj(),
+        chol_b,
+        optimize="optimal",
+    )
+    return PtuccsdThoulessMeasCtx(
+        h1_b=h1_b,
+        chol_b=chol_b,
+        rot_chol_a=rot_chol_a,
+        rot_chol_b=rot_chol_b,
+        cfg=cfg,
+    )
 
 
 def _green_blocks(
     walker: tuple[jax.Array, jax.Array],
     trial_data: PtuccsdThoulessTrial,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
-    green_a, green_b = greens_unrestricted(walker, trial_data)
+    _, _, green_a, green_b, green_occ_a, green_occ_b, greenp_a, greenp_b = (
+        _half_green_blocks(walker, trial_data)
+    )
+    return green_a, green_b, green_occ_a, green_occ_b, greenp_a, greenp_b
+
+
+def _half_green_blocks(
+    walker: tuple[jax.Array, jax.Array],
+    trial_data: PtuccsdThoulessTrial,
+) -> tuple[
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+]:
+    """Return spin-resolved half and full Green-function blocks."""
+
+    walker_a, walker_b = walker
+    walker_b_beta = trial_data.mo_coeff_b.conj().T @ walker_b
+    overlap_a = trial_data.mo_t_a.conj().T @ walker_a
+    overlap_b = trial_data.mo_t_b.conj().T @ walker_b_beta
+    half_green_a = jnp.linalg.solve(overlap_a.T, walker_a.T)
+    half_green_b = jnp.linalg.solve(overlap_b.T, walker_b_beta.T)
+    green_a = trial_data.mo_t_a.conj() @ half_green_a
+    green_b = trial_data.mo_t_b.conj() @ half_green_b
     noa, nob = trial_data.nocc
     green_occ_a = green_a[:noa, noa:]
     green_occ_b = green_b[:nob, nob:]
     greenp_a = greenp_from_green(green_a, noa)
     greenp_b = greenp_from_green(green_b, nob)
-    return green_a, green_b, green_occ_a, green_occ_b, greenp_a, greenp_b
+    return (
+        half_green_a,
+        half_green_b,
+        green_a,
+        green_b,
+        green_occ_a,
+        green_occ_b,
+        greenp_a,
+        greenp_b,
+    )
 
 
 def _chol_contract(chol: jax.Array, mat: jax.Array) -> jax.Array:
@@ -144,12 +211,14 @@ def force_bias_kernel_rw_rh(
     )
 
 
-def _energy_components_uw_rh(
+def _energy_components_uw_rh_full(
     walker: tuple[jax.Array, jax.Array],
     ham_data: HamChol,
     meas_ctx: PtuccsdThoulessMeasCtx,
     trial_data: PtuccsdThoulessTrial,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Reference full-Green implementation retained as a test oracle."""
+
     green_a, green_b, green_occ_a, green_occ_b, greenp_a, greenp_b = _green_blocks(
         walker, trial_data
     )
@@ -285,6 +354,227 @@ def _energy_components_uw_rh(
     return theta2, electronic_0, h_t
 
 
+def _energy_components_uw_rh(
+    walker: tuple[jax.Array, jax.Array],
+    ham_data: HamChol,
+    meas_ctx: PtuccsdThoulessMeasCtx,
+    trial_data: PtuccsdThoulessTrial,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Spin-resolved PT2-UCCSD components with selectable doubles memory mode."""
+
+    (
+        half_green_a,
+        half_green_b,
+        green_a,
+        green_b,
+        green_occ_a,
+        green_occ_b,
+        greenp_a,
+        greenp_b,
+    ) = _half_green_blocks(walker, trial_data)
+    t2aa, t2ab, t2bb = trial_data.t2aa, trial_data.t2ab, trial_data.t2bb
+    noa, nob = trial_data.nocc
+    cfg = meas_ctx.cfg
+
+    h1_a = 0.5 * (ham_data.h1 + ham_data.h1.T.conj())
+    h1_b = meas_ctx.h1_b
+    chol_a = ham_data.chol
+    chol_b = meas_ctx.chol_b
+    rot_chol_a = meas_ctx.rot_chol_a
+    rot_chol_b = meas_ctx.rot_chol_b
+
+    e1_0 = jnp.einsum("ij,ij->", h1_a, green_a, optimize="optimal")
+    e1_0 += jnp.einsum("ij,ij->", h1_b, green_b, optimize="optimal")
+
+    t2g_a = 0.25 * jnp.einsum(
+        "ptqu,pt->qu",
+        t2aa.astype(cfg.mixed_real_dtype),
+        green_occ_a.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
+    )
+    t2g_b = 0.25 * jnp.einsum(
+        "ptqu,pt->qu",
+        t2bb.astype(cfg.mixed_real_dtype),
+        green_occ_b.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
+    )
+    t2g_ab_a = jnp.einsum(
+        "ptqu,qu->pt",
+        t2ab.astype(cfg.mixed_real_dtype),
+        green_occ_b.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
+    )
+    t2g_ab_b = jnp.einsum(
+        "ptqu,pt->qu",
+        t2ab.astype(cfg.mixed_real_dtype),
+        green_occ_a.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
+    )
+    theta2a = jnp.einsum("qu,qu->", t2g_a, green_occ_a, optimize="optimal")
+    theta2b = jnp.einsum("qu,qu->", t2g_b, green_occ_b, optimize="optimal")
+    theta2ab = jnp.einsum("pt,pt->", t2g_ab_a, green_occ_a, optimize="optimal")
+    theta2 = 2.0 * (theta2a + theta2b) + theta2ab
+
+    green_rows_a = green_a[:noa, :]
+    green_rows_b = green_b[:nob, :]
+    t2_green_a = (greenp_a @ t2g_a.T) @ green_rows_a
+    t2_green_ab_a = (greenp_a @ t2g_ab_a.T) @ green_rows_a
+    t2_green_b = (greenp_b @ t2g_b.T) @ green_rows_b
+    t2_green_ab_b = (greenp_b @ t2g_ab_b.T) @ green_rows_b
+    combo_a = 4.0 * t2_green_a + t2_green_ab_a
+    combo_b = 4.0 * t2_green_b + t2_green_ab_b
+    e1_2 = e1_0 * theta2
+    e1_2 -= jnp.einsum("ij,ij->", h1_a, combo_a, optimize="optimal")
+    e1_2 -= jnp.einsum("ij,ij->", h1_b, combo_b, optimize="optimal")
+
+    lg_a = jnp.einsum("giq,iq->g", rot_chol_a, half_green_a, optimize="optimal")
+    lg_b = jnp.einsum("giq,iq->g", rot_chol_b, half_green_b, optimize="optimal")
+    lg = lg_a + lg_b
+    lg1_a = jnp.einsum(
+        "gip,jp->gij", rot_chol_a, half_green_a, optimize="optimal"
+    )
+    lg1_b = jnp.einsum(
+        "gip,jp->gij", rot_chol_b, half_green_b, optimize="optimal"
+    )
+    e2_0 = 0.5 * (lg @ lg)
+    e2_0 -= 0.5 * (
+        jnp.sum(lg1_a * jnp.swapaxes(lg1_a, -1, -2))
+        + jnp.sum(lg1_b * jnp.swapaxes(lg1_b, -1, -2))
+    )
+    electronic_0 = e1_0 + e2_0
+
+    combo2_a = 8.0 * t2_green_a + 2.0 * t2_green_ab_a
+    combo2_b = 8.0 * t2_green_b + 2.0 * t2_green_ab_b
+    lt2g_a = _chol_contract(chol_a, combo2_a)
+    lt2g_b = _chol_contract(chol_b, combo2_b)
+    e2_2_2_1 = -0.5 * ((lt2g_a + lt2g_b) @ lg)
+
+    reference_occ_a = trial_data.mo_t_a.conj()[:noa, :]
+    reference_occ_b = trial_data.mo_t_b.conj()[:nob, :]
+    if cfg.memory_mode == "low":
+        zero_e222 = jnp.zeros_like(e2_2_2_1)
+        zero_e23 = jnp.array(0.0, dtype=cfg.mixed_complex_dtype_testing)
+
+        def scan_doubles(carry, xs):
+            e222_acc, e23_acc = carry
+            chol_a_i, rot_chol_a_i, chol_b_i, rot_chol_b_i = xs
+            gl_half_a_i = jnp.einsum(
+                "pj,ji->pi", half_green_a, chol_a_i, optimize="optimal"
+            )
+            gl_half_b_i = jnp.einsum(
+                "pj,ji->pi", half_green_b, chol_b_i, optimize="optimal"
+            )
+            lcombo_a_i = jnp.einsum(
+                "pi,ji->pj", rot_chol_a_i, combo2_a, optimize="optimal"
+            )
+            lcombo_b_i = jnp.einsum(
+                "pi,ji->pj", rot_chol_b_i, combo2_b, optimize="optimal"
+            )
+            e222_acc += 0.5 * (
+                jnp.einsum("pi,pi->", gl_half_a_i, lcombo_a_i, optimize="optimal")
+                + jnp.einsum("pi,pi->", gl_half_b_i, lcombo_b_i, optimize="optimal")
+            )
+
+            gl_occ_a_i = reference_occ_a @ gl_half_a_i
+            gl_occ_b_i = reference_occ_b @ gl_half_b_i
+            glgp_a_i = jnp.einsum(
+                "pi,it->pt", gl_occ_a_i, greenp_a, optimize="optimal"
+            ).astype(cfg.mixed_complex_dtype_testing)
+            glgp_b_i = jnp.einsum(
+                "pi,it->pt", gl_occ_b_i, greenp_b, optimize="optimal"
+            ).astype(cfg.mixed_complex_dtype_testing)
+            l2t2_a = 0.5 * jnp.einsum(
+                "pt,qu,ptqu->",
+                glgp_a_i,
+                glgp_a_i,
+                t2aa.astype(cfg.mixed_real_dtype_testing),
+                optimize="optimal",
+            )
+            l2t2_b = 0.5 * jnp.einsum(
+                "pt,qu,ptqu->",
+                glgp_b_i,
+                glgp_b_i,
+                t2bb.astype(cfg.mixed_real_dtype_testing),
+                optimize="optimal",
+            )
+            l2t2_ab = jnp.einsum(
+                "pt,qu,ptqu->",
+                glgp_a_i,
+                glgp_b_i,
+                t2ab.astype(cfg.mixed_real_dtype_testing),
+                optimize="optimal",
+            )
+            return (e222_acc, e23_acc + l2t2_a + l2t2_b + l2t2_ab), None
+
+        (e2_2_2_2, e2_2_3), _ = jax.lax.scan(
+            scan_doubles,
+            (zero_e222, zero_e23),
+            (chol_a, rot_chol_a, chol_b, rot_chol_b),
+        )
+    else:
+        gl_half_a = jnp.einsum(
+            "pj,gji->gpi",
+            half_green_a.astype(cfg.mixed_complex_dtype),
+            chol_a.astype(cfg.mixed_real_dtype),
+            optimize="optimal",
+        )
+        gl_half_b = jnp.einsum(
+            "pj,gji->gpi",
+            half_green_b.astype(cfg.mixed_complex_dtype),
+            chol_b.astype(cfg.mixed_real_dtype),
+            optimize="optimal",
+        )
+        lcombo_a = jnp.einsum(
+            "gpi,ji->gpj", rot_chol_a, combo2_a, optimize="optimal"
+        )
+        lcombo_b = jnp.einsum(
+            "gpi,ji->gpj", rot_chol_b, combo2_b, optimize="optimal"
+        )
+        e2_2_2_2 = 0.5 * (
+            jnp.einsum("gpi,gpi->", gl_half_a, lcombo_a, optimize="optimal")
+            + jnp.einsum("gpi,gpi->", gl_half_b, lcombo_b, optimize="optimal")
+        )
+
+        gl_occ_a = jnp.einsum(
+            "ij,gjq->giq", reference_occ_a, gl_half_a, optimize="optimal"
+        )
+        gl_occ_b = jnp.einsum(
+            "ij,gjq->giq", reference_occ_b, gl_half_b, optimize="optimal"
+        )
+        glgp_a = jnp.einsum(
+            "gpi,it->gpt", gl_occ_a, greenp_a, optimize="optimal"
+        ).astype(cfg.mixed_complex_dtype_testing)
+        glgp_b = jnp.einsum(
+            "gpi,it->gpt", gl_occ_b, greenp_b, optimize="optimal"
+        ).astype(cfg.mixed_complex_dtype_testing)
+        l2t2_a = 0.5 * jnp.einsum(
+            "gpt,gqu,ptqu->g",
+            glgp_a,
+            glgp_a,
+            t2aa.astype(cfg.mixed_real_dtype_testing),
+            optimize="optimal",
+        )
+        l2t2_b = 0.5 * jnp.einsum(
+            "gpt,gqu,ptqu->g",
+            glgp_b,
+            glgp_b,
+            t2bb.astype(cfg.mixed_real_dtype_testing),
+            optimize="optimal",
+        )
+        l2t2_ab = jnp.einsum(
+            "gpt,gqu,ptqu->g",
+            glgp_a,
+            glgp_b,
+            t2ab.astype(cfg.mixed_real_dtype_testing),
+            optimize="optimal",
+        )
+        e2_2_3 = jnp.sum(l2t2_a + l2t2_b + l2t2_ab)
+
+    e2_2 = e2_0 * theta2 + e2_2_2_1 + e2_2_2_2 + e2_2_3
+    h_t = e1_2 + e2_2
+    return theta2, electronic_0, h_t
+
+
 def components_ptuccsd_thouless_uw_rh(
     walker: tuple[jax.Array, jax.Array],
     ham_data: HamChol,
@@ -333,7 +623,7 @@ def energy_kernel_rw_rh(
 
 def make_ptuccsd_thouless_meas_ops(
     sys: System,
-    memory_mode: str = "low",
+    memory_mode: Literal["low", "high"] = "high",
     mixed_precision: bool = False,
     testing: bool = False,
 ) -> MeasOps:
@@ -374,7 +664,7 @@ def make_ptuccsd_thouless_meas_ops(
 
 def make_ptuccsd_thouless_estimator_ops(
     sys: System,
-    memory_mode: str = "low",
+    memory_mode: Literal["low", "high"] = "high",
     mixed_precision: bool = False,
     testing: bool = False,
 ) -> EstimatorOps:
