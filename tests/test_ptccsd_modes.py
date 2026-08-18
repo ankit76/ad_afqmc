@@ -32,6 +32,8 @@ from trot.meas.ptccsd_modes import (
     force_bias_pt_rw_rh as pt_mode_force_bias,
     force_bias_pt_thouless_rw_rh as pt_thouless_mode_force_bias,
     inverse_guide_components_pt_rw_rh as pt_mode_inverse_components,
+    make_ptccsd_mode_meas_ops,
+    make_ptccsd_thouless_mode_meas_ops,
 )
 from trot.meas.ptccsd_thouless import build_ptccsd_thouless_meas_ctx
 from trot.meas.ptccsd_thouless import energy_pt_rw_rh as pt_thouless_dense_energy
@@ -316,13 +318,109 @@ def test_half_green_thouless_kernels_match_full_oracle_in_complex_gauge(
 
 
 def test_mode_meas_factories_expose_guide_kernels(pt_cases: PtCases):
-    from trot.meas.ptccsd_modes import (
-        make_ptccsd_mode_meas_ops,
-        make_ptccsd_thouless_mode_meas_ops,
-    )
-
     pt_ops = make_ptccsd_mode_meas_ops(pt_cases.sys)
     thouless_ops = make_ptccsd_thouless_mode_meas_ops(pt_cases.sys)
     assert pt_ops.has_kernel(k_force_bias) and pt_ops.has_kernel(k_energy)
     assert thouless_ops.has_kernel(k_force_bias) and thouless_ops.has_kernel(k_energy)
     assert thouless_ops.build_meas_ctx(pt_cases.ham, pt_cases.mode_thouless).memory_mode == "high"
+
+
+def test_ptccsd_mode_mixed_precision_matches_cisd_accuracy_policy(pt_cases: PtCases):
+    case = pt_cases
+    mixed_trial = PtccsdModeTrial(
+        t1=case.mode.t1,
+        eigenvalues=case.mode.eigenvalues,
+        modes=case.mode.modes.astype(jnp.float32),
+    )
+    full_ctx = build_ptccsd_mode_meas_ctx(case.ham, case.mode, n_mode_chunks=2)
+    mixed_ops = make_ptccsd_mode_meas_ops(case.sys, n_mode_chunks=2)
+    mixed_ctx = mixed_ops.build_meas_ctx(case.ham, mixed_trial)
+
+    assert mixed_ctx.cfg.mixed_real_dtype == jnp.float32
+    assert mixed_ctx.cfg.mixed_complex_dtype == jnp.complex64
+
+    full_fb = jax.vmap(pt_mode_force_bias, in_axes=(0, None, None, None))(
+        case.walkers, case.ham, full_ctx, case.mode
+    )
+    mixed_fb = jax.vmap(pt_mode_force_bias, in_axes=(0, None, None, None))(
+        case.walkers, case.ham, mixed_ctx, mixed_trial
+    )
+    full_energy = jax.vmap(pt_mode_energy, in_axes=(0, None, None, None))(
+        case.walkers, case.ham, full_ctx, case.mode
+    )
+    mixed_energy = jax.vmap(pt_mode_energy, in_axes=(0, None, None, None))(
+        case.walkers, case.ham, mixed_ctx, mixed_trial
+    )
+    full_overlap = jax.vmap(pt_mode_overlap, in_axes=(0, None))(case.walkers, case.mode)
+    mixed_overlap = jax.vmap(pt_mode_overlap, in_axes=(0, None))(
+        case.walkers, mixed_trial
+    )
+
+    overlap_error = float(
+        jnp.linalg.norm(mixed_overlap - full_overlap) / jnp.linalg.norm(full_overlap)
+    )
+    fb_error = float(jnp.linalg.norm(mixed_fb - full_fb) / jnp.linalg.norm(full_fb))
+    energy_error = float(jnp.max(jnp.abs(mixed_energy - full_energy)))
+    assert overlap_error < 1.0e-5
+    assert fb_error < 2.0e-5
+    assert energy_error < 2.0e-4
+
+
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+def test_ptccsd_thouless_mixed_precision_matches_cisd_accuracy_policy(
+    pt_cases: PtCases,
+    memory_mode: str,
+):
+    case = pt_cases
+    mixed_trial = PtccsdThoulessModeTrial(
+        mo_t=case.mode_thouless.mo_t,
+        eigenvalues=case.mode_thouless.eigenvalues,
+        modes=case.mode_thouless.modes.astype(jnp.float32),
+    )
+    full_ctx = build_ptccsd_thouless_mode_meas_ctx(
+        case.ham,
+        case.mode_thouless,
+        n_mode_chunks=2,
+        memory_mode=memory_mode,
+    )
+    mixed_ops = make_ptccsd_thouless_mode_meas_ops(
+        case.sys,
+        n_mode_chunks=2,
+        memory_mode=memory_mode,
+    )
+    mixed_ctx = mixed_ops.build_meas_ctx(case.ham, mixed_trial)
+
+    assert mixed_ctx.cfg.mixed_real_dtype == jnp.float32
+    assert mixed_ctx.cfg.mixed_complex_dtype == jnp.complex64
+
+    full_fb = jax.vmap(
+        pt_thouless_mode_force_bias,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, full_ctx, case.mode_thouless)
+    mixed_fb = jax.vmap(
+        pt_thouless_mode_force_bias,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, mixed_ctx, mixed_trial)
+    full_components = jax.vmap(
+        components_pt_thouless_rw_rh,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, full_ctx, case.mode_thouless)
+    mixed_components = jax.vmap(
+        components_pt_thouless_rw_rh,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, mixed_ctx, mixed_trial)
+    full_energy = jax.vmap(
+        pt_thouless_mode_energy,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, full_ctx, case.mode_thouless)
+    mixed_energy = jax.vmap(
+        pt_thouless_mode_energy,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, mixed_ctx, mixed_trial)
+
+    fb_error = float(jnp.linalg.norm(mixed_fb - full_fb) / jnp.linalg.norm(full_fb))
+    component_error = float(jnp.max(jnp.abs(mixed_components - full_components)))
+    energy_error = float(jnp.max(jnp.abs(mixed_energy - full_energy)))
+    assert fb_error < 2.0e-5
+    assert component_error < 2.0e-4
+    assert energy_error < 2.0e-4

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from trot.core.ops import MeasOps, k_energy
+from trot.core.ops import MeasOps, k_energy, k_force_bias
 from trot.core.system import System
 from trot.ham.chol import HamChol
 from trot.meas.pt2ccsd import Pt2ccsdMeasCfg
@@ -321,6 +321,60 @@ def test_open_shell_restricted_components_compile_with_mixed_precision():
     assert low_components.shape == (3,)
     assert np.all(np.isfinite(np.asarray(components)))
     assert np.all(np.isfinite(np.asarray(low_components)))
+
+
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+def test_ptuccsd_mixed_precision_matches_ucisd_accuracy_policy(memory_mode: str):
+    rng = np.random.default_rng(2419)
+    norb, noa, nob = 6, 3, 2
+    nva, nvb = norb - noa, norb - nob
+    beta_rotation, _ = np.linalg.qr(
+        np.eye(norb) + 0.12 * rng.standard_normal((norb, norb))
+    )
+    trial = PtuccsdThoulessTrial(
+        mo_t_a=jnp.asarray(
+            np.vstack([np.eye(noa), 0.08 * rng.standard_normal((nva, noa))])
+        ),
+        mo_t_b=jnp.asarray(
+            np.vstack([np.eye(nob), 0.08 * rng.standard_normal((nvb, nob))])
+        ),
+        mo_coeff_b=jnp.asarray(beta_rotation),
+        t2aa=jnp.asarray(0.02 * _same_spin_tensor(rng, noa, nva)),
+        t2ab=jnp.asarray(0.02 * rng.standard_normal((noa, nva, nob, nvb))),
+        t2bb=jnp.asarray(0.02 * _same_spin_tensor(rng, nob, nvb)),
+    )
+    walker = jnp.asarray(
+        np.vstack([np.eye(noa), 0.1 * rng.standard_normal((nva, noa))])
+        + 0.05j * rng.standard_normal((norb, noa))
+    )
+    ham = _random_ham(rng, norb, nchol=7)
+    sys = System(norb=norb, nelec=(noa, nob), walker_kind="restricted")
+
+    full_ctx = build_ptuccsd_thouless_meas_ctx(
+        ham,
+        trial,
+        _double_cfg(memory_mode),
+    )
+    mixed_meas_ops = make_pt2uccsd_meas_ops(sys, memory_mode=memory_mode)
+    mixed_estimator_ops = make_pt2uccsd_estimator_ops(sys, memory_mode=memory_mode)
+    mixed_ctx = mixed_estimator_ops.build_estimator_ctx(ham, trial)
+
+    assert mixed_ctx.cfg.mixed_real_dtype == jnp.float32
+    assert mixed_ctx.cfg.mixed_complex_dtype == jnp.complex64
+
+    full_components = components_ptuccsd_thouless_rw_rh(walker, ham, full_ctx, trial)
+    mixed_components = mixed_estimator_ops.components(walker, ham, mixed_ctx, trial)
+    full_energy = energy_kernel_rw_rh(walker, ham, full_ctx, trial)
+    mixed_energy = energy_kernel_rw_rh(walker, ham, mixed_ctx, trial)
+    full_fb = force_bias_kernel_rw_rh(walker, ham, full_ctx, trial)
+    mixed_fb = mixed_meas_ops.require_kernel(k_force_bias)(walker, ham, mixed_ctx, trial)
+
+    fb_error = float(jnp.linalg.norm(mixed_fb - full_fb) / jnp.linalg.norm(full_fb))
+    component_error = float(jnp.max(jnp.abs(mixed_components - full_components)))
+    energy_error = float(jnp.abs(mixed_energy - full_energy))
+    assert fb_error < 2.0e-5
+    assert component_error < 2.0e-4
+    assert energy_error < 2.0e-4
 
 
 def test_trial_data_and_factories_support_restricted_walkers():

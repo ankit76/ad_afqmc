@@ -145,22 +145,86 @@ def _half_green_blocks(
     )
 
 
-def _chol_contract(chol: jax.Array, mat: jax.Array) -> jax.Array:
-    return jnp.einsum("gij,ij->g", chol, mat, optimize="optimal")
+def _chol_contract(
+    chol: jax.Array,
+    mat: jax.Array,
+    cfg: PtuccsdThoulessMeasCfg,
+) -> jax.Array:
+    """Contract a real Cholesky tensor with a complex matrix in mixed precision."""
+
+    chol_r = chol.astype(cfg.mixed_real_dtype)
+    mat_r = jnp.real(mat).astype(cfg.mixed_real_dtype)
+    mat_i = jnp.imag(mat).astype(cfg.mixed_real_dtype)
+    real_part = jnp.einsum("gij,ij->g", chol_r, mat_r, optimize="optimal")
+    imag_part = jnp.einsum("gij,ij->g", chol_r, mat_i, optimize="optimal")
+    imag_unit = jnp.asarray(1.0j, dtype=cfg.mixed_complex_dtype)
+    return real_part.astype(cfg.mixed_complex_dtype) + imag_unit * imag_part.astype(
+        cfg.mixed_complex_dtype
+    )
+
+
+def _energy_gl_batched(
+    half_green: jax.Array,
+    chol: jax.Array,
+    cfg: PtuccsdThoulessMeasCfg,
+) -> jax.Array:
+    """Form all half-Green--Cholesky products without dtype promotion."""
+
+    half_green_r = jnp.real(half_green).astype(cfg.mixed_real_dtype)
+    half_green_i = jnp.imag(half_green).astype(cfg.mixed_real_dtype)
+    chol_r = chol.astype(cfg.mixed_real_dtype)
+    real_part = jnp.einsum("pj,gji->gpi", half_green_r, chol_r, optimize="optimal")
+    imag_part = jnp.einsum("pj,gji->gpi", half_green_i, chol_r, optimize="optimal")
+    imag_unit = jnp.asarray(1.0j, dtype=cfg.mixed_complex_dtype)
+    return real_part.astype(cfg.mixed_complex_dtype) + imag_unit * imag_part.astype(
+        cfg.mixed_complex_dtype
+    )
+
+
+def _energy_gl_scalar(
+    half_green: jax.Array,
+    chol_i: jax.Array,
+    cfg: PtuccsdThoulessMeasCfg,
+) -> jax.Array:
+    """Scalar-Cholesky counterpart of :func:`_energy_gl_batched`."""
+
+    half_green_r = jnp.real(half_green).astype(cfg.mixed_real_dtype)
+    half_green_i = jnp.imag(half_green).astype(cfg.mixed_real_dtype)
+    chol_i_r = chol_i.astype(cfg.mixed_real_dtype)
+    real_part = jnp.einsum("pj,ji->pi", half_green_r, chol_i_r, optimize="optimal")
+    imag_part = jnp.einsum("pj,ji->pi", half_green_i, chol_i_r, optimize="optimal")
+    imag_unit = jnp.asarray(1.0j, dtype=cfg.mixed_complex_dtype)
+    return real_part.astype(cfg.mixed_complex_dtype) + imag_unit * imag_part.astype(
+        cfg.mixed_complex_dtype
+    )
 
 
 def _theta2_force_terms(
     trial_data: PtuccsdThoulessTrial,
     green_occ_a: jax.Array,
     green_occ_b: jax.Array,
+    cfg: PtuccsdThoulessMeasCfg,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     t2aa, t2ab, t2bb = trial_data.t2aa, trial_data.t2ab, trial_data.t2bb
-    t2g_a = jnp.einsum("ptqu,pt->qu", t2aa, green_occ_a, optimize="optimal")
-    t2g_b = jnp.einsum("ptqu,pt->qu", t2bb, green_occ_b, optimize="optimal")
+    t2g_a = jnp.einsum(
+        "ptqu,pt->qu",
+        t2aa.astype(cfg.mixed_real_dtype),
+        green_occ_a.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
+    )
+    t2g_b = jnp.einsum(
+        "ptqu,pt->qu",
+        t2bb.astype(cfg.mixed_real_dtype),
+        green_occ_b.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
+    )
     theta2a = 0.5 * jnp.einsum("qu,qu->", t2g_a, green_occ_a, optimize="optimal")
     theta2b = 0.5 * jnp.einsum("qu,qu->", t2g_b, green_occ_b, optimize="optimal")
     t2g_ab_a = jnp.einsum(
-        "ptqu,qu->pt", t2ab, green_occ_b, optimize="optimal"
+        "ptqu,qu->pt",
+        t2ab.astype(cfg.mixed_real_dtype),
+        green_occ_b.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
     )
     theta2ab = jnp.einsum("pt,pt->", t2g_ab_a, green_occ_a, optimize="optimal")
     return theta2a + theta2b + theta2ab, t2g_a, t2g_b, t2g_ab_a
@@ -178,23 +242,30 @@ def force_bias_kernel_uw_rh(
     noa, nob = trial_data.nocc
     chol_a = ham_data.chol
     chol_b = meas_ctx.chol_b
+    cfg = meas_ctx.cfg
 
-    lg_a = _chol_contract(chol_a, green_a)
-    lg_b = _chol_contract(chol_b, green_b)
+    # Keep the determinant-reference force bias at full precision, matching
+    # the UCISD policy. Only the correlation correction is evaluated in the
+    # configured mixed precision below.
+    lg_a = jnp.einsum("gij,ij->g", chol_a, green_a, optimize="optimal")
+    lg_b = jnp.einsum("gij,ij->g", chol_b, green_b, optimize="optimal")
     f0 = lg_a + lg_b
 
     theta2, t2g_a, t2g_b, t2g_ab_a = _theta2_force_terms(
-        trial_data, green_occ_a, green_occ_b
+        trial_data, green_occ_a, green_occ_b, cfg
     )
     t2g_ab_b = jnp.einsum(
-        "ptqu,pt->qu", trial_data.t2ab, green_occ_a, optimize="optimal"
+        "ptqu,pt->qu",
+        trial_data.t2ab.astype(cfg.mixed_real_dtype),
+        green_occ_a.astype(cfg.mixed_complex_dtype),
+        optimize="optimal",
     )
     t2_green_a = (greenp_a @ (t2g_a + t2g_ab_a).T) @ green_a[:noa, :]
     t2_green_b = (greenp_b @ (t2g_b + t2g_ab_b).T) @ green_b[:nob, :]
 
     fb_2_1 = theta2 * f0
-    fb_2_2 = -_chol_contract(chol_a, t2_green_a) - _chol_contract(
-        chol_b, t2_green_b
+    fb_2_2 = -_chol_contract(chol_a, t2_green_a, cfg) - _chol_contract(
+        chol_b, t2_green_b, cfg
     )
     return f0 + fb_2_1 + fb_2_2 - f0 * theta2
 
@@ -274,8 +345,8 @@ def _energy_components_uw_rh_full(
     e1_2_2 -= jnp.einsum("ij,ij->", h1_b, combo_b, optimize="optimal")
     e1_2 = e1_2_1 + e1_2_2
 
-    lg_a = _chol_contract(chol_a, green_a)
-    lg_b = _chol_contract(chol_b, green_b)
+    lg_a = jnp.einsum("gij,ij->g", chol_a, green_a, optimize="optimal")
+    lg_b = jnp.einsum("gij,ij->g", chol_b, green_b, optimize="optimal")
     lg = lg_a + lg_b
     e2_0_1 = 0.5 * (lg @ lg)
     gl1_a = jnp.einsum("pr,gqr->gpq", green_a, chol_a, optimize="optimal")
@@ -288,8 +359,12 @@ def _energy_components_uw_rh_full(
     electronic_0 = e1_0 + e2_0
 
     e2_2_1 = e2_0 * theta2
-    lt2g_a = _chol_contract(chol_a, 8.0 * t2_green_a + 2.0 * t2_green_ab_a)
-    lt2g_b = _chol_contract(chol_b, 8.0 * t2_green_b + 2.0 * t2_green_ab_b)
+    lt2g_a = _chol_contract(
+        chol_a, 8.0 * t2_green_a + 2.0 * t2_green_ab_a, cfg
+    )
+    lt2g_b = _chol_contract(
+        chol_b, 8.0 * t2_green_b + 2.0 * t2_green_ab_b, cfg
+    )
     e2_2_2_1 = -0.5 * ((lt2g_a + lt2g_b) @ lg)
     combo2_a = 8.0 * t2_green_a + 2.0 * t2_green_ab_a
     combo2_b = 8.0 * t2_green_b + 2.0 * t2_green_ab_b
@@ -445,12 +520,23 @@ def _energy_components_uw_rh(
 
     combo2_a = 8.0 * t2_green_a + 2.0 * t2_green_ab_a
     combo2_b = 8.0 * t2_green_b + 2.0 * t2_green_ab_b
-    lt2g_a = _chol_contract(chol_a, combo2_a)
-    lt2g_b = _chol_contract(chol_b, combo2_b)
+    lt2g_a = _chol_contract(chol_a, combo2_a, cfg)
+    lt2g_b = _chol_contract(chol_b, combo2_b, cfg)
     e2_2_2_1 = -0.5 * ((lt2g_a + lt2g_b) @ lg)
 
-    reference_occ_a = trial_data.mo_t_a.conj()[:noa, :]
-    reference_occ_b = trial_data.mo_t_b.conj()[:nob, :]
+    # These factors must be cast before the large batched contractions. Leaving
+    # either at its input float64/complex128 dtype silently promotes the full
+    # walker--Cholesky intermediate back to complex128.
+    reference_occ_a = trial_data.mo_t_a.conj()[:noa, :].astype(
+        cfg.mixed_complex_dtype
+    )
+    reference_occ_b = trial_data.mo_t_b.conj()[:nob, :].astype(
+        cfg.mixed_complex_dtype
+    )
+    greenp_a_mixed = greenp_a.astype(cfg.mixed_complex_dtype)
+    greenp_b_mixed = greenp_b.astype(cfg.mixed_complex_dtype)
+    combo2_a_mixed = combo2_a.astype(cfg.mixed_complex_dtype)
+    combo2_b_mixed = combo2_b.astype(cfg.mixed_complex_dtype)
     if cfg.memory_mode == "low":
         zero_e222 = jnp.zeros_like(e2_2_2_1)
         zero_e23 = jnp.array(0.0, dtype=cfg.mixed_complex_dtype_testing)
@@ -458,17 +544,19 @@ def _energy_components_uw_rh(
         def scan_doubles(carry, xs):
             e222_acc, e23_acc = carry
             chol_a_i, rot_chol_a_i, chol_b_i, rot_chol_b_i = xs
-            gl_half_a_i = jnp.einsum(
-                "pj,ji->pi", half_green_a, chol_a_i, optimize="optimal"
-            )
-            gl_half_b_i = jnp.einsum(
-                "pj,ji->pi", half_green_b, chol_b_i, optimize="optimal"
-            )
+            gl_half_a_i = _energy_gl_scalar(half_green_a, chol_a_i, cfg)
+            gl_half_b_i = _energy_gl_scalar(half_green_b, chol_b_i, cfg)
             lcombo_a_i = jnp.einsum(
-                "pi,ji->pj", rot_chol_a_i, combo2_a, optimize="optimal"
+                "pi,ji->pj",
+                rot_chol_a_i.astype(cfg.mixed_complex_dtype),
+                combo2_a_mixed,
+                optimize="optimal",
             )
             lcombo_b_i = jnp.einsum(
-                "pi,ji->pj", rot_chol_b_i, combo2_b, optimize="optimal"
+                "pi,ji->pj",
+                rot_chol_b_i.astype(cfg.mixed_complex_dtype),
+                combo2_b_mixed,
+                optimize="optimal",
             )
             e222_acc += 0.5 * (
                 jnp.einsum("pi,pi->", gl_half_a_i, lcombo_a_i, optimize="optimal")
@@ -478,10 +566,10 @@ def _energy_components_uw_rh(
             gl_occ_a_i = reference_occ_a @ gl_half_a_i
             gl_occ_b_i = reference_occ_b @ gl_half_b_i
             glgp_a_i = jnp.einsum(
-                "pi,it->pt", gl_occ_a_i, greenp_a, optimize="optimal"
+                "pi,it->pt", gl_occ_a_i, greenp_a_mixed, optimize="optimal"
             ).astype(cfg.mixed_complex_dtype_testing)
             glgp_b_i = jnp.einsum(
-                "pi,it->pt", gl_occ_b_i, greenp_b, optimize="optimal"
+                "pi,it->pt", gl_occ_b_i, greenp_b_mixed, optimize="optimal"
             ).astype(cfg.mixed_complex_dtype_testing)
             l2t2_a = 0.5 * jnp.einsum(
                 "pt,qu,ptqu->",
@@ -512,23 +600,19 @@ def _energy_components_uw_rh(
             (chol_a, rot_chol_a, chol_b, rot_chol_b),
         )
     else:
-        gl_half_a = jnp.einsum(
-            "pj,gji->gpi",
-            half_green_a.astype(cfg.mixed_complex_dtype),
-            chol_a.astype(cfg.mixed_real_dtype),
-            optimize="optimal",
-        )
-        gl_half_b = jnp.einsum(
-            "pj,gji->gpi",
-            half_green_b.astype(cfg.mixed_complex_dtype),
-            chol_b.astype(cfg.mixed_real_dtype),
-            optimize="optimal",
-        )
+        gl_half_a = _energy_gl_batched(half_green_a, chol_a, cfg)
+        gl_half_b = _energy_gl_batched(half_green_b, chol_b, cfg)
         lcombo_a = jnp.einsum(
-            "gpi,ji->gpj", rot_chol_a, combo2_a, optimize="optimal"
+            "gpi,ji->gpj",
+            rot_chol_a.astype(cfg.mixed_complex_dtype),
+            combo2_a_mixed,
+            optimize="optimal",
         )
         lcombo_b = jnp.einsum(
-            "gpi,ji->gpj", rot_chol_b, combo2_b, optimize="optimal"
+            "gpi,ji->gpj",
+            rot_chol_b.astype(cfg.mixed_complex_dtype),
+            combo2_b_mixed,
+            optimize="optimal",
         )
         e2_2_2_2 = 0.5 * (
             jnp.einsum("gpi,gpi->", gl_half_a, lcombo_a, optimize="optimal")
@@ -542,10 +626,10 @@ def _energy_components_uw_rh(
             "ij,gjq->giq", reference_occ_b, gl_half_b, optimize="optimal"
         )
         glgp_a = jnp.einsum(
-            "gpi,it->gpt", gl_occ_a, greenp_a, optimize="optimal"
+            "gpi,it->gpt", gl_occ_a, greenp_a_mixed, optimize="optimal"
         ).astype(cfg.mixed_complex_dtype_testing)
         glgp_b = jnp.einsum(
-            "gpi,it->gpt", gl_occ_b, greenp_b, optimize="optimal"
+            "gpi,it->gpt", gl_occ_b, greenp_b_mixed, optimize="optimal"
         ).astype(cfg.mixed_complex_dtype_testing)
         l2t2_a = 0.5 * jnp.einsum(
             "gpt,gqu,ptqu->g",
@@ -624,7 +708,7 @@ def energy_kernel_rw_rh(
 def make_ptuccsd_thouless_meas_ops(
     sys: System,
     memory_mode: Literal["low", "high"] = "high",
-    mixed_precision: bool = False,
+    mixed_precision: bool = True,
     testing: bool = False,
 ) -> MeasOps:
     cfg = PtuccsdThoulessMeasCfg(
@@ -665,7 +749,7 @@ def make_ptuccsd_thouless_meas_ops(
 def make_ptuccsd_thouless_estimator_ops(
     sys: System,
     memory_mode: Literal["low", "high"] = "high",
-    mixed_precision: bool = False,
+    mixed_precision: bool = True,
     testing: bool = False,
 ) -> EstimatorOps:
     """Build a PT2-UCCSD estimator for a separately chosen propagation guide."""
