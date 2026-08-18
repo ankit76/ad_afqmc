@@ -32,6 +32,7 @@ from .stat_utils import (
     blocking_analysis_ratio,
     clean_pt2ccsd,
     component_estimator_outlier_mask,
+    gamma_analysis_components,
     gamma_analysis_ratio,
     jackknife_ratios,
     pt2ccsd_blocking,
@@ -138,6 +139,79 @@ def _analyze_energy_errors(
         ):
             raise RuntimeError(
                 "blocking and Gamma analyses produced different weighted means: "
+                f"{blocking['mu']} versus {gamma['mu']}"
+            )
+
+    if error_method == "gamma":
+        stderr = float(gamma["se_gamma"])
+        reliable = bool(gamma["reliable"])
+    else:
+        blocking_se = blocking["se_star"]
+        stderr = float(blocking_se) if blocking_se is not None else float("nan")
+        reliable = bool(blocking["plateau_found"]) and np.isfinite(stderr)
+
+    return EnergyErrorAnalysis(
+        mean=float(blocking["mu"]),
+        stderr=stderr,
+        error_method=error_method,
+        reliable=reliable,
+        gamma=gamma,
+        blocking=blocking,
+    )
+
+
+def _analyze_component_estimator_errors(
+    h0: Any,
+    weights: Any,
+    components: Any,
+    combine_energy: Callable[[Any, Any], Any],
+    *,
+    error_method: str,
+) -> EnergyErrorAnalysis:
+    """Evaluate blocking and Gamma errors for a nonlinear component estimator."""
+
+    if error_method not in ("gamma", "blocking"):
+        raise ValueError(
+            "error_method must be either 'gamma' or 'blocking'; "
+            f"received {error_method!r}"
+        )
+
+    blocking = blocking_analysis_components(
+        h0,
+        weights,
+        components,
+        combine_energy,
+        print_q=False,
+    )
+    n_samples = int(np.asarray(weights).size)
+    if n_samples < 4:
+        gamma = {
+            "mu": float(blocking["mu"]),
+            "mean_components": blocking["mean_components"],
+            "se_gamma": float("nan"),
+            "window": None,
+            "window_found": False,
+            "tau_int": None,
+            "effective_sample_size": None,
+            "reliable": False,
+            "warnings": ("Gamma analysis requires at least four samples",),
+        }
+    else:
+        gamma = gamma_analysis_components(
+            h0,
+            weights,
+            components,
+            combine_energy,
+            print_q=False,
+        )
+        if not np.isclose(
+            float(blocking["mu"]),
+            float(gamma["mu"]),
+            rtol=1.0e-12,
+            atol=1.0e-12,
+        ):
+            raise RuntimeError(
+                "blocking and Gamma component analyses produced different means: "
                 f"{blocking['mu']} versus {gamma['mu']}"
             )
 
@@ -1135,10 +1209,12 @@ def run_mixed_estimator_qmc(
     ``guide_weight * reference_overlap / guide_overlap``.
 
     This keeps estimator algebra out of the driver and supports nonlinear
-    energy combinations while retaining component covariance in the blocking
-    analysis. By default, the reported projected estimate also applies the
-    historical PT2-CCSD block cleanup at ``zeta=20``. Raw block arrays are
-    retained in the result, together with the proxy energies and keep mask.
+    energy combinations while retaining component covariance in both the
+    blocking and Gamma analyses. ``params.error_method`` selects the reported
+    projected-estimator uncertainty, just as it does for the guide energy. By
+    default, the reported projected estimate also applies the historical
+    PT2-CCSD block cleanup at ``zeta=20``. Raw block arrays are retained in the
+    result, together with the proxy energies and keep mask.
     """
 
     if params.n_blocks <= 0:
@@ -1372,14 +1448,21 @@ def run_mixed_estimator_qmc(
             guide_block_weights_so_far,
             error_method=params.error_method,
         )
-        estimator_progress = blocking_analysis_components(
+        _, estimator_progress_keep = component_estimator_outlier_mask(
             ham_data.h0,
             estimator_block_weights_so_far,
             estimator_block_components_so_far,
             estimator_ops.combine_energy,
-            print_q=False,
+            zeta=estimator_outlier_zeta,
         )
-        estimator_progress_stderr = estimator_progress["se_star"]
+        estimator_progress = _analyze_component_estimator_errors(
+            ham_data.h0,
+            estimator_block_weights_so_far[estimator_progress_keep],
+            estimator_block_components_so_far[estimator_progress_keep],
+            estimator_ops.combine_energy,
+            error_method=params.error_method,
+        )
+        estimator_progress_stderr = estimator_progress.stderr
         guide_stderr_text = (
             f"{guide_progress.stderr:11.3e}"
             if np.isfinite(guide_progress.stderr)
@@ -1406,7 +1489,7 @@ def run_mixed_estimator_qmc(
             f"{guide_progress.mean:14.10f}  "
             f"{guide_stderr_text}  "
             f"{float(jnp.mean(scalars_chunk['guide_weight'])):12.6e}  "
-            f"{float(estimator_progress['mu']):16.10f}  "
+            f"{estimator_progress.mean:16.10f}  "
             f"{estimator_stderr_text}  "
             f"{int(state.node_encounters):10d}  "
             f"{(batch_finished - sampling_mark) / n:10.3f}  "
@@ -1455,36 +1538,44 @@ def run_mixed_estimator_qmc(
             f"with zeta={estimator_outlier_zeta:g} median-deviation cleanup."
         )
 
-    estimator_analysis = blocking_analysis_components(
+    estimator_error_analysis = _analyze_component_estimator_errors(
         ham_data.h0,
         estimator_block_weights[estimator_block_keep_mask],
         estimator_block_components[estimator_block_keep_mask],
         estimator_ops.combine_energy,
-        print_q=False,
+        error_method=params.error_method,
     )
+    estimator_analysis = dict(estimator_error_analysis.blocking)
     estimator_analysis.update(
         {
+            "blocking": estimator_error_analysis.blocking,
+            "error_method": estimator_error_analysis.error_method,
+            "error_reliable": estimator_error_analysis.reliable,
+            "gamma": estimator_error_analysis.gamma,
+            "stderr": estimator_error_analysis.stderr,
+            "stderr_blocking": estimator_error_analysis.blocking["se_star"],
+            "stderr_gamma": estimator_error_analysis.gamma["se_gamma"],
             "outlier_zeta": estimator_outlier_zeta,
             "n_raw_blocks": n_estimator_blocks,
             "n_retained_blocks": n_estimator_blocks_retained,
             "n_rejected_blocks": n_estimator_blocks_rejected,
         }
     )
-    estimator_stderr = estimator_analysis["se_star"]
-    estimator_stderr = (
-        float(estimator_stderr) if estimator_stderr is not None else float("nan")
-    )
+    estimator_stderr = float(estimator_error_analysis.stderr)
+
+    print("\nProjected-estimator statistical analysis:")
+    _print_energy_error_analysis(estimator_error_analysis)
 
     print(
         f"  completed {params.n_blocks} blocks in {elapsed:.1f} s; "
         f"guide E={guide_analysis.mean:.10f} +/- {guide_analysis.stderr:.3e}; "
-        f"estimator E={float(estimator_analysis['mu']):.10f} +/- "
+        f"estimator E={estimator_error_analysis.mean:.10f} +/- "
         f"{estimator_stderr:.3e}."
     )
     return MixedEstimatorQmcResult(
         guide_mean_energy=guide_analysis.mean,
         guide_stderr_energy=guide_analysis.stderr,
-        estimator_mean_energy=float(estimator_analysis["mu"]),
+        estimator_mean_energy=estimator_error_analysis.mean,
         estimator_stderr_energy=estimator_stderr,
         estimator_mean_components=jnp.asarray(estimator_analysis["mean_components"]),
         estimator_component_names=estimator_ops.component_names,

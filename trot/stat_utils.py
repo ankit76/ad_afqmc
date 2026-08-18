@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, cast
+from typing import Any, Callable, Dict, Iterable, cast
 
+import jax
 import numpy as np
 import jax.numpy as jnp
-
-if TYPE_CHECKING:
-    import jax
 
 
 def _pick_plateau_with_status(
@@ -711,6 +709,174 @@ def gamma_analysis_ratio(
         fig.tight_layout()
 
     return out
+
+
+def gamma_analysis_components(
+    h0: float | complex,
+    weights: np.ndarray | jax.Array,
+    components: np.ndarray | jax.Array,
+    combine_energy: Callable[[Any, Any], Any],
+    *,
+    s_tau: float = 1.5,
+    max_lag: int | None = None,
+    min_effective_samples: float = 20.0,
+    figsize: tuple[float, float] = (12, 4.2),
+    title: str | None = None,
+    print_q: bool = True,
+    plot_q: bool = False,
+    exact: float | None = None,
+) -> Dict[str, Any]:
+    r"""Gamma-method analysis for a nonlinear function of component ratios.
+
+    For block components :math:`c_t`, possibly complex weights :math:`w_t`,
+    and a real-valued final energy :math:`E=f(\bar c)`, the component mean is
+
+    .. math::
+
+        \bar c = \frac{\sum_t w_t c_t}{\sum_t w_t}.
+
+    The multivariate delta method projects the correlated component and weight
+    fluctuations onto the scalar influence series
+
+    .. math::
+
+        x_t = Df_{\bar c}\left[\frac{w_t(c_t-\bar c)}{\bar w}\right].
+
+    The usual automatic-window Gamma analysis is then applied to ``x_t``.
+    Complex components are differentiated with respect to their real and
+    imaginary parts, and all covariance among component numerators and the
+    shared denominator is retained.  The per-block proxy ``f(c_t)`` is not
+    used because averaging it would not represent the nonlinear estimator.
+    """
+
+    weights_array = np.asarray(weights).reshape(-1)
+    components_array = np.asarray(components)
+    if components_array.ndim != 2:
+        raise ValueError(
+            "components must have shape (n_blocks, n_components); "
+            f"got {components_array.shape}."
+        )
+    if components_array.shape[0] != weights_array.shape[0]:
+        raise ValueError(
+            f"weights length {weights_array.shape[0]} does not match components "
+            f"length {components_array.shape[0]}."
+        )
+    finite = np.isfinite(weights_array) & np.all(np.isfinite(components_array), axis=1)
+    weights_array = weights_array[finite]
+    components_array = components_array[finite]
+    n = int(weights_array.shape[0])
+    if n < 4:
+        raise ValueError("Gamma analysis requires at least four finite component samples")
+
+    weight_sum = weights_array.sum()
+    weight_abs_sum = float(np.abs(weights_array).sum())
+    denominator_scale = max(weight_abs_sum, np.finfo(float).tiny)
+    if abs(weight_sum) <= 10.0 * np.finfo(float).eps * denominator_scale:
+        raise ValueError("sum(weights) is zero or numerically ill-conditioned")
+    denominator_fraction = float(abs(weight_sum) / denominator_scale)
+
+    weighted_components = weights_array[:, None] * components_array
+    mean_components = weighted_components.sum(axis=0) / weight_sum
+    mean_energy = float(
+        np.real(np.asarray(combine_energy(h0, mean_components)).reshape(()))
+    )
+
+    n_components = int(mean_components.size)
+    packed_mean = np.concatenate(
+        (np.real(mean_components), np.imag(mean_components))
+    ).astype(float, copy=False)
+
+    def real_energy(packed_components):
+        component_values = (
+            packed_components[:n_components]
+            + 1.0j * packed_components[n_components:]
+        )
+        return jnp.real(combine_energy(h0, component_values))
+
+    component_gradient = np.asarray(
+        jax.grad(real_energy)(jnp.asarray(packed_mean)),
+        dtype=float,
+    )
+    mean_weight = weight_sum / n
+    component_influence = (
+        weights_array[:, None]
+        * (components_array - mean_components[None, :])
+        / mean_weight
+    )
+    packed_influence = np.concatenate(
+        (np.real(component_influence), np.imag(component_influence)),
+        axis=1,
+    )
+    energy_influence = np.asarray(packed_influence @ component_gradient, dtype=float)
+
+    analysis = gamma_analysis_ratio(
+        energy_influence,
+        np.ones(n),
+        s_tau=s_tau,
+        max_lag=max_lag,
+        min_effective_samples=min_effective_samples,
+        figsize=figsize,
+        title=title or "Projected component-estimator autocorrelation",
+        print_q=False,
+        plot_q=plot_q,
+    )
+    warnings = list(analysis["warnings"])
+    if denominator_fraction < 0.1:
+        warnings.append(
+            "complex weights strongly cancel in the component-ratio denominator"
+        )
+    se_gamma = float(analysis["se_gamma"])
+    bias = z_score = None
+    if exact is not None:
+        bias = float(mean_energy - exact)
+        if np.isfinite(se_gamma) and se_gamma > 0.0:
+            z_score = float(bias / se_gamma)
+    analysis.update(
+        {
+            "mu": mean_energy,
+            "mean_components": mean_components,
+            "component_gradient": component_gradient,
+            "component_influence": component_influence,
+            "influence": energy_influence,
+            "ci95_gamma": (
+                float(mean_energy - 1.96 * se_gamma),
+                float(mean_energy + 1.96 * se_gamma),
+            ),
+            "denominator_fraction": denominator_fraction,
+            "reliable": bool(analysis["reliable"] and denominator_fraction >= 0.1),
+            "warnings": tuple(warnings),
+            "bias": bias,
+            "z_score": z_score,
+        }
+    )
+
+    if print_q:
+        tau_int = analysis["tau_int"]
+        tau_error = analysis["tau_int_error"]
+        tau_text = (
+            f"{float(tau_int):.6g} +/- {float(tau_error):.3g}"
+            if tau_int is not None and tau_error is not None
+            else "unavailable"
+        )
+        effective_samples = analysis["effective_sample_size"]
+        effective_samples_text = (
+            f"{float(effective_samples):.1f}"
+            if effective_samples is not None
+            else "unavailable"
+        )
+        print(
+            f"mu: {mean_energy:.16g}  Gamma SE: {se_gamma:.16g}  "
+            f"95% CI: {analysis['ci95_gamma']}"
+        )
+        print(
+            f"window: {analysis['window']}  tau_int: {tau_text}  "
+            f"N_eff: {effective_samples_text}  "
+            f"reliable: {analysis['reliable']}"
+        )
+        for warning in warnings:
+            print(f"warning: {warning}")
+
+    return analysis
 
 
 def reject_outliers(

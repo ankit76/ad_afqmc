@@ -86,7 +86,12 @@ def _outlier_mixed_block(state, **kwargs):
     )
 
 
-def _make_case(*, n_blocks: int = 25, n_eql_blocks: int = 2):
+def _make_case(
+    *,
+    n_blocks: int = 25,
+    n_eql_blocks: int = 2,
+    error_method: str = "blocking",
+):
     sys = System(norb=2, nelec=(1, 1), walker_kind="restricted")
     params = QmcParams(
         dt=0.005,
@@ -96,7 +101,7 @@ def _make_case(*, n_blocks: int = 25, n_eql_blocks: int = 2):
         n_blocks=n_blocks,
         n_chunks=1,
         shift_ema=0.25,
-        error_method="blocking",
+        error_method=error_method,
         seed=7,
     )
     ham_data = HamChol(
@@ -325,6 +330,42 @@ def test_generic_mixed_estimator_driver_cleans_outlier_and_preserves_raw_blocks(
     assert result.estimator_analysis["n_retained_blocks"] == 24
     assert result.estimator_analysis["n_rejected_blocks"] == 1
     assert "rejected 1/25 projected-estimator blocks" in capsys.readouterr().out
+
+
+def test_generic_mixed_estimator_driver_uses_gamma_error_when_selected(capsys):
+    (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        guide_meas_ops,
+        guide_prop_ops,
+        estimator_ops,
+    ) = _make_case(n_blocks=25, n_eql_blocks=0, error_method="gamma")
+    result = run_mixed_estimator_qmc(
+        sys=sys,
+        params=params,
+        ham_data=ham_data,
+        guide_data=jnp.asarray(0.0),
+        guide_ops=guide_ops,
+        guide_prop_ops=guide_prop_ops,
+        guide_meas_ops=guide_meas_ops,
+        estimator_data=jnp.asarray(0.0),
+        estimator_ops=estimator_ops,
+        mixed_block_fn=_outlier_mixed_block,
+        state=state,
+        guide_meas_ctx=jnp.asarray(0.0),
+        guide_prop_ctx=jnp.asarray(0.0),
+        estimator_ctx=jnp.asarray(0.0),
+    )
+
+    assert result.estimator_analysis["error_method"] == "gamma"
+    assert result.estimator_stderr_energy == result.estimator_analysis["stderr_gamma"]
+    assert result.estimator_analysis["stderr_blocking"] is not None
+    output = capsys.readouterr().out
+    assert "Gamma SE [primary]" in output
+    assert "Reported method         = gamma" in output
 
 
 def test_mixed_estimator_retuning_advance_uses_guide_scalar_contract(capsys):

@@ -4,6 +4,7 @@ import pytest
 from trot.stat_utils import (
     _autocovariance_fft,
     _pick_plateau_with_status,
+    gamma_analysis_components,
     gamma_analysis_ratio,
 )
 
@@ -84,6 +85,89 @@ def test_gamma_method_recovers_ar1_autocorrelation_scale():
     assert result["window"] > expected_tau
     assert result["tau_int"] == pytest.approx(expected_tau, rel=0.20)
     assert result["se_gamma"] == pytest.approx(expected_se, rel=0.15)
+
+
+def test_component_gamma_matches_explicit_delta_method_projection():
+    n = 4096
+    x = _stationary_ar1(n, 0.7, seed=91)
+    weights = np.exp(0.15 * _stationary_ar1(n, 0.3, seed=92))
+    components = np.column_stack((1.5 + 0.2 * x, 2.0 - 0.1 * x))
+
+    def combine(h0, values):
+        return h0 + values[..., 0] * values[..., 1]
+
+    result = gamma_analysis_components(
+        0.25,
+        weights,
+        components,
+        combine,
+        print_q=False,
+    )
+    mean_components = np.sum(weights[:, None] * components, axis=0) / np.sum(weights)
+    component_influence = (
+        weights[:, None]
+        * (components - mean_components[None, :])
+        / np.mean(weights)
+    )
+    expected_influence = (
+        mean_components[1] * component_influence[:, 0]
+        + mean_components[0] * component_influence[:, 1]
+    )
+    expected = gamma_analysis_ratio(
+        expected_influence,
+        np.ones(n),
+        print_q=False,
+    )
+
+    np.testing.assert_allclose(result["mean_components"], mean_components)
+    np.testing.assert_allclose(result["mu"], combine(0.25, mean_components))
+    np.testing.assert_allclose(result["influence"], expected_influence, rtol=2.0e-7)
+    np.testing.assert_allclose(result["se_gamma"], expected["se_gamma"], rtol=2.0e-7)
+    assert result["window"] == expected["window"]
+    assert result["reliable"]
+
+
+def test_component_gamma_supports_complex_weights_and_components():
+    rng = np.random.default_rng(47)
+    weights = np.exp(0.1 * rng.normal(size=1024) + 0.02j * rng.normal(size=1024))
+    components = np.column_stack(
+        (
+            1.2 + 0.1 * rng.normal(size=1024) + 0.03j * rng.normal(size=1024),
+            -0.7 + 0.2 * rng.normal(size=1024) + 0.04j * rng.normal(size=1024),
+        )
+    )
+
+    def combine(h0, values):
+        return h0 + values[..., 0] * values[..., 1]
+
+    result = gamma_analysis_components(
+        0.5,
+        weights,
+        components,
+        combine,
+        print_q=False,
+    )
+    rescaled = gamma_analysis_components(
+        0.5,
+        (3.0 - 2.0j) * weights,
+        components,
+        combine,
+        print_q=False,
+    )
+
+    np.testing.assert_allclose(result["mu"], rescaled["mu"], atol=1.0e-14)
+    np.testing.assert_allclose(
+        result["mean_components"],
+        rescaled["mean_components"],
+        atol=1.0e-14,
+    )
+    np.testing.assert_allclose(result["se_gamma"], rescaled["se_gamma"], rtol=1.0e-13)
+    np.testing.assert_allclose(
+        result["influence"],
+        rescaled["influence"],
+        rtol=1.0e-12,
+        atol=3.0e-15,
+    )
 
 
 def test_gamma_method_flags_an_artificially_short_window_search():
