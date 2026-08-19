@@ -353,6 +353,12 @@ class EstimatorOps:
     # population-level component sampling.
     retune_block_components: BlockComponentsRetuneFn | None = None
 
+    # Use the combined population-level estimator energy for the AFQMC
+    # population-control shift.  This is useful when the guide overlap is only
+    # a propagation importance function and its deterministic local energy
+    # would duplicate (or dominate) the cost of a sampled block estimator.
+    use_for_population_control: bool = False
+
     def __post_init__(self) -> None:
         if not self.component_names:
             raise ValueError("EstimatorOps.component_names must be nonempty.")

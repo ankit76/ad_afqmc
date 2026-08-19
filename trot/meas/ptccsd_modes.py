@@ -1942,4 +1942,5 @@ def make_ptccsd_thouless_mode_estimator_ops(
             if component_tuning is not None
             else None
         ),
+        use_for_population_control=component_sampling is not None,
     )

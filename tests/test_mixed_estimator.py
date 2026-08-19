@@ -280,6 +280,76 @@ def test_mixed_estimator_population_component_hook_receives_exact_candidate_weig
     np.testing.assert_array_equal(state_new.rng_key, key_next)
 
 
+def test_mixed_estimator_can_use_sampled_components_for_population_control():
+    (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        _,
+        guide_prop_ops,
+        estimator_ops,
+    ) = _make_case()
+
+    # Omitting the guide energy kernel makes this test fail during tracing if
+    # the mixed block accidentally evaluates the deterministic guide energy.
+    guide_meas_ops = MeasOps(overlap=_guide_overlap)
+
+    def block_components(
+        walkers,
+        candidate_weights,
+        rng_key,
+        n_chunks,
+        ham_data_i,
+        estimator_ctx,
+        estimator_data,
+    ):
+        del walkers, rng_key, n_chunks, ham_data_i, estimator_ctx, estimator_data
+        weight = jnp.sum(candidate_weights)
+        components = jnp.asarray([2.0, 3.0])
+        return BlockComponentEstimate(
+            weight=weight,
+            numerator=weight * components,
+            diagnostics={},
+        )
+
+    population_ops = EstimatorOps(
+        reference_overlap=estimator_ops.reference_overlap,
+        components=estimator_ops.components,
+        combine_energy=estimator_ops.combine_energy,
+        component_names=estimator_ops.component_names,
+        block_components=block_components,
+        use_for_population_control=True,
+    )
+    state_new, obs = jax.jit(
+        lambda state_i: block_mixed_estimator(
+            state_i,
+            sys=sys,
+            params=params,
+            ham_data=ham_data,
+            guide_data=jnp.asarray(0.0),
+            guide_ops=guide_ops,
+            guide_meas_ops=guide_meas_ops,
+            guide_meas_ctx=None,
+            guide_prop_ops=guide_prop_ops,
+            guide_prop_ctx=None,
+            estimator_data=jnp.asarray(0.0),
+            estimator_ops=population_ops,
+            estimator_ctx=None,
+            sr_fn=_identity_sr,
+        )
+    )(state)
+
+    sampled_energy = 0.5 + 2.0 * 3.0
+    expected_shift = (1.0 - params.shift_ema) * state.e_estimate + (
+        params.shift_ema * sampled_energy
+    )
+    np.testing.assert_allclose(obs.scalars["guide_energy"], sampled_energy)
+    np.testing.assert_allclose(obs.scalars["estimator_components"], [2.0, 3.0])
+    np.testing.assert_allclose(state_new.e_estimate, expected_shift)
+
+
 def test_component_blocking_preserves_nonlinear_component_covariance():
     weights = np.linspace(0.7, 1.3, 40)
     x = np.linspace(-0.2, 0.2, 40)

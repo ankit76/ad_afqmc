@@ -289,6 +289,10 @@ class MixedQmcResult(NamedTuple):
 class MixedEstimatorQmcResult(NamedTuple):
     """Guide and projected-estimator results from one AFQMC trajectory.
 
+    For backward compatibility, the ``guide_*energy*`` fields hold the energy
+    series used for population control. When
+    ``EstimatorOps.use_for_population_control`` is enabled, that series is the
+    combined estimator energy rather than a separately evaluated guide energy.
     Projected-estimator block arrays are always raw. The proxy energies and
     keep mask record the robust cleanup used for the reported estimator result.
     """
@@ -1202,7 +1206,9 @@ def run_mixed_estimator_qmc(
 ) -> MixedEstimatorQmcResult:
     """Run one guide trajectory and evaluate arbitrary projected components.
 
-    The propagation and population control always use ``guide_*``. The
+    Propagation always uses ``guide_*``. Population control normally uses the
+    guide energy, but an estimator may explicitly supply the combined block
+    energy instead via ``EstimatorOps.use_for_population_control``. The
     estimator supplies a reference overlap and sufficient statistics; each
     block is reweighted by
 
@@ -1295,6 +1301,9 @@ def run_mixed_estimator_qmc(
         energy = estimator_ops.combine_energy(ham_data.h0, mean_components)
         return float(np.real(np.asarray(energy).reshape(())))
 
+    shift_energy_label = (
+        "Shift" if estimator_ops.use_for_population_control else "Guide"
+    )
     run_started = time.perf_counter()
     print("\nMixed-estimator equilibration:\n")
     if params.n_eql_blocks > 0:
@@ -1306,7 +1315,7 @@ def run_mixed_estimator_qmc(
         if print_every:
             print(
                 f"{'':4s}{'block':>9s}  "
-                f"{'Guide_E_blk':>14s}  "
+                f"{f'{shift_energy_label}_E_blk':>14s}  "
                 f"{'Guide_W_blk':>12s}  "
                 f"{'Estimator_E_blk':>16s}  "
                 f"{'Estimator_W_blk':>15s}  "
@@ -1411,7 +1420,7 @@ def run_mixed_estimator_qmc(
                 )
                 print(
                     f"[settle {start + n:4d}/{retuned.settling_blocks}]  "
-                    f"Guide_E={float(guide_energy_chunk):14.10f}  "
+                    f"{shift_energy_label}_E={float(guide_energy_chunk):14.10f}  "
                     f"Estimator_E={estimator_energy_chunk:14.10f}  "
                     f"dt={(time.perf_counter() - batch_started) / n:.3f} s/block"
                 )
@@ -1470,7 +1479,7 @@ def run_mixed_estimator_qmc(
                 print(
                     f"[estimator settle "
                     f"{start + n:4d}/{estimator_retuned.settling_blocks}]  "
-                    f"Guide_E={float(guide_energy_chunk):14.10f}  "
+                    f"{shift_energy_label}_E={float(guide_energy_chunk):14.10f}  "
                     f"Estimator_E={estimator_energy_chunk:14.10f}  "
                     f"dt={(time.perf_counter() - batch_started) / n:.3f} s/block"
                 )
@@ -1487,8 +1496,8 @@ def run_mixed_estimator_qmc(
     if print_every:
         print(
             f"{'':4s}{'block':>9s}  "
-            f"{'Guide_E_avg':>14s}  "
-            f"{'Guide_E_err':>11s}  "
+            f"{f'{shift_energy_label}_E_avg':>14s}  "
+            f"{f'{shift_energy_label}_E_err':>11s}  "
             f"{'Guide_W':>12s}  "
             f"{'Estimator_E_avg':>16s}  "
             f"{'Estimator_E_err':>15s}  "
@@ -1643,7 +1652,8 @@ def run_mixed_estimator_qmc(
 
     print(
         f"  completed {params.n_blocks} blocks in {elapsed:.1f} s; "
-        f"guide E={guide_analysis.mean:.10f} +/- {guide_analysis.stderr:.3e}; "
+        f"{shift_energy_label.lower()} E={guide_analysis.mean:.10f} +/- "
+        f"{guide_analysis.stderr:.3e}; "
         f"estimator E={estimator_error_analysis.mean:.10f} +/- "
         f"{estimator_stderr:.3e}."
     )

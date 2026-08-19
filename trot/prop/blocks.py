@@ -490,7 +490,12 @@ def block_mixed_estimator(
     estimator_ctx: Any,
     sr_fn: Callable = wk.stochastic_reconfiguration,
 ) -> tuple[PropState, BlockObs]:
-    """Propagate with one guide and accumulate another estimator's statistics."""
+    """Propagate with one guide and accumulate another estimator's statistics.
+
+    An estimator with ``use_for_population_control=True`` also supplies the
+    real block energy used to update ``state.e_estimate``. Its already computed
+    block components are reused; the guide energy kernel is not evaluated.
+    """
 
     step = lambda st: guide_prop_ops.step(
         st,
@@ -518,7 +523,20 @@ def block_mixed_estimator(
     threshold = jnp.sqrt(2.0 / jnp.asarray(params.dt))
     energy_reference = state.e_estimate
     guide_diagnostics: dict[str, jax.Array] = {}
-    if guide_meas_ops.block_energy is None:
+    use_estimator_energy = estimator_ops.use_for_population_control
+    if use_estimator_energy:
+        # The estimator components below supply the population-control energy.
+        # Do not evaluate a separate guide local energy: for sampled PT
+        # estimators that would reintroduce the deterministic all-Cholesky
+        # contraction that population-level sampling is intended to avoid.
+        guide_weights = state.weights
+        guide_weight = jnp.sum(guide_weights)
+        if estimator_ops.block_components is None:
+            key_next, key_sr = jax.random.split(state.rng_key)
+            key_estimator = None
+        else:
+            key_next, key_estimator, key_sr = jax.random.split(state.rng_key, 3)
+    elif guide_meas_ops.block_energy is None:
         guide_energy_kernel = guide_meas_ops.require_kernel(k_energy)
         guide_energy_samples = wk.vmap_chunked(
             guide_energy_kernel,
@@ -580,12 +598,6 @@ def block_mixed_estimator(
             energy_reference,
             guide_energy,
         )
-
-    alpha = jnp.asarray(params.shift_ema, dtype=jnp.result_type(guide_energy))
-    state = state._replace(
-        weights=guide_weights,
-        e_estimate=(1.0 - alpha) * state.e_estimate + alpha * guide_energy,
-    )
 
     reference_overlaps = wk.vmap_chunked(
         estimator_ops.reference_overlap,
@@ -650,6 +662,27 @@ def block_mixed_estimator(
         estimator_weight == 0.0,
         jnp.zeros_like(estimator_components),
         estimator_components,
+    )
+
+    if use_estimator_energy:
+        guide_energy = jnp.real(
+            estimator_ops.combine_energy(ham_data.h0, estimator_components)
+        )
+        invalid_energy = (~jnp.isfinite(guide_energy)) | (
+            jnp.abs(guide_energy - energy_reference) > threshold
+        )
+        guide_energy = jnp.where(
+            (guide_weight == 0.0)
+            | (estimator_weight == 0.0)
+            | invalid_energy,
+            energy_reference,
+            guide_energy,
+        )
+
+    alpha = jnp.asarray(params.shift_ema, dtype=jnp.result_type(guide_energy))
+    state = state._replace(
+        weights=guide_weights,
+        e_estimate=(1.0 - alpha) * state.e_estimate + alpha * guide_energy,
     )
 
     zeta = jax.random.uniform(key_sr)

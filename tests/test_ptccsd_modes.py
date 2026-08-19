@@ -535,7 +535,9 @@ def test_ptccsd_component_sampling_configuration_and_factory(pt_cases: PtCases):
         component_tuning=tuning,
     )
     assert deterministic_ops.block_components is None
+    assert deterministic_ops.use_for_population_control is False
     assert sampled_ops.block_components is pair_sampled_ptccsd_block_components
+    assert sampled_ops.use_for_population_control is True
     assert sampled_ops.retune_block_components is None
     assert tuned_ops.retune_block_components is not None
 
