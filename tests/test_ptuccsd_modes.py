@@ -1,0 +1,706 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from trot import config
+
+config.configure_once(use_gpu=False)
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
+
+from trot import driver, testing
+from trot.core.ops import k_energy, k_force_bias
+from trot.core.system import System
+from trot.ham.chol import HamChol
+from trot.meas.auto import make_auto_meas_ops
+from trot.meas.ptuccsd_modes import (
+    PtuccsdModeMeasCfg,
+    build_ptuccsd_mode_meas_ctx,
+    components_ptuccsd_mode_rw_rh,
+    components_ptuccsd_mode_uw_rh,
+    energy_kernel_rw_rh as mode_energy_rw,
+    energy_kernel_uw_rh as mode_energy_uw,
+    force_bias_kernel_rw_rh as mode_force_bias_rw,
+    force_bias_kernel_uw_rh as mode_force_bias_uw,
+    get_ptuccsd_mode_meas_cfg,
+    make_ptuccsd_mode_estimator_ops,
+    make_ptuccsd_mode_force_bias_ops,
+    make_ptuccsd_mode_meas_ops,
+)
+from trot.meas.ptuccsd_thouless import (
+    PtuccsdThoulessMeasCfg,
+    build_ptuccsd_thouless_meas_ctx,
+    components_ptuccsd_thouless_rw_rh,
+    components_ptuccsd_thouless_uw_rh,
+    energy_kernel_rw_rh as dense_energy_rw,
+    energy_kernel_uw_rh as dense_energy_uw,
+    force_bias_kernel_rw_rh as dense_force_bias_rw,
+    force_bias_kernel_uw_rh as dense_force_bias_uw,
+)
+from trot.prop.blocks import block
+from trot.prop.afqmc import make_prop_ops
+from trot.prop.types import QmcParams
+from trot.trial.ptuccsd_modes import (
+    PtuccsdThoulessModeTrial,
+    factorize_t2_modes,
+    get_rdm1 as mode_rdm1,
+    make_ptuccsd_thouless_mode_trial_data,
+    make_ptuccsd_thouless_mode_trial_ops,
+    mode_apply,
+    mode_projections,
+    mode_quadratic,
+    overlap_r as mode_overlap_r,
+    overlap_u as mode_overlap_u,
+    reference_overlap_r as mode_reference_overlap_r,
+    reference_overlap_u as mode_reference_overlap_u,
+    theta_t2_u as mode_theta_t2_u,
+)
+from trot.trial.ptuccsd_thouless import (
+    PtuccsdThoulessTrial,
+    get_rdm1 as dense_rdm1,
+    overlap_r as dense_overlap_r,
+    overlap_u as dense_overlap_u,
+    reference_overlap_r as dense_reference_overlap_r,
+    reference_overlap_u as dense_reference_overlap_u,
+    theta_t2_u as dense_theta_t2_u,
+)
+
+
+def _same_spin_tensor(
+    rng: np.random.Generator,
+    nocc: int,
+    nvir: int,
+) -> np.ndarray:
+    raw = rng.standard_normal((nocc, nvir, nocc, nvir))
+    return 0.25 * (
+        raw
+        - raw.transpose(2, 1, 0, 3)
+        - raw.transpose(0, 3, 2, 1)
+        + raw.transpose(2, 3, 0, 1)
+    )
+
+
+@dataclass(frozen=True)
+class TrialCases:
+    dense: PtuccsdThoulessTrial
+    mode: PtuccsdThoulessModeTrial
+    kernel: np.ndarray
+    walker_r: jax.Array
+    ham: HamChol
+
+
+@pytest.fixture(scope="module")
+def trial_cases() -> TrialCases:
+    rng = np.random.default_rng(2501)
+    norb, noa, nob = 6, 3, 2
+    nva, nvb = norb - noa, norb - nob
+    mo_t_a = np.vstack([np.eye(noa), 0.06 * rng.standard_normal((nva, noa))])
+    mo_t_b = np.vstack([np.eye(nob), 0.06 * rng.standard_normal((nvb, nob))])
+    beta_rotation, _ = np.linalg.qr(
+        np.eye(norb) + 0.12 * rng.standard_normal((norb, norb))
+    )
+    t2aa = 0.03 * _same_spin_tensor(rng, noa, nva)
+    t2ab = 0.03 * rng.standard_normal((noa, nva, nob, nvb))
+    t2bb = 0.03 * _same_spin_tensor(rng, nob, nvb)
+    factorization = factorize_t2_modes(
+        t2aa,
+        t2ab,
+        t2bb,
+        mode_threshold=0.0,
+        solver="dense",
+    )
+    dense = PtuccsdThoulessTrial(
+        mo_t_a=jnp.asarray(mo_t_a),
+        mo_t_b=jnp.asarray(mo_t_b),
+        mo_coeff_b=jnp.asarray(beta_rotation),
+        t2aa=jnp.asarray(t2aa),
+        t2ab=jnp.asarray(t2ab),
+        t2bb=jnp.asarray(t2bb),
+    )
+    mode = PtuccsdThoulessModeTrial(
+        mo_t_a=dense.mo_t_a,
+        mo_t_b=dense.mo_t_b,
+        mo_coeff_b=dense.mo_coeff_b,
+        eigenvalues=jnp.asarray(factorization.eigenvalues),
+        modes=jnp.asarray(factorization.modes),
+    )
+    da = noa * nva
+    db = nob * nvb
+    kernel = np.empty((da + db, da + db))
+    kernel[:da, :da] = t2aa.reshape(da, da)
+    kernel[:da, da:] = t2ab.reshape(da, db)
+    kernel[da:, :da] = t2ab.reshape(da, db).T
+    kernel[da:, da:] = t2bb.reshape(db, db)
+    walker_r = jnp.asarray(
+        np.eye(norb, noa)
+        + 0.11 * rng.standard_normal((norb, noa))
+        + 0.05j * rng.standard_normal((norb, noa))
+    )
+    h1 = rng.standard_normal((norb, norb))
+    h1 = 0.5 * (h1 + h1.T)
+    chol = rng.standard_normal((7, norb, norb))
+    chol = 0.5 * (chol + chol.transpose(0, 2, 1))
+    ham = HamChol(
+        h0=jnp.asarray(0.31),
+        h1=jnp.asarray(h1),
+        chol=jnp.asarray(chol),
+        basis="restricted",
+    )
+    return TrialCases(
+        dense=dense,
+        mode=mode,
+        kernel=kernel,
+        walker_r=walker_r,
+        ham=ham,
+    )
+
+
+def _dense_from_modes(trial: PtuccsdThoulessModeTrial) -> PtuccsdThoulessTrial:
+    modes = np.asarray(trial.modes)
+    kernel = (modes.T * np.asarray(trial.eigenvalues)) @ modes
+    da, db = trial.pair_dim
+    noa, nob = trial.nocc
+    nva, nvb = trial.nvir
+    return PtuccsdThoulessTrial(
+        mo_t_a=trial.mo_t_a,
+        mo_t_b=trial.mo_t_b,
+        mo_coeff_b=trial.mo_coeff_b,
+        t2aa=jnp.asarray(kernel[:da, :da].reshape(noa, nva, noa, nva)),
+        t2ab=jnp.asarray(kernel[:da, da:].reshape(noa, nva, nob, nvb)),
+        t2bb=jnp.asarray(kernel[da:, da:].reshape(nob, nvb, nob, nvb)),
+    )
+
+
+@pytest.mark.parametrize("rank", [None, 5, 0])
+def test_mode_primitives_match_reconstructed_combined_kernel(
+    trial_cases: TrialCases,
+    rank: int | None,
+):
+    case = trial_cases
+    if rank is None:
+        rank = case.mode.mode_rank
+    trial = PtuccsdThoulessModeTrial(
+        mo_t_a=case.mode.mo_t_a,
+        mo_t_b=case.mode.mo_t_b,
+        mo_coeff_b=case.mode.mo_coeff_b,
+        eigenvalues=case.mode.eigenvalues[:rank],
+        modes=case.mode.modes[:rank],
+    )
+    rng = np.random.default_rng(2503 + rank)
+    matrix_a = jnp.asarray(
+        rng.standard_normal((trial.nocc[0], trial.nvir[0]))
+        + 1.0j * rng.standard_normal((trial.nocc[0], trial.nvir[0]))
+    )
+    matrix_b = jnp.asarray(
+        rng.standard_normal((trial.nocc[1], trial.nvir[1]))
+        + 1.0j * rng.standard_normal((trial.nocc[1], trial.nvir[1]))
+    )
+    projections = mode_projections(trial, matrix_a, matrix_b)
+    applied_a, applied_b = mode_apply(trial, matrix_a, matrix_b, projections)
+    quadratic = mode_quadratic(trial, matrix_a, matrix_b, projections)
+
+    modes = np.asarray(trial.modes)
+    reconstructed = (modes.T * np.asarray(trial.eigenvalues)) @ modes
+    vector = np.concatenate((np.asarray(matrix_a).reshape(-1), np.asarray(matrix_b).reshape(-1)))
+    expected_applied = reconstructed @ vector
+    expected_quadratic = 0.5 * vector @ reconstructed @ vector
+    da, _ = trial.pair_dim
+    np.testing.assert_allclose(
+        applied_a,
+        expected_applied[:da].reshape(matrix_a.shape),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        applied_b,
+        expected_applied[da:].reshape(matrix_b.shape),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(quadratic, expected_quadratic, rtol=3.0e-12, atol=3.0e-12)
+
+
+def test_full_rank_mode_trial_matches_dense_exponential_overlap(trial_cases: TrialCases):
+    case = trial_cases
+    noa, nob = case.mode.nocc
+    walker_u = (case.walker_r[:, :noa], case.walker_r[:, :nob])
+
+    np.testing.assert_allclose(
+        (np.asarray(case.mode.modes).T * np.asarray(case.mode.eigenvalues))
+        @ np.asarray(case.mode.modes),
+        case.kernel,
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        mode_reference_overlap_u(walker_u, case.mode),
+        dense_reference_overlap_u(walker_u, case.dense),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        mode_theta_t2_u(walker_u, case.mode),
+        dense_theta_t2_u(walker_u, case.dense),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        mode_overlap_u(walker_u, case.mode),
+        dense_overlap_u(walker_u, case.dense),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        mode_reference_overlap_r(case.walker_r, case.mode),
+        dense_reference_overlap_r(case.walker_r, case.dense),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        jax.jit(mode_overlap_r)(case.walker_r, case.mode),
+        dense_overlap_r(case.walker_r, case.dense),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(mode_rdm1(case.mode), dense_rdm1(case.dense))
+
+
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+def test_full_rank_mode_force_bias_matches_dense_open_shell(
+    trial_cases: TrialCases,
+    memory_mode: str,
+):
+    case = trial_cases
+    cfg = PtuccsdModeMeasCfg(
+        memory_mode=memory_mode,
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+    dense_ctx = build_ptuccsd_thouless_meas_ctx(case.ham, case.dense, cfg)
+    mode_ctx = build_ptuccsd_mode_meas_ctx(case.ham, case.mode, cfg)
+    noa, nob = case.mode.nocc
+    walker_u = (case.walker_r[:, :noa], case.walker_r[:, :nob])
+
+    expected_u = dense_force_bias_uw(walker_u, case.ham, dense_ctx, case.dense)
+    actual_u = jax.jit(mode_force_bias_uw)(walker_u, case.ham, mode_ctx, case.mode)
+    expected_r = dense_force_bias_rw(case.walker_r, case.ham, dense_ctx, case.dense)
+    actual_r = jax.jit(mode_force_bias_rw)(case.walker_r, case.ham, mode_ctx, case.mode)
+
+    np.testing.assert_allclose(actual_u, expected_u, rtol=3.0e-11, atol=3.0e-11)
+    np.testing.assert_allclose(actual_r, expected_r, rtol=3.0e-11, atol=3.0e-11)
+    np.testing.assert_allclose(actual_r, actual_u, rtol=3.0e-12, atol=3.0e-12)
+
+
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+@pytest.mark.parametrize("n_mode_chunks", [1, 3, 7])
+def test_full_rank_mode_components_and_energy_match_dense_open_shell(
+    trial_cases: TrialCases,
+    memory_mode: str,
+    n_mode_chunks: int,
+):
+    case = trial_cases
+    cfg = PtuccsdModeMeasCfg(
+        memory_mode=memory_mode,
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+    dense_ctx = build_ptuccsd_thouless_meas_ctx(case.ham, case.dense, cfg)
+    mode_ctx = build_ptuccsd_mode_meas_ctx(
+        case.ham,
+        case.mode,
+        cfg,
+        n_mode_chunks=n_mode_chunks,
+    )
+    noa, nob = case.mode.nocc
+    walker_u = (case.walker_r[:, :noa], case.walker_r[:, :nob])
+
+    expected_components_u = components_ptuccsd_thouless_uw_rh(
+        walker_u,
+        case.ham,
+        dense_ctx,
+        case.dense,
+    )
+    actual_components_u = jax.jit(components_ptuccsd_mode_uw_rh)(
+        walker_u,
+        case.ham,
+        mode_ctx,
+        case.mode,
+    )
+    expected_components_r = components_ptuccsd_thouless_rw_rh(
+        case.walker_r,
+        case.ham,
+        dense_ctx,
+        case.dense,
+    )
+    actual_components_r = jax.jit(components_ptuccsd_mode_rw_rh)(
+        case.walker_r,
+        case.ham,
+        mode_ctx,
+        case.mode,
+    )
+    expected_energy_u = dense_energy_uw(walker_u, case.ham, dense_ctx, case.dense)
+    actual_energy_u = mode_energy_uw(walker_u, case.ham, mode_ctx, case.mode)
+    expected_energy_r = dense_energy_rw(case.walker_r, case.ham, dense_ctx, case.dense)
+    actual_energy_r = mode_energy_rw(case.walker_r, case.ham, mode_ctx, case.mode)
+
+    np.testing.assert_allclose(
+        actual_components_u,
+        expected_components_u,
+        rtol=4.0e-11,
+        atol=4.0e-11,
+    )
+    np.testing.assert_allclose(
+        actual_components_r,
+        expected_components_r,
+        rtol=4.0e-11,
+        atol=4.0e-11,
+    )
+    np.testing.assert_allclose(actual_components_r, actual_components_u, rtol=3e-12, atol=3e-12)
+    np.testing.assert_allclose(actual_energy_u, expected_energy_u, rtol=4.0e-11, atol=4.0e-11)
+    np.testing.assert_allclose(actual_energy_r, expected_energy_r, rtol=4.0e-11, atol=4.0e-11)
+
+
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+def test_truncated_mode_components_match_reconstructed_dense_kernel(
+    trial_cases: TrialCases,
+    memory_mode: str,
+):
+    case = trial_cases
+    trial = PtuccsdThoulessModeTrial(
+        mo_t_a=case.mode.mo_t_a,
+        mo_t_b=case.mode.mo_t_b,
+        mo_coeff_b=case.mode.mo_coeff_b,
+        eigenvalues=case.mode.eigenvalues[:5],
+        modes=case.mode.modes[:5],
+    )
+    dense = _dense_from_modes(trial)
+    cfg = PtuccsdModeMeasCfg(
+        memory_mode=memory_mode,
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+    dense_ctx = build_ptuccsd_thouless_meas_ctx(case.ham, dense, cfg)
+    mode_ctx = build_ptuccsd_mode_meas_ctx(
+        case.ham,
+        trial,
+        cfg,
+        n_mode_chunks=3,
+    )
+    expected = components_ptuccsd_thouless_rw_rh(
+        case.walker_r,
+        case.ham,
+        dense_ctx,
+        dense,
+    )
+    actual = components_ptuccsd_mode_rw_rh(case.walker_r, case.ham, mode_ctx, trial)
+    np.testing.assert_allclose(actual, expected, rtol=4.0e-11, atol=4.0e-11)
+
+
+def test_mode_force_bias_mixed_precision_matches_dense_accuracy_policy(
+    trial_cases: TrialCases,
+):
+    case = trial_cases
+    sys = System(case.mode.norb, case.mode.nocc, walker_kind="restricted")
+    mixed_trial = PtuccsdThoulessModeTrial(
+        mo_t_a=case.mode.mo_t_a,
+        mo_t_b=case.mode.mo_t_b,
+        mo_coeff_b=case.mode.mo_coeff_b,
+        eigenvalues=case.mode.eigenvalues,
+        modes=case.mode.modes.astype(jnp.float32),
+    )
+    double_cfg = PtuccsdThoulessMeasCfg(
+        memory_mode="high",
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+    double_ctx = build_ptuccsd_thouless_meas_ctx(case.ham, case.dense, double_cfg)
+    expected = dense_force_bias_rw(case.walker_r, case.ham, double_ctx, case.dense)
+
+    ops = make_ptuccsd_mode_force_bias_ops(sys, mixed_precision=True)
+    mixed_ctx = ops.build_meas_ctx(case.ham, mixed_trial)
+    actual = jax.jit(ops.require_kernel(k_force_bias))(
+        case.walker_r,
+        case.ham,
+        mixed_ctx,
+        mixed_trial,
+    )
+    relative_error = float(jnp.linalg.norm(actual - expected) / jnp.linalg.norm(expected))
+    cfg = get_ptuccsd_mode_meas_cfg(ops)
+
+    assert cfg is not None
+    assert cfg.mixed_real_dtype == jnp.float32
+    assert cfg.mixed_complex_dtype == jnp.complex64
+    assert ops.has_kernel(k_force_bias)
+    assert not ops.has_kernel(k_energy)
+    assert relative_error < 2.0e-5
+
+
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+def test_mode_energy_mixed_precision_matches_dense_accuracy_policy(
+    trial_cases: TrialCases,
+    memory_mode: str,
+):
+    case = trial_cases
+    sys = System(case.mode.norb, case.mode.nocc, walker_kind="restricted")
+    mixed_trial = PtuccsdThoulessModeTrial(
+        mo_t_a=case.mode.mo_t_a,
+        mo_t_b=case.mode.mo_t_b,
+        mo_coeff_b=case.mode.mo_coeff_b,
+        eigenvalues=case.mode.eigenvalues,
+        modes=case.mode.modes.astype(jnp.float32),
+    )
+    double_cfg = PtuccsdThoulessMeasCfg(
+        memory_mode=memory_mode,
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+    dense_ctx = build_ptuccsd_thouless_meas_ctx(case.ham, case.dense, double_cfg)
+    expected_components = components_ptuccsd_thouless_rw_rh(
+        case.walker_r,
+        case.ham,
+        dense_ctx,
+        case.dense,
+    )
+    expected_energy = dense_energy_rw(case.walker_r, case.ham, dense_ctx, case.dense)
+
+    ops = make_ptuccsd_mode_meas_ops(
+        sys,
+        n_mode_chunks=3,
+        memory_mode=memory_mode,
+        mixed_precision=True,
+    )
+    mode_ctx = ops.build_meas_ctx(case.ham, mixed_trial)
+    actual_components = jax.jit(components_ptuccsd_mode_rw_rh)(
+        case.walker_r,
+        case.ham,
+        mode_ctx,
+        mixed_trial,
+    )
+    actual_energy = jax.jit(ops.require_kernel(k_energy))(
+        case.walker_r,
+        case.ham,
+        mode_ctx,
+        mixed_trial,
+    )
+    component_error = float(jnp.max(jnp.abs(actual_components - expected_components)))
+    energy_error = float(jnp.abs(actual_energy - expected_energy))
+
+    assert ops.has_kernel(k_force_bias)
+    assert ops.has_kernel(k_energy)
+    assert mode_ctx.n_mode_chunks == 3
+    assert component_error < 2.0e-4
+    assert energy_error < 2.0e-4
+
+
+def test_mode_estimator_factory_exposes_pt_components(trial_cases: TrialCases):
+    case = trial_cases
+    sys = System(case.mode.norb, case.mode.nocc, walker_kind="restricted")
+    estimator_ops = make_ptuccsd_mode_estimator_ops(
+        sys,
+        n_mode_chunks=3,
+        mixed_precision=False,
+        testing=True,
+    )
+    ctx = estimator_ops.build_estimator_ctx(case.ham, case.mode)
+    components = estimator_ops.components(case.walker_r, case.ham, ctx, case.mode)
+    energy = estimator_ops.combine_energy(case.ham.h0, components)
+
+    assert estimator_ops.reference_overlap is mode_reference_overlap_r
+    assert estimator_ops.component_names == ("theta", "electronic_0", "h_t")
+    np.testing.assert_allclose(
+        energy,
+        mode_energy_rw(case.walker_r, case.ham, ctx, case.mode),
+    )
+
+
+def test_mode_trial_runs_a_restricted_open_shell_afqmc_smoke_calculation():
+    """Tiny smoke test only; this is not a meaningful energy comparison."""
+
+    rng = np.random.default_rng(2549)
+    norb, noa, nob = 4, 2, 1
+    nva, nvb = norb - noa, norb - nob
+    factorization = factorize_t2_modes(
+        0.01 * _same_spin_tensor(rng, noa, nva),
+        0.01 * rng.standard_normal((noa, nva, nob, nvb)),
+        0.01 * _same_spin_tensor(rng, nob, nvb),
+        mode_threshold=0.0,
+        solver="dense",
+    )
+    trial = PtuccsdThoulessModeTrial(
+        mo_t_a=jnp.asarray(
+            np.vstack([np.eye(noa), 0.03 * rng.standard_normal((nva, noa))])
+        ),
+        mo_t_b=jnp.asarray(
+            np.vstack([np.eye(nob), 0.03 * rng.standard_normal((nvb, nob))])
+        ),
+        mo_coeff_b=jnp.eye(norb),
+        eigenvalues=jnp.asarray(factorization.eigenvalues),
+        modes=jnp.asarray(factorization.modes, dtype=jnp.float32),
+    )
+    sys = System(norb, (noa, nob), walker_kind="restricted")
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(2551),
+        norb=norb,
+        n_chol=5,
+        basis="restricted",
+    )
+    params = QmcParams(
+        dt=0.005,
+        n_walkers=4,
+        n_prop_steps=1,
+        n_eql_blocks=1,
+        n_blocks=2,
+        n_chunks=1,
+        seed=2557,
+    )
+    result = driver.run_qmc(
+        sys=sys,
+        params=params,
+        ham_data=ham,
+        trial_data=trial,
+        trial_ops=make_ptuccsd_thouless_mode_trial_ops(sys),
+        meas_ops=make_ptuccsd_mode_meas_ops(
+            sys,
+            n_mode_chunks=2,
+            mixed_precision=True,
+        ),
+        prop_ops=make_prop_ops(ham.basis, sys.walker_kind, mixed_precision=True),
+        block_fn=block,
+    )
+
+    assert result.block_energies.shape[0] > 0
+    assert jnp.all(jnp.isfinite(result.block_energies))
+
+
+def test_truncated_mode_force_bias_matches_overlap_derivative(trial_cases: TrialCases):
+    case = trial_cases
+    trial = PtuccsdThoulessModeTrial(
+        mo_t_a=case.mode.mo_t_a,
+        mo_t_b=case.mode.mo_t_b,
+        mo_coeff_b=case.mode.mo_coeff_b,
+        eigenvalues=case.mode.eigenvalues[:5],
+        modes=case.mode.modes[:5],
+    )
+    sys = System(trial.norb, trial.nocc, walker_kind="restricted")
+    cfg = PtuccsdModeMeasCfg(
+        memory_mode="high",
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+    mode_ctx = build_ptuccsd_mode_meas_ctx(case.ham, trial, cfg)
+    trial_ops = make_ptuccsd_thouless_mode_trial_ops(sys)
+    auto_ops = make_auto_meas_ops(sys, trial_ops)
+    auto_ctx = auto_ops.build_meas_ctx(case.ham, trial)
+
+    expected = auto_ops.require_kernel(k_force_bias)(
+        case.walker_r,
+        case.ham,
+        auto_ctx,
+        trial,
+    )
+    actual = mode_force_bias_rw(case.walker_r, case.ham, mode_ctx, trial)
+    np.testing.assert_allclose(actual, expected, rtol=3.0e-11, atol=3.0e-11)
+
+
+def test_positive_threshold_retains_expected_combined_modes(trial_cases: TrialCases):
+    case = trial_cases
+    magnitudes = np.sort(np.abs(np.linalg.eigvalsh(case.kernel)))[::-1]
+    threshold = float(0.5 * (magnitudes[3] + magnitudes[4]))
+    factorization = factorize_t2_modes(
+        np.asarray(case.dense.t2aa),
+        np.asarray(case.dense.t2ab),
+        np.asarray(case.dense.t2bb),
+        mode_threshold=threshold,
+        solver="dense",
+    )
+    expected_values, expected_vectors = np.linalg.eigh(case.kernel)
+    order = np.argsort(np.abs(expected_values))[::-1][:4]
+    expected_kernel = (
+        expected_vectors[:, order] * expected_values[order]
+    ) @ expected_vectors[:, order].T
+    actual_kernel = (factorization.modes.T * factorization.eigenvalues) @ factorization.modes
+
+    assert factorization.rank == 4
+    assert factorization.solver == "dense"
+    assert factorization.discarded_norm_fraction > 0.0
+    np.testing.assert_allclose(actual_kernel, expected_kernel, rtol=3.0e-12, atol=3.0e-12)
+
+
+def test_loader_factories_and_pytree_support_restricted_open_shell(trial_cases: TrialCases):
+    case = trial_cases
+    noa, nob = case.dense.nocc
+    sys = System(norb=case.dense.norb, nelec=(noa, nob), walker_kind="restricted")
+    data = {
+        "mo_t_a": case.dense.mo_t_a,
+        "mo_t_b": case.dense.mo_t_b,
+        "mo_coeff_b": case.dense.mo_coeff_b,
+        "t2aa": np.asarray(case.dense.t2aa).transpose(0, 2, 1, 3),
+        "t2ab": np.asarray(case.dense.t2ab).transpose(0, 2, 1, 3),
+        "t2bb": np.asarray(case.dense.t2bb).transpose(0, 2, 1, 3),
+    }
+    loaded = make_ptuccsd_thouless_mode_trial_data(
+        data,
+        sys,
+        mixed_precision=False,
+        mode_solver="dense",
+    )
+    precomputed = make_ptuccsd_thouless_mode_trial_data(
+        {
+            "mo_t_a": case.dense.mo_t_a,
+            "mo_t_b": case.dense.mo_t_b,
+            "mo_coeff_b": case.dense.mo_coeff_b,
+            "eigenvalues": loaded.eigenvalues,
+            "eigenvectors": loaded.modes.T,
+        },
+        sys,
+        mixed_precision=True,
+    )
+    restored = jax.tree_util.tree_unflatten(
+        jax.tree_util.tree_structure(precomputed),
+        jax.tree_util.tree_leaves(precomputed),
+    )
+
+    assert loaded.modes.dtype == jnp.float64
+    assert precomputed.modes.dtype == jnp.float32
+    assert restored.mode_rank == precomputed.mode_rank
+    assert make_ptuccsd_thouless_mode_trial_ops(sys).overlap is mode_overlap_r
+    np.testing.assert_allclose(
+        mode_overlap_r(case.walker_r, loaded),
+        dense_overlap_r(case.walker_r, case.dense),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+
+    unrestricted = System(
+        norb=case.dense.norb,
+        nelec=(noa, nob),
+        walker_kind="unrestricted",
+    )
+    assert make_ptuccsd_thouless_mode_trial_ops(unrestricted).overlap is mode_overlap_u
+
+    with pytest.raises(ValueError, match="nup >= ndn"):
+        make_ptuccsd_thouless_mode_trial_ops(
+            System(case.dense.norb, (nob, noa), walker_kind="restricted")
+        )
+    with pytest.raises(ValueError, match="orbital mismatch"):
+        make_ptuccsd_thouless_mode_trial_data(
+            data,
+            System(case.dense.norb + 1, (noa, nob), walker_kind="restricted"),
+            mixed_precision=False,
+            mode_solver="dense",
+        )
