@@ -155,6 +155,33 @@ class BlockEnergyEstimate(NamedTuple):
     diagnostics: Mapping[str, jax.Array]
 
 
+class BlockComponentEstimate(NamedTuple):
+    """Exact block weight and unnormalized component numerator.
+
+    Keeping the denominator separate from the numerator makes population-level
+    component sampling explicit and avoids introducing a random-ratio bias.
+    """
+
+    weight: jax.Array
+    numerator: jax.Array
+    diagnostics: Mapping[str, jax.Array]
+
+
+class BlockComponentsFn(Protocol):
+    """Population-level sufficient-statistic estimator."""
+
+    def __call__(
+        self,
+        walkers: Any,
+        candidate_weights: jax.Array,
+        rng_key: jax.Array,
+        n_chunks: int,
+        ham_data: Any,
+        estimator_ctx: Any,
+        trial_data: Any,
+    ) -> BlockComponentEstimate: ...
+
+
 class BlockEnergyRetuneResult(NamedTuple):
     """Replacement state and measurement context after equilibration."""
 
@@ -275,6 +302,11 @@ class EstimatorOps:
     build_estimator_ctx: Callable[[ham_data, trial_data], Any] = (
         lambda ham_data, trial_data: None
     )
+    # Optional population-level component estimator. The caller supplies the
+    # exact complex guide-to-reference reweighting coefficients after overlap
+    # validation. The hook returns their exact valid sum and an unnormalized
+    # component numerator.
+    block_components: BlockComponentsFn | None = None
 
     def __post_init__(self) -> None:
         if not self.component_names:

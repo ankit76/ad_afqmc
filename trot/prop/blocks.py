@@ -11,7 +11,14 @@ from jax.experimental import io_callback
 
 from .. import walkers as wk
 from ..core.levels import LevelPack
-from ..core.ops import BlockEnergyEstimate, EstimatorOps, MeasOps, TrialOps, k_energy
+from ..core.ops import (
+    BlockComponentEstimate,
+    BlockEnergyEstimate,
+    EstimatorOps,
+    MeasOps,
+    TrialOps,
+    k_energy,
+)
 from ..core.system import System
 from ..walkers import SrFn
 from .types import PropOps, PropState, QmcParams, QmcParamsFp
@@ -531,9 +538,19 @@ def block_mixed_estimator(
         guide_weight_safe = jnp.where(guide_weight == 0.0, 1.0, guide_weight)
         guide_energy = jnp.sum(guide_weights * guide_energy_samples) / guide_weight_safe
         guide_energy = jnp.where(guide_weight == 0.0, energy_reference, guide_energy)
-        key_next, key_sr = jax.random.split(state.rng_key)
+        if estimator_ops.block_components is None:
+            key_next, key_sr = jax.random.split(state.rng_key)
+            key_estimator = None
+        else:
+            key_next, key_estimator, key_sr = jax.random.split(state.rng_key, 3)
     else:
-        key_next, key_energy, key_sr = jax.random.split(state.rng_key, 3)
+        if estimator_ops.block_components is None:
+            key_next, key_energy, key_sr = jax.random.split(state.rng_key, 3)
+            key_estimator = None
+        else:
+            key_next, key_energy, key_estimator, key_sr = jax.random.split(
+                state.rng_key, 4
+            )
         guide_weights = state.weights
         guide_weight = jnp.sum(guide_weights)
         estimate = guide_meas_ops.block_energy(
@@ -570,35 +587,65 @@ def block_mixed_estimator(
         e_estimate=(1.0 - alpha) * state.e_estimate + alpha * guide_energy,
     )
 
-    component_samples = wk.vmap_chunked(
-        estimator_ops.components,
-        n_chunks=params.n_chunks,
-        in_axes=(0, None, None, None),
-    )(state.walkers, ham_data, estimator_ctx, estimator_data)
-    if component_samples.ndim != 2 or component_samples.shape[1] != len(
-        estimator_ops.component_names
-    ):
-        raise ValueError(
-            "Estimator component kernel must return one vector per walker with "
-            f"length {len(estimator_ops.component_names)}; got {component_samples.shape}."
-        )
     reference_overlaps = wk.vmap_chunked(
         estimator_ops.reference_overlap,
         n_chunks=params.n_chunks,
         in_axes=(0, None),
     )(state.walkers, estimator_data)
     overlap_ratio = reference_overlaps / guide_overlaps
-    finite_components = jnp.all(jnp.isfinite(component_samples), axis=1)
     finite_ratio = jnp.isfinite(overlap_ratio)
-    valid_estimator = finite_components & finite_ratio
-    estimator_weights = jnp.where(valid_estimator, guide_weights * overlap_ratio, 0.0)
-    safe_components = jnp.where(valid_estimator[:, None], component_samples, 0.0)
-    estimator_weight = jnp.sum(estimator_weights)
+    candidate_weights = jnp.where(finite_ratio, guide_weights * overlap_ratio, 0.0)
+    estimator_diagnostics: dict[str, jax.Array] = {}
+    if estimator_ops.block_components is None:
+        component_samples = wk.vmap_chunked(
+            estimator_ops.components,
+            n_chunks=params.n_chunks,
+            in_axes=(0, None, None, None),
+        )(state.walkers, ham_data, estimator_ctx, estimator_data)
+        if component_samples.ndim != 2 or component_samples.shape[1] != len(
+            estimator_ops.component_names
+        ):
+            raise ValueError(
+                "Estimator component kernel must return one vector per walker with "
+                f"length {len(estimator_ops.component_names)}; got {component_samples.shape}."
+            )
+        finite_components = jnp.all(jnp.isfinite(component_samples), axis=1)
+        valid_estimator = finite_components & finite_ratio
+        estimator_weights = jnp.where(valid_estimator, candidate_weights, 0.0)
+        safe_components = jnp.where(valid_estimator[:, None], component_samples, 0.0)
+        estimator_weight = jnp.sum(estimator_weights)
+        estimator_numerator = jnp.sum(
+            estimator_weights[:, None] * safe_components,
+            axis=0,
+        )
+    else:
+        assert key_estimator is not None
+        estimate = estimator_ops.block_components(
+            state.walkers,
+            candidate_weights,
+            key_estimator,
+            params.n_chunks,
+            ham_data,
+            estimator_ctx,
+            estimator_data,
+        )
+        if not isinstance(estimate, BlockComponentEstimate):
+            raise TypeError(
+                "Estimator block_components must return a BlockComponentEstimate."
+            )
+        if estimate.numerator.shape != (len(estimator_ops.component_names),):
+            raise ValueError(
+                "Estimator block-component numerator must have shape "
+                f"{(len(estimator_ops.component_names),)}, got {estimate.numerator.shape}."
+            )
+        estimator_weight = estimate.weight
+        estimator_numerator = estimate.numerator
+        estimator_diagnostics = {
+            f"estimator_{name}": value for name, value in estimate.diagnostics.items()
+        }
+
     estimator_weight_safe = jnp.where(estimator_weight == 0.0, 1.0, estimator_weight)
-    estimator_components = (
-        jnp.sum(estimator_weights[:, None] * safe_components, axis=0)
-        / estimator_weight_safe
-    )
+    estimator_components = estimator_numerator / estimator_weight_safe
     estimator_components = jnp.where(
         estimator_weight == 0.0,
         jnp.zeros_like(estimator_components),
@@ -631,6 +678,7 @@ def block_mixed_estimator(
         "estimator_components": estimator_components,
     }
     scalars.update(guide_diagnostics)
+    scalars.update(estimator_diagnostics)
     return state, BlockObs(scalars=scalars, observables={})
 
 

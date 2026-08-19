@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from trot.core.ops import (
+    BlockComponentEstimate,
     BlockEnergyRetuneResult,
     EstimatorOps,
     MeasOps,
@@ -198,6 +199,84 @@ def test_mixed_estimator_block_reweights_reference_independently_of_guide():
     np.testing.assert_allclose(obs.scalars["estimator_weight"], 11.0)
     np.testing.assert_allclose(obs.scalars["estimator_components"], expected_components)
     np.testing.assert_allclose(state_new.weights, state.weights)
+
+
+def test_mixed_estimator_population_component_hook_receives_exact_candidate_weights():
+    (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        guide_meas_ops,
+        guide_prop_ops,
+        estimator_ops,
+    ) = _make_case()
+
+    def block_components(
+        walkers,
+        candidate_weights,
+        rng_key,
+        n_chunks,
+        ham_data_i,
+        estimator_ctx,
+        estimator_data,
+    ):
+        del n_chunks
+        components = jax.vmap(_components, in_axes=(0, None, None, None))(
+            walkers,
+            ham_data_i,
+            estimator_ctx,
+            estimator_data,
+        )
+        return BlockComponentEstimate(
+            weight=jnp.sum(candidate_weights),
+            numerator=jnp.sum(candidate_weights[:, None] * components, axis=0),
+            diagnostics={"hook_random": jax.random.uniform(rng_key)},
+        )
+
+    population_ops = EstimatorOps(
+        reference_overlap=estimator_ops.reference_overlap,
+        components=estimator_ops.components,
+        combine_energy=estimator_ops.combine_energy,
+        component_names=estimator_ops.component_names,
+        build_estimator_ctx=estimator_ops.build_estimator_ctx,
+        block_components=block_components,
+    )
+    state_new, obs = jax.jit(
+        lambda state_i: block_mixed_estimator(
+            state_i,
+            sys=sys,
+            params=params,
+            ham_data=ham_data,
+            guide_data=jnp.asarray(0.0),
+            guide_ops=guide_ops,
+            guide_meas_ops=guide_meas_ops,
+            guide_meas_ctx=None,
+            guide_prop_ops=guide_prop_ops,
+            guide_prop_ctx=None,
+            estimator_data=jnp.asarray(0.0),
+            estimator_ops=population_ops,
+            estimator_ctx=None,
+            sr_fn=_identity_sr,
+        )
+    )(state)
+
+    estimator_weights = np.asarray([2.0, 9.0])
+    component_samples = np.asarray([[10.0, 4.0], [12.0, 3.0]])
+    expected_components = np.sum(
+        estimator_weights[:, None] * component_samples,
+        axis=0,
+    ) / np.sum(estimator_weights)
+    key_next, key_estimator, _ = jax.random.split(state.rng_key, 3)
+
+    np.testing.assert_allclose(obs.scalars["estimator_weight"], 11.0)
+    np.testing.assert_allclose(obs.scalars["estimator_components"], expected_components)
+    np.testing.assert_allclose(
+        obs.scalars["estimator_hook_random"],
+        jax.random.uniform(key_estimator),
+    )
+    np.testing.assert_array_equal(state_new.rng_key, key_next)
 
 
 def test_component_blocking_preserves_nonlinear_component_covariance():
