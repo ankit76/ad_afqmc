@@ -21,8 +21,10 @@ class CholAfqmcCtx:
     exp_h1_half: jax.Array  # (n,n) or (ns,ns)
     mf_shifts: jax.Array  # (n_fields,)
     h0_prop: jax.Array  # scalar
-    chol_flat: jax.Array  # (n_fields, n*n)
+    # Full layout: (n_fields, n*n). Packed layout: (n_fields, n*(n+1)//2).
+    chol_flat: jax.Array
     norb: int
+    chol_packed: bool = False
 
     def tree_flatten(self):
         return (
@@ -32,12 +34,12 @@ class CholAfqmcCtx:
             self.mf_shifts,
             self.h0_prop,
             self.chol_flat,
-        ), (self.norb,)
+        ), (self.norb, self.chol_packed)
 
     @classmethod
     def tree_unflatten(cls, aux, children):
         dt, sqrt_dt, exp_h1_half, mf_shifts, h0_prop, chol_flat = children
-        (norb,) = aux
+        norb, chol_packed = aux
 
         return cls(
             dt=dt,
@@ -47,6 +49,7 @@ class CholAfqmcCtx:
             h0_prop=h0_prop,
             chol_flat=chol_flat,
             norb=norb,
+            chol_packed=chol_packed,
         )
 
 
@@ -80,11 +83,53 @@ def _build_exp_h1_half_from_h1(h1: jax.Array, dt: jax.Array) -> jax.Array:
     return jax.scipy.linalg.expm(-0.5 * dt * h1)
 
 
-def _make_vhs_split_flat(*, chol_flat: jax.Array, x: jax.Array, n: int) -> jax.Array:
-    # chol_flat: (n_fields, n*n) real
-    v_re = jnp.real(x) @ chol_flat  # (n*n,)
-    v_im = jnp.imag(x) @ chol_flat  # (n*n,)
-    return lax.complex(v_re, v_im).reshape(n, n)
+def _packed_upper_size(n: int) -> int:
+    return n * (n + 1) // 2
+
+
+def _pack_symmetric_chol(chol: jax.Array) -> jax.Array:
+    """Pack the upper triangle of each symmetric Cholesky matrix."""
+    n = int(chol.shape[1])
+    rows, cols = jnp.triu_indices(n)
+    return chol[:, rows, cols]
+
+
+def _unpack_symmetric_upper(packed: jax.Array, n: int) -> jax.Array:
+    """Expand a row-major packed upper triangle into a symmetric matrix."""
+    rows, cols = jnp.indices((n, n))
+    upper_rows = jnp.minimum(rows, cols)
+    upper_cols = jnp.maximum(rows, cols)
+    packed_indices = upper_rows * n - upper_rows * (upper_rows + 1) // 2 + upper_cols
+    return packed[packed_indices]
+
+
+def _prepare_chol_for_vhs(
+    chol: jax.Array,
+    *,
+    dtype: jnp.dtype,
+    packed_cholesky: bool,
+) -> jax.Array:
+    if packed_cholesky:
+        chol_vhs = _pack_symmetric_chol(chol)
+    else:
+        chol_vhs = chol.reshape(chol.shape[0], -1)
+    return chol_vhs.astype(dtype)
+
+
+def _make_vhs_split_flat(
+    *,
+    chol_flat: jax.Array,
+    x: jax.Array,
+    n: int,
+    chol_packed: bool = False,
+) -> jax.Array:
+    # chol_flat is real and either full-flattened or packed upper-triangular.
+    v_re = jnp.real(x) @ chol_flat
+    v_im = jnp.imag(x) @ chol_flat
+    vhs = lax.complex(v_re, v_im)
+    if chol_packed:
+        return _unpack_symmetric_upper(vhs, n)
+    return vhs.reshape(n, n)
 
 
 def _get_h1_eff(ham_data: HamChol, mf: jax.Array) -> jax.Array:
@@ -105,6 +150,7 @@ def _build_prop_ctx(
     rdm1: jax.Array,
     dt: float,
     chol_flat_precision: jnp.dtype = jnp.float64,
+    packed_cholesky: bool = False,
 ) -> CholAfqmcCtx:
     dt_a = jnp.array(dt)
     sqrt_dt = jnp.sqrt(dt_a)
@@ -114,8 +160,12 @@ def _build_prop_ctx(
     h1_eff = _get_h1_eff(ham_data, mf)
 
     exp_h1_half = _build_exp_h1_half_from_h1(h1_eff, dt_a)
-    chol_flat = ham_data.chol.reshape(ham_data.chol.shape[0], -1).astype(chol_flat_precision)
     norb = ham_data.chol.shape[1]
+    chol_flat = _prepare_chol_for_vhs(
+        ham_data.chol,
+        dtype=chol_flat_precision,
+        packed_cholesky=packed_cholesky,
+    )
     return CholAfqmcCtx(
         dt=dt_a,
         sqrt_dt=sqrt_dt,
@@ -124,6 +174,7 @@ def _build_prop_ctx(
         h0_prop=h0_prop,
         chol_flat=chol_flat,
         norb=norb,
+        chol_packed=packed_cholesky,
     )
 
 
@@ -254,6 +305,7 @@ def make_trotter_ops(ham_basis: str, walker_kind: str, mixed_precision: bool = F
             chol_flat=ctx.chol_flat,
             x=field.astype(vhs_complex_dtype),
             n=ctx.norb,
+            chol_packed=ctx.chol_packed,
         )
 
     if walker_kind not in ("restricted", "unrestricted", "generalized"):

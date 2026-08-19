@@ -144,7 +144,12 @@ def afqmc_step(
     )
 
 
-def make_prop_ops(ham_basis: HamBasis, walker_kind: str, mixed_precision=False) -> PropOps:
+def make_prop_ops(
+    ham_basis: HamBasis,
+    walker_kind: str,
+    mixed_precision: bool = False,
+    packed_cholesky: bool = False,
+) -> PropOps:
     trotter_ops = make_trotter_ops(ham_basis, walker_kind, mixed_precision=mixed_precision)
 
     def step(
@@ -175,6 +180,7 @@ def make_prop_ops(ham_basis: HamBasis, walker_kind: str, mixed_precision=False) 
             rdm1,
             params.dt,
             chol_flat_precision=jnp.float32 if mixed_precision else jnp.float64,
+            packed_cholesky=packed_cholesky,
         )
 
     return PropOps(init_prop_state=init_prop_state, build_prop_ctx=build_prop_ctx, step=step)
