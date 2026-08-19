@@ -759,16 +759,36 @@ def _make_run_mixed_estimator_blocks_with_auto_chunks(
         except jax.errors.JaxRuntimeError as exc:
             if not _is_compiler_memory_error(exc):
                 raise
+            compile_seconds = time.perf_counter() - start
             if candidate >= n_walkers:
                 raise MemoryError(
                     "The one-walker mixed-estimator chunk failed to compile "
                     "because the compiler or autotuner ran out of memory."
                 ) from exc
-            candidate = min(n_walkers, 2 * candidate)
+            next_candidate = min(n_walkers, 2 * candidate)
+            print(
+                f"[chunks] n_chunks={candidate}: compiler/autotuner memory failure "
+                f"after {compile_seconds:.1f} s; retrying with "
+                f"n_chunks={next_candidate}."
+            )
+            candidate = next_candidate
             continue
 
+        compile_seconds = time.perf_counter() - start
         estimated_bytes = _compiled_memory_bytes(compiled)
-        if estimated_bytes is None or estimated_bytes <= budget:
+        if estimated_bytes is None:
+            print(
+                "[chunks] compiler memory analysis unavailable; using "
+                f"n_chunks={candidate} (compiled in {compile_seconds:.1f} s)."
+            )
+            return candidate_params, run_blocks
+
+        print(
+            f"[chunks] n_chunks={candidate}: compiler estimate "
+            f"{_format_mib(estimated_bytes)} "
+            f"(compiled in {compile_seconds:.1f} s)."
+        )
+        if estimated_bytes <= budget:
             print(f"[chunks] selected n_chunks={candidate}.")
             return candidate_params, run_blocks
         if candidate >= n_walkers:
