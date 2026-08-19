@@ -22,6 +22,7 @@ from .core.ops import (
     d_energy_sampling_noise,
     d_energy_walker_guide_ess,
     d_energy_walker_guide_max_correction,
+    d_pt_component_sampling_noise_real,
 )
 from .core.system import System
 from .meas.pt2ccsd import get_init_pt2trial_energy
@@ -1584,6 +1585,11 @@ def run_mixed_estimator_qmc(
             f"guide_{d_energy_sampling_noise}",
             [],
         )
+        if not noise_chunks:
+            noise_chunks = guide_diagnostic_chunks.get(
+                f"estimator_{d_pt_component_sampling_noise_real}",
+                [],
+            )
         if noise_chunks:
             noise_values = jnp.concatenate(noise_chunks)
             noise_rms_mha = 1000.0 * jnp.sqrt(jnp.mean(noise_values**2))
