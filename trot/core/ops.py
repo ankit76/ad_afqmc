@@ -182,6 +182,47 @@ class BlockComponentsFn(Protocol):
     ) -> BlockComponentEstimate: ...
 
 
+class BlockComponentsAdvanceFn(Protocol):
+    """Advance calibration by a bounded block count."""
+
+    def __call__(
+        self,
+        state: Any,
+        *,
+        n_blocks: int,
+    ) -> tuple[Any, Mapping[str, jax.Array], Any]: ...
+
+
+class BlockComponentRetuneResult(NamedTuple):
+    """Replacement state and estimator context after equilibration."""
+
+    state: Any
+    estimator_ctx: Any
+    initial_n_chunks: int = 1
+    settling_blocks: int = 0
+
+
+class BlockComponentsRetuneFn(Protocol):
+    """Host-side hook for adapting a population component estimator."""
+
+    def __call__(
+        self,
+        state: Any,
+        equilibration_components: jax.Array,
+        equilibration_weights: jax.Array,
+        params: Any,
+        ham_data: Any,
+        estimator_ctx: Any,
+        trial_data: Any,
+        *,
+        guide_data: Any,
+        guide_meas_ops: Any,
+        guide_meas_ctx: Any,
+        advance_blocks: BlockComponentsAdvanceFn,
+        target_error: float | None = None,
+    ) -> BlockComponentRetuneResult: ...
+
+
 class BlockEnergyRetuneResult(NamedTuple):
     """Replacement state and measurement context after equilibration."""
 
@@ -307,6 +348,10 @@ class EstimatorOps:
     # validation. The hook returns their exact valid sum and an unnormalized
     # component numerator.
     block_components: BlockComponentsFn | None = None
+
+    # Optional host-side transition between equilibration and production for
+    # population-level component sampling.
+    retune_block_components: BlockComponentsRetuneFn | None = None
 
     def __post_init__(self) -> None:
         if not self.component_names:

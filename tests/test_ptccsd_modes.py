@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from trot import config
 
@@ -29,6 +30,7 @@ from trot.meas.ptccsd_modes import (
     _ptccsd_thouless_mode_chol_terms,
     _ptccsd_thouless_mode_energy_common,
     PtccsdModePairSamplingCfg,
+    PtccsdModePairTuningCfg,
     build_ptccsd_mode_meas_ctx,
     build_ptccsd_thouless_mode_meas_ctx,
     components_pt_rw_rh,
@@ -42,6 +44,8 @@ from trot.meas.ptccsd_modes import (
     make_ptccsd_thouless_mode_estimator_ops,
     make_ptccsd_thouless_mode_meas_ops,
     pair_sampled_ptccsd_block_components,
+    select_ptccsd_mode_pair_sampling,
+    stream_ptccsd_mode_population_statistics,
 )
 from trot.meas.ptccsd_thouless import build_ptccsd_thouless_meas_ctx
 from trot.meas.ptccsd_thouless import energy_pt_rw_rh as pt_thouless_dense_energy
@@ -512,8 +516,29 @@ def test_ptccsd_component_sampling_configuration_and_factory(pt_cases: PtCases):
         mixed_precision=False,
         component_sampling=sampling,
     )
+    tuning = PtccsdModePairTuningCfg(
+        target_tail_std_ha=1.0e6,
+        candidate_sample_sizes=(8,),
+        tuning_population_count=1,
+        settling_blocks=0,
+    )
+    tuned_ops = make_ptccsd_thouless_mode_estimator_ops(
+        case.sys,
+        mixed_precision=False,
+        component_sampling=sampling,
+        component_tuning=tuning,
+    )
     assert deterministic_ops.block_components is None
     assert sampled_ops.block_components is pair_sampled_ptccsd_block_components
+    assert sampled_ops.retune_block_components is None
+    assert tuned_ops.retune_block_components is not None
+
+    with pytest.raises(ValueError, match="requires an equilibration"):
+        make_ptccsd_thouless_mode_estimator_ops(
+            case.sys,
+            mixed_precision=False,
+            component_tuning=tuning,
+        )
 
     ctx = sampled_ops.build_estimator_ctx(case.ham, case.mode_thouless)
     assert ctx.component_sampling == sampling
@@ -538,6 +563,68 @@ def test_ptccsd_component_sampling_configuration_and_factory(pt_cases: PtCases):
             pair_sample_size=1,
             track_half_sample_diagnostic=True,
         )
+
+
+def test_ptccsd_component_tuning_installs_selected_context(pt_cases: PtCases):
+    case = pt_cases
+    equilibration_sampling = PtccsdModePairSamplingCfg(
+        chol_head_size=1,
+        pair_sample_size=8,
+        track_half_sample_diagnostic=False,
+    )
+    tuning = PtccsdModePairTuningCfg(
+        target_tail_std_ha=1.0e6,
+        candidate_sample_sizes=(8,),
+        minimum_head_fraction=0.0,
+        maximum_head_fraction=0.0,
+        tuning_n_chunks=2,
+        tuning_chol_batch_size=2,
+        tuning_population_count=1,
+        production_pair_sample_batch_size=4,
+        track_half_sample_diagnostic=False,
+        settling_blocks=0,
+    )
+    estimator_ops = make_ptccsd_thouless_mode_estimator_ops(
+        case.sys,
+        mixed_precision=False,
+        component_sampling=equilibration_sampling,
+        component_tuning=tuning,
+    )
+    estimator_ctx = estimator_ops.build_estimator_ctx(case.ham, case.mode_thouless)
+    guide_ops = make_ptccsd_thouless_mode_meas_ops(
+        case.sys,
+        exponentiate_t2=False,
+        mixed_precision=False,
+    )
+    state = SimpleNamespace(
+        walkers=case.walkers,
+        weights=jnp.asarray([1.0, 0.7, 1.2, 0.9]),
+    )
+
+    def unused_advance(state_i, *, n_blocks):
+        del state_i, n_blocks
+        raise AssertionError("one-population tuning must not advance propagation")
+
+    assert estimator_ops.retune_block_components is not None
+    result = estimator_ops.retune_block_components(
+        state,
+        jnp.zeros((0, 3), dtype=jnp.complex128),
+        jnp.zeros((0,), dtype=jnp.complex128),
+        SimpleNamespace(n_blocks=20),
+        case.ham,
+        estimator_ctx,
+        case.mode_thouless,
+        guide_data=case.mode_thouless,
+        guide_meas_ops=guide_ops,
+        guide_meas_ctx=None,
+        advance_blocks=unused_advance,
+        target_error=None,
+    )
+    assert result.state is state
+    assert result.estimator_ctx.component_sampling is not None
+    assert result.estimator_ctx.component_sampling.chol_head_size == 0
+    assert result.estimator_ctx.component_sampling.pair_sample_size == 8
+    assert result.estimator_ctx.component_sampling.pair_sample_batch_size == 4
 
 
 def test_ptccsd_full_head_block_components_match_exact_complex_numerator(
@@ -690,6 +777,147 @@ def test_ptccsd_sampled_tail_is_unbiased_for_complex_block_numerator(
     )
     assert np.isfinite(result.diagnostics["pt_component_sampling_noise_real"])
     assert np.isfinite(result.diagnostics["pt_component_sampling_noise_imag"])
+
+
+def test_ptccsd_head_rms_uses_real_phase_projected_walker_scores(pt_cases: PtCases):
+    case = pt_cases
+    sampling = PtccsdModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=32,
+        head_chol_batch_size=1,
+        pair_sample_batch_size=8,
+        walker_guide_policy="head_rms",
+        walker_guide_weight_mix=0.2,
+    )
+    ops = make_ptccsd_thouless_mode_estimator_ops(
+        case.sys,
+        n_mode_chunks=2,
+        mixed_precision=False,
+        component_sampling=sampling,
+    )
+    ctx = ops.build_estimator_ctx(case.ham, case.mode_thouless)
+    candidate_weights = jnp.asarray(
+        [1.0 + 0.6j, -0.4 + 0.7j, 1.2 - 0.3j, 0.5 + 0.1j],
+        dtype=jnp.complex128,
+    )
+    common = jax.vmap(
+        _ptccsd_thouless_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, case.mode_thouless)
+    all_terms = jax.vmap(
+        _ptccsd_thouless_mode_chol_terms,
+        in_axes=(0, None, None, None, None),
+    )(common, case.ham.chol, ctx.rot_chol, ctx, case.mode_thouless)
+    normalized_weights = candidate_weights / jnp.sum(candidate_weights)
+    projected_head = jnp.real(
+        normalized_weights[:, None] * all_terms[:, ctx.chol_head_indices]
+    )
+    head_scores = jnp.sqrt(jnp.sum(projected_head**2, axis=1))
+    abs_prob = jnp.abs(candidate_weights) / jnp.sum(jnp.abs(candidate_weights))
+    guided_prob = head_scores / jnp.sum(head_scores)
+    expected_prob = 0.2 * abs_prob + 0.8 * guided_prob
+    expected_ess = 1.0 / jnp.sum(expected_prob**2)
+
+    result = jax.jit(pair_sampled_ptccsd_block_components, static_argnums=3)(
+        case.walkers,
+        candidate_weights,
+        jax.random.PRNGKey(1223),
+        2,
+        case.ham,
+        ctx,
+        case.mode_thouless,
+    )
+    np.testing.assert_allclose(
+        result.diagnostics["pt_walker_proposal_ess"],
+        expected_ess,
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+
+
+def test_ptccsd_streamed_tuning_statistics_are_real_projected(pt_cases: PtCases):
+    case = pt_cases
+    sampling = PtccsdModePairSamplingCfg(chol_head_size=1, pair_sample_size=8)
+    ctx = build_ptccsd_thouless_mode_meas_ctx(
+        case.ham,
+        case.mode_thouless,
+        n_mode_chunks=2,
+        component_sampling=sampling,
+    )
+    candidate_weights = jnp.asarray(
+        [1.0 + 0.4j, -0.2 + 0.6j, 1.1 - 0.5j, 0.8 + 0.2j],
+        dtype=jnp.complex128,
+    )
+    stats = stream_ptccsd_mode_population_statistics(
+        case.walkers,
+        candidate_weights,
+        case.ham,
+        ctx,
+        case.mode_thouless,
+        n_walker_chunks=2,
+        chol_batch_size=2,
+    )
+
+    common = jax.vmap(
+        _ptccsd_thouless_mode_energy_common,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, case.mode_thouless)
+    all_terms = jax.vmap(
+        _ptccsd_thouless_mode_chol_terms,
+        in_axes=(0, None, None, None, None),
+    )(common, case.ham.chol, ctx.rot_chol, ctx, case.mode_thouless)
+    normalized_weights = candidate_weights / jnp.sum(candidate_weights)
+    walker_prob = jnp.abs(candidate_weights) / jnp.sum(jnp.abs(candidate_weights))
+    projected = jnp.real(normalized_weights[:, None] * all_terms)
+    expected_means = jnp.sum(projected, axis=0)
+    expected_seconds = jnp.sum(projected**2 / walker_prob[:, None], axis=0)
+    exact_components = jax.vmap(
+        components_pt_thouless_rw_rh,
+        in_axes=(0, None, None, None),
+    )(case.walkers, case.ham, ctx, case.mode_thouless)
+    mean_components = jnp.sum(
+        candidate_weights[:, None] * exact_components,
+        axis=0,
+    ) / jnp.sum(candidate_weights)
+    expected_energy = jnp.real(
+        case.ham.h0
+        + mean_components[1]
+        + mean_components[2]
+        - mean_components[0] * mean_components[1]
+    )
+
+    np.testing.assert_allclose(stats.term_means, expected_means, atol=3.0e-12)
+    np.testing.assert_allclose(
+        stats.term_second_moments,
+        expected_seconds,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(stats.exact_block_energy_ha, expected_energy, atol=3.0e-12)
+
+    tuning = PtccsdModePairTuningCfg(
+        target_tail_std_ha=1.0e6,
+        candidate_sample_sizes=(8,),
+        tuning_population_count=1,
+        minimum_head_fraction=0.0,
+        maximum_head_fraction=1.0,
+        production_pair_sample_batch_size=4,
+        walker_guide_policy="head_rms",
+        settling_blocks=0,
+    )
+    selected = select_ptccsd_mode_pair_sampling(
+        stats,
+        tuning,
+        n_walkers=case.walkers.shape[0],
+        reference_guide_scores=np.asarray(ctx.reference_chol_scores),
+        calibration_std_ha=1.0,
+        calibration_source="test",
+        final_error_target_ha=None,
+        n_blocks=10,
+    )
+    assert selected.sampling.chol_head_size == 0
+    assert selected.sampling.pair_sample_size == 8
+    assert selected.sampling.walker_guide_policy == "head_rms"
+    assert selected.sampling.pair_sample_batch_size == 4
 
 
 def test_mode_meas_factories_expose_guide_kernels(pt_cases: PtCases):

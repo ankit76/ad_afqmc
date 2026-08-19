@@ -12,6 +12,7 @@ import numpy as np
 
 from trot.core.ops import (
     BlockComponentEstimate,
+    BlockComponentRetuneResult,
     BlockEnergyRetuneResult,
     EstimatorOps,
     MeasOps,
@@ -520,3 +521,118 @@ def test_mixed_estimator_retuning_advance_uses_guide_scalar_contract(capsys):
     assert "Post-tuning settling: 2 blocks" in output
     assert "[settle    1/2]" in output
     assert "[settle    2/2]" in output
+
+
+def test_mixed_estimator_component_retuning_rebuilds_with_new_context(capsys):
+    (
+        sys,
+        params,
+        ham_data,
+        state,
+        guide_ops,
+        guide_meas_ops,
+        guide_prop_ops,
+        estimator_ops,
+    ) = _make_case(n_blocks=10, n_eql_blocks=2)
+    retune_calls = []
+
+    def block_components(
+        walkers,
+        candidate_weights,
+        rng_key,
+        n_chunks,
+        ham_data_i,
+        estimator_ctx,
+        estimator_data,
+    ):
+        del rng_key, n_chunks
+        components = jax.vmap(_components, in_axes=(0, None, None, None))(
+            walkers,
+            ham_data_i,
+            estimator_ctx,
+            estimator_data,
+        )
+        components = components + estimator_ctx
+        return BlockComponentEstimate(
+            weight=jnp.sum(candidate_weights),
+            numerator=jnp.sum(candidate_weights[:, None] * components, axis=0),
+            diagnostics={},
+        )
+
+    def retune_components(
+        state_i,
+        equilibration_components,
+        equilibration_weights,
+        params_i,
+        ham_data_i,
+        estimator_ctx_i,
+        estimator_data_i,
+        *,
+        guide_data,
+        guide_meas_ops,
+        guide_meas_ctx,
+        advance_blocks,
+        target_error=None,
+    ):
+        del (
+            params_i,
+            ham_data_i,
+            estimator_data_i,
+            guide_data,
+            guide_meas_ops,
+            guide_meas_ctx,
+            target_error,
+        )
+        state_n, scalars, observables = advance_blocks(state_i, n_blocks=1)
+        assert "estimator_components" in scalars
+        assert observables == ()
+        retune_calls.append(
+            (
+                np.asarray(equilibration_components),
+                np.asarray(equilibration_weights),
+                float(estimator_ctx_i),
+            )
+        )
+        return BlockComponentRetuneResult(
+            state=state_n,
+            estimator_ctx=jnp.asarray(2.0),
+            initial_n_chunks=1,
+            settling_blocks=1,
+        )
+
+    population_ops = EstimatorOps(
+        reference_overlap=estimator_ops.reference_overlap,
+        components=estimator_ops.components,
+        combine_energy=estimator_ops.combine_energy,
+        component_names=estimator_ops.component_names,
+        build_estimator_ctx=estimator_ops.build_estimator_ctx,
+        block_components=block_components,
+        retune_block_components=retune_components,
+    )
+    result = run_mixed_estimator_qmc(
+        sys=sys,
+        params=params,
+        ham_data=ham_data,
+        guide_data=jnp.asarray(0.0),
+        guide_ops=guide_ops,
+        guide_prop_ops=guide_prop_ops,
+        guide_meas_ops=guide_meas_ops,
+        estimator_data=jnp.asarray(0.0),
+        estimator_ops=population_ops,
+        mixed_block_fn=partial(block_mixed_estimator, sr_fn=_identity_sr),
+        state=state,
+        guide_meas_ctx=jnp.asarray(0.0),
+        guide_prop_ctx=jnp.asarray(0.0),
+        estimator_ctx=jnp.asarray(0.0),
+    )
+
+    expected_components = np.asarray([128.0 / 11.0, 35.0 / 11.0]) + 2.0
+    assert len(retune_calls) == 1
+    assert retune_calls[0][0].shape == (params.n_eql_blocks, 2)
+    assert retune_calls[0][1].shape == (params.n_eql_blocks,)
+    assert retune_calls[0][2] == 0.0
+    np.testing.assert_allclose(result.estimator_mean_components, expected_components)
+    output = capsys.readouterr().out
+    assert "Retuning projected-estimator component sampling" in output
+    assert "Post-estimator-tuning settling: 1 blocks" in output
+    assert "[estimator settle    1/1]" in output

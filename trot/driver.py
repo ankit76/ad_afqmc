@@ -1254,6 +1254,7 @@ def run_mixed_estimator_qmc(
         params_i: QmcParams,
         state_i: PropState,
         guide_meas_ctx_i: Any,
+        estimator_ctx_i: Any,
     ) -> tuple[QmcParams, Callable]:
         return _make_run_mixed_estimator_blocks_with_auto_chunks(
             mixed_block_fn=mixed_block_fn_sr,
@@ -1269,10 +1270,10 @@ def run_mixed_estimator_qmc(
             guide_meas_ctx=guide_meas_ctx_i,
             guide_prop_ctx=guide_prop_ctx,
             estimator_data=estimator_data,
-            estimator_ctx=estimator_ctx,
+            estimator_ctx=estimator_ctx_i,
         )
 
-    params, run_blocks = build_blocks(params, state, guide_meas_ctx)
+    params, run_blocks = build_blocks(params, state, guide_meas_ctx, estimator_ctx)
 
     def advance(state_i: PropState, n_blocks: int):
         return run_blocks(
@@ -1300,6 +1301,8 @@ def run_mixed_estimator_qmc(
         print_every = params.n_eql_blocks // 5 if params.n_eql_blocks >= 5 else 0
         equilibration_energy_chunks = []
         equilibration_weight_chunks = []
+        equilibration_estimator_component_chunks = []
+        equilibration_estimator_weight_chunks = []
         if print_every:
             print(
                 f"{'':4s}{'block':>9s}  "
@@ -1320,6 +1323,8 @@ def run_mixed_estimator_qmc(
             estimator_components_chunk = scalars_chunk["estimator_components"]
             equilibration_energy_chunks.append(guide_energies_chunk)
             equilibration_weight_chunks.append(guide_weights_chunk)
+            equilibration_estimator_component_chunks.append(estimator_components_chunk)
+            equilibration_estimator_weight_chunks.append(estimator_weights_chunk)
             guide_energy_chunk = _weighted_block_mean(
                 guide_energies_chunk,
                 guide_weights_chunk,
@@ -1339,9 +1344,20 @@ def run_mixed_estimator_qmc(
             )
         equilibration_energies = jnp.concatenate(equilibration_energy_chunks)
         equilibration_weights = jnp.concatenate(equilibration_weight_chunks)
+        equilibration_estimator_components = jnp.concatenate(
+            equilibration_estimator_component_chunks
+        )
+        equilibration_estimator_weights = jnp.concatenate(
+            equilibration_estimator_weight_chunks
+        )
     else:
         equilibration_energies = jnp.zeros((0,), dtype=jnp.result_type(state.e_estimate))
         equilibration_weights = jnp.zeros((0,), dtype=jnp.result_type(state.weights))
+        equilibration_estimator_components = jnp.zeros(
+            (0, len(estimator_ops.component_names)),
+            dtype=jnp.complex128,
+        )
+        equilibration_estimator_weights = jnp.zeros((0,), dtype=jnp.complex128)
         print("  no equilibration blocks requested.")
 
     if guide_meas_ops.retune_block_energy is not None:
@@ -1377,7 +1393,7 @@ def run_mixed_estimator_qmc(
             n_chunks=retuned.initial_n_chunks,
             n_eql_blocks=retuned.settling_blocks,
         )
-        params, run_blocks = build_blocks(params, state, guide_meas_ctx)
+        params, run_blocks = build_blocks(params, state, guide_meas_ctx, estimator_ctx)
         if retuned.settling_blocks > 0:
             print(f"\nPost-tuning settling: {retuned.settling_blocks} blocks")
             settling_chunk = max(1, retuned.settling_blocks // 5)
@@ -1395,6 +1411,65 @@ def run_mixed_estimator_qmc(
                 )
                 print(
                     f"[settle {start + n:4d}/{retuned.settling_blocks}]  "
+                    f"Guide_E={float(guide_energy_chunk):14.10f}  "
+                    f"Estimator_E={estimator_energy_chunk:14.10f}  "
+                    f"dt={(time.perf_counter() - batch_started) / n:.3f} s/block"
+                )
+
+    if estimator_ops.retune_block_components is not None:
+        print("\nRetuning projected-estimator component sampling after equilibration:")
+
+        def advance_for_estimator_retune(state_i, *, n_blocks: int):
+            state_n, scalars_n = advance(state_i, n_blocks)
+            return state_n, scalars_n, ()
+
+        estimator_retuned = estimator_ops.retune_block_components(
+            state,
+            equilibration_estimator_components,
+            equilibration_estimator_weights,
+            params,
+            ham_data,
+            estimator_ctx,
+            estimator_data,
+            guide_data=guide_data,
+            guide_meas_ops=guide_meas_ops,
+            guide_meas_ctx=guide_meas_ctx,
+            advance_blocks=advance_for_estimator_retune,
+            target_error=target_error,
+        )
+        if estimator_retuned.initial_n_chunks <= 0:
+            raise ValueError("retuned estimator initial_n_chunks must be positive.")
+        if estimator_retuned.settling_blocks < 0:
+            raise ValueError("retuned estimator settling_blocks must be nonnegative.")
+        state = cast(PropState, estimator_retuned.state)
+        estimator_ctx = estimator_retuned.estimator_ctx
+        params = dataclasses.replace(
+            params,
+            n_chunks=estimator_retuned.initial_n_chunks,
+            n_eql_blocks=estimator_retuned.settling_blocks,
+        )
+        params, run_blocks = build_blocks(params, state, guide_meas_ctx, estimator_ctx)
+        if estimator_retuned.settling_blocks > 0:
+            print(
+                "\nPost-estimator-tuning settling: "
+                f"{estimator_retuned.settling_blocks} blocks"
+            )
+            settling_chunk = max(1, estimator_retuned.settling_blocks // 5)
+            for start in range(0, estimator_retuned.settling_blocks, settling_chunk):
+                n = min(settling_chunk, estimator_retuned.settling_blocks - start)
+                batch_started = time.perf_counter()
+                state, scalars_chunk = advance(state, n)
+                guide_energy_chunk = _weighted_block_mean(
+                    scalars_chunk["guide_energy"],
+                    scalars_chunk["guide_weight"],
+                )
+                estimator_energy_chunk = combined_estimator_energy(
+                    scalars_chunk["estimator_weight"],
+                    scalars_chunk["estimator_components"],
+                )
+                print(
+                    f"[estimator settle "
+                    f"{start + n:4d}/{estimator_retuned.settling_blocks}]  "
                     f"Guide_E={float(guide_energy_chunk):14.10f}  "
                     f"Estimator_E={estimator_energy_chunk:14.10f}  "
                     f"dt={(time.perf_counter() - batch_started) / n:.3f} s/block"
