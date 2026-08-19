@@ -504,9 +504,15 @@ def test_ptccsd_component_sampling_configuration_and_factory(pt_cases: PtCases):
         chol_head_size=2,
         pair_sample_size=16,
         head_chol_batch_size=1,
-        pair_sample_batch_size=4,
         track_half_sample_diagnostic=True,
     )
+    cisd_style_defaults = PtccsdModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=16,
+    )
+    assert cisd_style_defaults.rank_head_by_guide is False
+    assert cisd_style_defaults.head_chol_batch_size == 0
+    assert cisd_style_defaults.tail_probability_uniform_mix == 0.0
     deterministic_ops = make_ptccsd_thouless_mode_estimator_ops(
         case.sys,
         mixed_precision=False,
@@ -580,7 +586,6 @@ def test_ptccsd_component_tuning_installs_selected_context(pt_cases: PtCases):
         tuning_n_chunks=2,
         tuning_chol_batch_size=2,
         tuning_population_count=1,
-        production_pair_sample_batch_size=4,
         track_half_sample_diagnostic=False,
         settling_blocks=0,
     )
@@ -624,7 +629,6 @@ def test_ptccsd_component_tuning_installs_selected_context(pt_cases: PtCases):
     assert result.estimator_ctx.component_sampling is not None
     assert result.estimator_ctx.component_sampling.chol_head_size == 0
     assert result.estimator_ctx.component_sampling.pair_sample_size == 8
-    assert result.estimator_ctx.component_sampling.pair_sample_batch_size == 4
 
 
 def test_ptccsd_full_head_block_components_match_exact_complex_numerator(
@@ -708,7 +712,6 @@ def test_ptccsd_sampled_tail_is_unbiased_for_complex_block_numerator(
         chol_head_size=1,
         pair_sample_size=16384,
         head_chol_batch_size=1,
-        pair_sample_batch_size=128,
         tail_probability_uniform_mix=0.05,
         track_half_sample_diagnostic=True,
     )
@@ -785,7 +788,6 @@ def test_ptccsd_head_rms_uses_real_phase_projected_walker_scores(pt_cases: PtCas
         chol_head_size=2,
         pair_sample_size=32,
         head_chol_batch_size=1,
-        pair_sample_batch_size=8,
         walker_guide_policy="head_rms",
         walker_guide_weight_mix=0.2,
     )
@@ -900,7 +902,6 @@ def test_ptccsd_streamed_tuning_statistics_are_real_projected(pt_cases: PtCases)
         tuning_population_count=1,
         minimum_head_fraction=0.0,
         maximum_head_fraction=1.0,
-        production_pair_sample_batch_size=4,
         walker_guide_policy="head_rms",
         settling_blocks=0,
     )
@@ -917,7 +918,6 @@ def test_ptccsd_streamed_tuning_statistics_are_real_projected(pt_cases: PtCases)
     assert selected.sampling.chol_head_size == 0
     assert selected.sampling.pair_sample_size == 8
     assert selected.sampling.walker_guide_policy == "head_rms"
-    assert selected.sampling.pair_sample_batch_size == 4
 
 
 def test_mode_meas_factories_expose_guide_kernels(pt_cases: PtCases):

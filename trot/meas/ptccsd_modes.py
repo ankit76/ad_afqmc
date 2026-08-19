@@ -67,11 +67,10 @@ class PtccsdModePairSamplingCfg:
 
     chol_head_size: int
     pair_sample_size: int
-    rank_head_by_guide: bool = True
+    rank_head_by_guide: bool = False
     guide_chol_batch_size: int = 16
-    head_chol_batch_size: int = 16
-    pair_sample_batch_size: int = 256
-    tail_probability_uniform_mix: float = 0.05
+    head_chol_batch_size: int = 0
+    tail_probability_uniform_mix: float = 0.0
     track_half_sample_diagnostic: bool = False
     walker_guide_policy: Literal["abs_weight", "head_rms"] = "abs_weight"
     walker_guide_weight_mix: float = 0.1
@@ -83,10 +82,8 @@ class PtccsdModePairSamplingCfg:
             raise ValueError("pair_sample_size must be positive.")
         if self.guide_chol_batch_size <= 0:
             raise ValueError("guide_chol_batch_size must be positive.")
-        if self.head_chol_batch_size <= 0:
-            raise ValueError("head_chol_batch_size must be positive.")
-        if self.pair_sample_batch_size <= 0:
-            raise ValueError("pair_sample_batch_size must be positive.")
+        if self.head_chol_batch_size < 0:
+            raise ValueError("head_chol_batch_size must be nonnegative.")
         if not 0.0 <= self.tail_probability_uniform_mix <= 1.0:
             raise ValueError("tail_probability_uniform_mix must lie in [0, 1].")
         if self.walker_guide_policy not in ("abs_weight", "head_rms"):
@@ -128,8 +125,7 @@ class PtccsdModePairTuningCfg:
     tuning_population_count: int = 5
     tuning_population_spacing_blocks: int = 2
     production_initial_n_chunks: int = 1
-    production_head_chol_batch_size: int = 16
-    production_pair_sample_batch_size: int = 256
+    production_head_chol_batch_size: int = 0
     tail_probability_uniform_mix: float = 0.01
     track_half_sample_diagnostic: bool = True
     walker_guide_policy: Literal["abs_weight", "head_rms"] = "abs_weight"
@@ -143,8 +139,6 @@ class PtccsdModePairTuningCfg:
             raise ValueError("walker_guide_policy must be 'abs_weight' or 'head_rms'.")
         if not 0.0 < self.walker_guide_weight_mix <= 1.0:
             raise ValueError("walker_guide_weight_mix must lie in (0, 1].")
-        if self.production_pair_sample_batch_size <= 0:
-            raise ValueError("production_pair_sample_batch_size must be positive.")
         # Reuse the mature scalar-tuner validation for the common controls.
         _ = self.as_cisd_cfg()
 
@@ -1252,10 +1246,8 @@ def pair_sampled_ptccsd_block_components(
             p=meas_ctx.chol_tail_prob,
         )
         sample_chol = meas_ctx.chol_tail_indices[sample_chol_rel]
-        pair_n_chunks = max(
-            1,
-            math.ceil(sampling.pair_sample_size / sampling.pair_sample_batch_size),
-        )
+        walker_batch_size = (n_walkers + n_chunks - 1) // n_chunks
+        pair_n_chunks = (sampling.pair_sample_size + walker_batch_size - 1) // walker_batch_size
         residual = _ptccsd_thouless_mode_chol_pair_terms(
             common,
             sample_walker,
@@ -1577,7 +1569,6 @@ def select_ptccsd_mode_pair_sampling(
         rank_head_by_guide=True,
         guide_chol_batch_size=cfg.tuning_chol_batch_size,
         head_chol_batch_size=cfg.production_head_chol_batch_size,
-        pair_sample_batch_size=cfg.production_pair_sample_batch_size,
         tail_probability_uniform_mix=cfg.tail_probability_uniform_mix,
         track_half_sample_diagnostic=cfg.track_half_sample_diagnostic,
         walker_guide_policy=cfg.walker_guide_policy,
