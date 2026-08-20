@@ -13,6 +13,7 @@ from jax import lax
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
+from . import walkers as wk
 from .core.ops import (
     EstimatorOps,
     MeasOps,
@@ -322,6 +323,43 @@ def _weighted_block_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
     num = jnp.sum(weights.reshape(w_shape) * values, axis=0)
     zero = jnp.zeros_like(num)
     return jnp.where(w_sum == 0, zero, num / w_sum)
+
+
+def _initial_projected_estimator(
+    state: PropState,
+    *,
+    ham_data: Any,
+    estimator_data: Any,
+    estimator_ops: EstimatorOps,
+    estimator_ctx: Any,
+) -> tuple[float, float]:
+    """Evaluate the projected estimator on the representative initial walker.
+
+    AFQMC initialization broadcasts one determinant across the walker
+    population. Evaluating that representative walker therefore gives the
+    exact block-zero energy while avoiding an all-walker deterministic PT
+    contraction when production uses population-level component sampling.
+    """
+
+    walker_0 = wk.take_walkers(state.walkers, jnp.asarray([0]))
+    components_0 = wk.vmap_chunked(
+        estimator_ops.components,
+        n_chunks=1,
+        in_axes=(0, None, None, None),
+    )(walker_0, ham_data, estimator_ctx, estimator_data)[0]
+    energy_0 = estimator_ops.combine_energy(ham_data.h0, components_0)
+
+    reference_overlap_0 = wk.vmap_chunked(
+        estimator_ops.reference_overlap,
+        n_chunks=1,
+        in_axes=(0, None),
+    )(walker_0, estimator_data)[0]
+    estimator_weight_0 = jnp.sum(state.weights) * reference_overlap_0 / state.overlaps[0]
+
+    return (
+        float(np.real(np.asarray(energy_0).reshape(()))),
+        float(np.real(np.asarray(estimator_weight_0).reshape(()))),
+    )
 
 
 def make_run_blocks(
@@ -1327,22 +1365,38 @@ def run_mixed_estimator_qmc(
     )
     run_started = time.perf_counter()
     print("\nMixed-estimator equilibration:\n")
+    print_every = params.n_eql_blocks // 5 if params.n_eql_blocks >= 5 else 0
+    if print_every:
+        print(
+            f"{'':4s}{'block':>9s}  "
+            f"{f'{shift_energy_label}_E_blk':>14s}  "
+            f"{'Guide_W_blk':>12s}  "
+            f"{'Estimator_E_blk':>16s}  "
+            f"{'Estimator_W_blk':>15s}  "
+            f"{'nodes':>10s}  "
+            f"{'t[s]':>8s}"
+        )
+    estimator_energy_0, estimator_weight_0 = _initial_projected_estimator(
+        state,
+        ham_data=ham_data,
+        estimator_data=estimator_data,
+        estimator_ops=estimator_ops,
+        estimator_ctx=estimator_ctx,
+    )
+    print(
+        f"[eql {0:4d}/{params.n_eql_blocks}]  "
+        f"{float(jnp.real(state.e_estimate)):14.10f}  "
+        f"{float(jnp.real(jnp.sum(state.weights))):12.6e}  "
+        f"{estimator_energy_0:16.10f}  "
+        f"{estimator_weight_0:15.6e}  "
+        f"{int(state.node_encounters):10d}  "
+        f"{0.0:8.1f}"
+    )
     if params.n_eql_blocks > 0:
-        print_every = params.n_eql_blocks // 5 if params.n_eql_blocks >= 5 else 0
         equilibration_energy_chunks = []
         equilibration_weight_chunks = []
         equilibration_estimator_component_chunks = []
         equilibration_estimator_weight_chunks = []
-        if print_every:
-            print(
-                f"{'':4s}{'block':>9s}  "
-                f"{f'{shift_energy_label}_E_blk':>14s}  "
-                f"{'Guide_W_blk':>12s}  "
-                f"{'Estimator_E_blk':>16s}  "
-                f"{'Estimator_W_blk':>15s}  "
-                f"{'nodes':>10s}  "
-                f"{'t[s]':>8s}"
-            )
         equilibration_chunk = print_every if print_every > 0 else 1
         for start in range(0, params.n_eql_blocks, equilibration_chunk):
             n = min(equilibration_chunk, params.n_eql_blocks - start)

@@ -432,6 +432,9 @@ def test_generic_mixed_estimator_driver_returns_named_components(capsys):
     assert "Mixed-estimator equilibration:" in output
     assert "Guide_E_blk" in output
     assert "Estimator_E_blk" in output
+    assert "[eql    0/10]" in output
+    assert "5.5000000000" in output
+    assert "40.5000000000" in output
     assert "[eql    2/10]" in output
     assert "[eql   10/10]" in output
     assert "Mixed-estimator sampling:" in output
