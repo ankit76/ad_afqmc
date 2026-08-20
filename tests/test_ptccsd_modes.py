@@ -358,18 +358,19 @@ def test_thouless_connected_residual_decomposition_matches_components(
             ctx,
             case.mode_thouless,
         )
-        residual = _ptccsd_thouless_mode_chol_terms(
+        chol_components = _ptccsd_thouless_mode_chol_terms(
             common,
             case.ham.chol,
             ctx.rot_chol,
             ctx,
             case.mode_thouless,
         )
+        chol_sum = jnp.sum(chol_components, axis=0)
         return jnp.stack(
             [
                 common.theta,
-                common.electronic_0,
-                common.h_t_base + jnp.sum(residual),
+                common.electronic_0_base + chol_sum[0],
+                common.h_t_base + chol_sum[1],
             ]
         )
 
@@ -475,7 +476,14 @@ def test_thouless_residual_index_head_and_pair_kernels_are_exact(
         n_walker_chunks=2,
         chol_batch_size=2,
     )
-    np.testing.assert_array_equal(empty_head, jnp.zeros_like(common.h_t_base))
+    expected_empty = jnp.stack(
+        (
+            jnp.zeros_like(common.electronic_0_base),
+            jnp.zeros_like(common.h_t_base),
+        ),
+        axis=-1,
+    )
+    np.testing.assert_array_equal(empty_head, expected_empty)
 
     sample_walker = jnp.asarray([3, 0, 2, 1, 3], dtype=jnp.int32)
     sample_chol = jnp.asarray([4, 0, 2, 1, 3], dtype=jnp.int32)
@@ -755,30 +763,37 @@ def test_ptccsd_sampled_tail_is_unbiased_for_complex_block_numerator(
     walker_prob = jnp.abs(candidate_weights) / jnp.sum(jnp.abs(candidate_weights))
     tail_terms = all_terms[:, ctx.chol_tail_indices]
     importance_values = (
-        candidate_weights[:, None]
+        candidate_weights[:, None, None]
         * tail_terms
-        / (walker_prob[:, None] * ctx.chol_tail_prob[None, :])
+        / (walker_prob[:, None, None] * ctx.chol_tail_prob[None, :, None])
     )
     joint_prob = walker_prob[:, None] * ctx.chol_tail_prob[None, :]
-    tail_mean = jnp.sum(joint_prob * importance_values)
-    exact_tail_numerator = jnp.sum(candidate_weights[:, None] * tail_terms)
+    tail_mean = jnp.sum(joint_prob[:, :, None] * importance_values, axis=(0, 1))
+    exact_tail_numerator = jnp.sum(
+        candidate_weights[:, None, None] * tail_terms,
+        axis=(0, 1),
+    )
     real_variance = jnp.sum(
-        joint_prob * (jnp.real(importance_values) - jnp.real(tail_mean)) ** 2
+        joint_prob[:, :, None]
+        * (jnp.real(importance_values) - jnp.real(tail_mean)) ** 2,
+        axis=(0, 1),
     )
     imag_variance = jnp.sum(
-        joint_prob * (jnp.imag(importance_values) - jnp.imag(tail_mean)) ** 2
+        joint_prob[:, :, None]
+        * (jnp.imag(importance_values) - jnp.imag(tail_mean)) ** 2,
+        axis=(0, 1),
     )
     real_tolerance = 8.0 * jnp.sqrt(real_variance / sampling.pair_sample_size) + 1.0e-10
     imag_tolerance = 8.0 * jnp.sqrt(imag_variance / sampling.pair_sample_size) + 1.0e-10
 
     np.testing.assert_allclose(result.weight, jnp.sum(candidate_weights), atol=2.0e-12)
-    np.testing.assert_allclose(result.numerator[:2], exact_numerator[:2], atol=3.0e-12)
+    np.testing.assert_allclose(result.numerator[0], exact_numerator[0], atol=3.0e-12)
     np.testing.assert_allclose(tail_mean, exact_tail_numerator, atol=3.0e-12)
-    assert abs(float(jnp.real(result.numerator[2] - exact_numerator[2]))) < float(
-        real_tolerance
+    assert bool(
+        jnp.all(jnp.abs(jnp.real(result.numerator[1:] - exact_numerator[1:])) < real_tolerance)
     )
-    assert abs(float(jnp.imag(result.numerator[2] - exact_numerator[2]))) < float(
-        imag_tolerance
+    assert bool(
+        jnp.all(jnp.abs(jnp.imag(result.numerator[1:] - exact_numerator[1:])) < imag_tolerance)
     )
     assert np.isfinite(result.diagnostics["pt_component_sampling_noise_real"])
     assert np.isfinite(result.diagnostics["pt_component_sampling_noise_imag"])
@@ -813,8 +828,13 @@ def test_ptccsd_head_rms_uses_real_phase_projected_walker_scores(pt_cases: PtCas
         in_axes=(0, None, None, None, None),
     )(common, case.ham.chol, ctx.rot_chol, ctx, case.mode_thouless)
     normalized_weights = candidate_weights / jnp.sum(candidate_weights)
+    theta_reference = jnp.sum(normalized_weights * common.theta)
+    effective_head = (
+        all_terms[:, ctx.chol_head_indices, 1]
+        - theta_reference * all_terms[:, ctx.chol_head_indices, 0]
+    )
     projected_head = jnp.real(
-        normalized_weights[:, None] * all_terms[:, ctx.chol_head_indices]
+        normalized_weights[:, None] * effective_head
     )
     head_scores = jnp.sqrt(jnp.sum(projected_head**2, axis=1))
     abs_prob = jnp.abs(candidate_weights) / jnp.sum(jnp.abs(candidate_weights))
@@ -872,7 +892,9 @@ def test_ptccsd_streamed_tuning_statistics_are_real_projected(pt_cases: PtCases)
     )(common, case.ham.chol, ctx.rot_chol, ctx, case.mode_thouless)
     normalized_weights = candidate_weights / jnp.sum(candidate_weights)
     walker_prob = jnp.abs(candidate_weights) / jnp.sum(jnp.abs(candidate_weights))
-    projected = jnp.real(normalized_weights[:, None] * all_terms)
+    theta_reference = jnp.sum(normalized_weights * common.theta)
+    effective = all_terms[..., 1] - theta_reference * all_terms[..., 0]
+    projected = jnp.real(normalized_weights[:, None] * effective)
     expected_means = jnp.sum(projected, axis=0)
     expected_seconds = jnp.sum(projected**2 / walker_prob[:, None], axis=0)
     exact_components = jax.vmap(

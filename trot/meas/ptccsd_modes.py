@@ -267,16 +267,16 @@ class PtccsdThoulessModeMeasCtx:
 class PtccsdThoulessModeEnergyCommon(NamedTuple):
     """Per-walker PT sufficient-statistic data shared by Cholesky terms.
 
-    ``h_t_base`` excludes the connected, Cholesky-resolved T2 residual. This
-    decomposition is an algebraic building block for a future population-level
-    estimator; it is not a per-walker local-energy definition.
+    The two base components contain only one-body contributions. The
+    determinant-reference two-body energy and connected T2 correction are both
+    represented by Cholesky-resolved component terms.
     """
 
     half_green: jax.Array
     greenp: jax.Array
     t2_green: jax.Array
     theta: jax.Array
-    electronic_0: jax.Array
+    electronic_0_base: jax.Array
     h_t_base: jax.Array
 
 
@@ -719,7 +719,7 @@ def _ptccsd_thouless_mode_energy_common(
     meas_ctx: PtccsdThoulessModeMeasCtx,
     trial_data: PtccsdThoulessModeTrial,
 ) -> PtccsdThoulessModeEnergyCommon:
-    """Build exact per-walker data outside the connected T2 residual sum."""
+    """Build per-walker data outside the Cholesky component sum."""
 
     half_green, green, green_rows, green_occ, greenp = _thouless_half_green_blocks(
         walker,
@@ -738,29 +738,13 @@ def _ptccsd_thouless_mode_energy_common(
         "pq,pq->", h1, t2_green, optimize="optimal"
     )
 
-    # Keep the determinant-reference two-body energy exact. Only the more
-    # expensive connected T2 residual is split into Cholesky contributions.
-    lg = jnp.einsum(
-        "giq,iq->g",
-        meas_ctx.rot_chol,
-        half_green,
-        optimize="optimal",
-    )
-    lg1 = jnp.einsum(
-        "gip,jp->gij",
-        meas_ctx.rot_chol,
-        half_green,
-        optimize="optimal",
-    )
-    e2_0 = 2.0 * (lg @ lg) - jnp.sum(lg1 * jnp.swapaxes(lg1, -1, -2))
-
     return PtccsdThoulessModeEnergyCommon(
         half_green=half_green,
         greenp=greenp,
         t2_green=t2_green,
         theta=theta2,
-        electronic_0=e1_0 + e2_0,
-        h_t_base=e1_2 + theta2 * e2_0,
+        electronic_0_base=e1_0,
+        h_t_base=e1_2,
     )
 
 
@@ -771,7 +755,7 @@ def _ptccsd_thouless_mode_chol_terms(
     meas_ctx: PtccsdThoulessModeMeasCtx,
     trial_data: PtccsdThoulessModeTrial,
 ) -> jax.Array:
-    """Return one walker's connected T2 residual for supplied Cholesky vectors."""
+    """Return ``[e2_0, theta * e2_0 + connected]`` by Cholesky vector."""
 
     reference_occ = trial_data.mo_t.conj()[: trial_data.nocc, :].astype(
         meas_ctx.cfg.mixed_complex_dtype
@@ -786,6 +770,14 @@ def _ptccsd_thouless_mode_chol_terms(
             common.half_green,
             optimize="optimal",
         )
+        lg1_i = jnp.einsum(
+            "ip,jp->ij",
+            rot_chol_i,
+            common.half_green,
+            optimize="optimal",
+        )
+        e20_i = 2.0 * lg_i * lg_i
+        e20_i -= jnp.sum(lg1_i * jnp.swapaxes(lg1_i, -1, -2))
         lt2g_i = _chol_contract(
             chol_i[None, ...], common.t2_green, meas_ctx.cfg
         )[0]
@@ -808,7 +800,8 @@ def _ptccsd_thouless_mode_chol_terms(
             glgp_i[None, ...],
             n_mode_chunks=meas_ctx.n_mode_chunks,
         )[0]
-        return 4.0 * (-lt2g_i * lg_i + e222_i) + e223_i
+        connected_i = 4.0 * (-lt2g_i * lg_i + e222_i) + e223_i
+        return jnp.stack((e20_i, common.theta * e20_i + connected_i))
 
     if meas_ctx.memory_mode == "low":
         zero = jnp.zeros((), dtype=jnp.result_type(common.half_green, chol))
@@ -825,6 +818,17 @@ def _ptccsd_thouless_mode_chol_terms(
         rot_chol,
         common.half_green,
         optimize="optimal",
+    )
+    lg1 = jnp.einsum(
+        "gip,jp->gij",
+        rot_chol,
+        common.half_green,
+        optimize="optimal",
+    )
+    e20 = 2.0 * lg * lg
+    e20 -= jnp.sum(
+        lg1 * jnp.swapaxes(lg1, -1, -2),
+        axis=(-1, -2),
     )
     lt2g = _chol_contract(chol, common.t2_green, meas_ctx.cfg)
     gl_half = _energy_gl_batched(common.half_green, chol, meas_ctx.cfg)
@@ -851,7 +855,8 @@ def _ptccsd_thouless_mode_chol_terms(
         glgp,
         n_mode_chunks=meas_ctx.n_mode_chunks,
     )
-    return 4.0 * (-lt2g * lg + e222) + e223
+    connected = 4.0 * (-lt2g * lg + e222) + e223
+    return jnp.stack((e20, common.theta * e20 + connected), axis=-1)
 
 
 def _ptccsd_thouless_mode_chol_terms_for_walkers(
@@ -863,7 +868,7 @@ def _ptccsd_thouless_mode_chol_terms_for_walkers(
     *,
     n_chunks: int = 1,
 ) -> jax.Array:
-    """Return a bounded walker-by-supplied-Cholesky residual batch."""
+    """Return bounded walker-by-Cholesky PT component terms."""
 
     return wk.vmap_chunked(
         lambda common_i: _ptccsd_thouless_mode_chol_terms(
@@ -886,7 +891,7 @@ def _ptccsd_thouless_mode_chol_index_terms(
     *,
     n_chunks: int,
 ) -> jax.Array:
-    """Return one walker's residual terms at arbitrary Cholesky indices."""
+    """Return one walker's component terms at arbitrary Cholesky indices."""
 
     return wk.vmap_chunked(
         lambda chol_i: _ptccsd_thouless_mode_chol_terms(
@@ -909,12 +914,19 @@ def _ptccsd_thouless_mode_chol_index_moments_for_walkers(
     *,
     n_walker_chunks: int,
     chol_batch_size: int,
+    theta_reference: jax.Array | float = 0.0,
     compute_projection_moments: bool = True,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    """Stream a residual head and real/imaginary quadratic forms per walker."""
+    """Stream a component head and final-energy projection moments."""
 
     head_size = int(chol_indices.shape[0])
-    zero_total = jnp.zeros_like(common.h_t_base)
+    zero_total = jnp.stack(
+        (
+            jnp.zeros_like(common.electronic_0_base),
+            jnp.zeros_like(common.h_t_base),
+        ),
+        axis=-1,
+    )
     zero_real = jnp.zeros_like(jnp.real(common.h_t_base), dtype=jnp.float64)
     if head_size == 0:
         return zero_total, zero_real, zero_real, zero_real
@@ -938,11 +950,12 @@ def _ptccsd_thouless_mode_chol_index_moments_for_walkers(
             trial_data,
             n_chunks=n_walker_chunks,
         )
-        terms_i = jnp.where(valid_i[None, :], terms_i, 0.0)
+        terms_i = jnp.where(valid_i[None, :, None], terms_i, 0.0)
         total = total + jnp.sum(terms_i, axis=1)
         if compute_projection_moments:
-            terms_real = jnp.real(terms_i).astype(jnp.float64)
-            terms_imag = jnp.imag(terms_i).astype(jnp.float64)
+            effective_i = terms_i[..., 1] - theta_reference * terms_i[..., 0]
+            terms_real = jnp.real(effective_i).astype(jnp.float64)
+            terms_imag = jnp.imag(effective_i).astype(jnp.float64)
             real_sq = real_sq + jnp.sum(terms_real**2, axis=1, dtype=jnp.float64)
             imag_sq = imag_sq + jnp.sum(terms_imag**2, axis=1, dtype=jnp.float64)
             real_imag = real_imag + jnp.sum(
@@ -970,7 +983,7 @@ def _ptccsd_thouless_mode_chol_index_sum_for_walkers(
     n_walker_chunks: int,
     chol_batch_size: int,
 ) -> jax.Array:
-    """Stream an exact residual head without materializing every pair."""
+    """Stream an exact component head without materializing every pair."""
 
     total, _, _, _ = _ptccsd_thouless_mode_chol_index_moments_for_walkers(
         common,
@@ -995,7 +1008,7 @@ def _ptccsd_thouless_mode_chol_pair_terms(
     *,
     n_chunks: int = 1,
 ) -> jax.Array:
-    """Evaluate gathered walker--Cholesky residual pairs in microbatches."""
+    """Evaluate gathered walker--Cholesky component pairs in microbatches."""
 
     return wk.vmap_chunked(
         lambda walker_i, chol_i: _ptccsd_thouless_mode_chol_terms(
@@ -1017,7 +1030,7 @@ def _build_ptccsd_thouless_reference_chol_scores(
     *,
     chol_batch_size: int,
 ) -> jax.Array:
-    """Build bounded reference-determinant scores for the connected residual."""
+    """Build bounded reference scores for the combined PT energy residual."""
 
     n_chol = int(ham_data.chol.shape[0])
     common = _ptccsd_thouless_mode_energy_common(
@@ -1036,7 +1049,8 @@ def _build_ptccsd_thouless_reference_chol_scores(
         trial_data,
         n_chunks=n_chunks,
     )
-    return jnp.maximum(jnp.abs(jnp.real(terms)).astype(jnp.float64), 1.0e-300)
+    effective = terms[:, 1] - common.theta * terms[:, 0]
+    return jnp.maximum(jnp.abs(jnp.real(effective)).astype(jnp.float64), 1.0e-300)
 
 
 def configure_ptccsd_mode_pair_sampling(
@@ -1091,9 +1105,9 @@ def pair_sampled_ptccsd_block_components(
 ) -> BlockComponentEstimate:
     """Estimate the block PT component numerator with an exact denominator.
 
-    ``theta`` and ``electronic_0`` remain exact. The exact head and sampled
-    tail contribute only to the unnormalized ``h_t`` numerator; no per-walker
-    scalar local energy is formed.
+    ``theta`` and both one-body bases remain exact. The Cholesky head and tail
+    contribute jointly to the unnormalized ``electronic_0`` and ``h_t``
+    numerators; no per-walker scalar local energy is formed.
     """
 
     sampling = meas_ctx.component_sampling
@@ -1113,6 +1127,23 @@ def pair_sampled_ptccsd_block_components(
         n_chunks=n_chunks,
         in_axes=(0, None, None, None),
     )(walkers, ham_data, meas_ctx, trial_data)
+
+    finite_common = jnp.ones((n_walkers,), dtype=jnp.bool_)
+    for value in tree_util.tree_leaves(common):
+        finite_common = finite_common & jnp.all(
+            jnp.isfinite(value.reshape(n_walkers, -1)), axis=1
+        )
+    finite_weights = jnp.isfinite(candidate_weights)
+    preliminary_valid = finite_common & finite_weights
+    preliminary_weights = jnp.where(preliminary_valid, candidate_weights, 0.0)
+    preliminary_weight = jnp.sum(preliminary_weights)
+    preliminary_weight_safe = jnp.where(
+        preliminary_weight == 0.0, 1.0, preliminary_weight
+    )
+    theta_reference = jnp.sum(preliminary_weights * common.theta)
+    theta_reference /= preliminary_weight_safe
+    theta_reference = jnp.where(preliminary_weight == 0.0, 0.0, theta_reference)
+
     if sampling.walker_guide_policy == "head_rms":
         head_sum, head_real_sq, head_imag_sq, head_real_imag = (
             _ptccsd_thouless_mode_chol_index_moments_for_walkers(
@@ -1123,6 +1154,7 @@ def pair_sampled_ptccsd_block_components(
                 trial_data,
                 n_walker_chunks=n_chunks,
                 chol_batch_size=sampling.head_chol_batch_size,
+                theta_reference=theta_reference,
             )
         )
     else:
@@ -1135,26 +1167,22 @@ def pair_sampled_ptccsd_block_components(
             n_walker_chunks=n_chunks,
             chol_batch_size=sampling.head_chol_batch_size,
         )
-        head_real_sq = jnp.zeros_like(jnp.real(common.h_t_base), dtype=jnp.float64)
+        head_real_sq = jnp.zeros_like(
+            jnp.real(common.electronic_0_base), dtype=jnp.float64
+        )
         head_imag_sq = jnp.zeros_like(head_real_sq)
         head_real_imag = jnp.zeros_like(head_real_sq)
     exact_components = jnp.stack(
         (
             common.theta,
-            common.electronic_0,
-            common.h_t_base + head_sum,
+            common.electronic_0_base + head_sum[:, 0],
+            common.h_t_base + head_sum[:, 1],
         ),
         axis=1,
     )
 
-    finite_common = jnp.ones((n_walkers,), dtype=jnp.bool_)
-    for value in tree_util.tree_leaves(common):
-        finite_common = finite_common & jnp.all(
-            jnp.isfinite(value.reshape(n_walkers, -1)), axis=1
-        )
     finite_components = jnp.all(jnp.isfinite(exact_components), axis=1)
-    finite_weights = jnp.isfinite(candidate_weights)
-    valid = finite_common & finite_components & finite_weights
+    valid = preliminary_valid & finite_components
     estimator_weights = jnp.where(valid, candidate_weights, 0.0)
     safe_components = jnp.where(valid[:, None], exact_components, 0.0)
     estimator_weight = jnp.sum(estimator_weights)
@@ -1246,7 +1274,7 @@ def pair_sampled_ptccsd_block_components(
         sample_chol = meas_ctx.chol_tail_indices[sample_chol_rel]
         walker_batch_size = (n_walkers + n_chunks - 1) // n_chunks
         pair_n_chunks = (sampling.pair_sample_size + walker_batch_size - 1) // walker_batch_size
-        residual = _ptccsd_thouless_mode_chol_pair_terms(
+        component_terms = _ptccsd_thouless_mode_chol_pair_terms(
             common,
             sample_walker,
             sample_chol,
@@ -1256,42 +1284,46 @@ def pair_sampled_ptccsd_block_components(
             n_chunks=pair_n_chunks,
         )
         importance_samples = (
-            estimator_weights[sample_walker]
-            * residual
+            estimator_weights[sample_walker, None]
+            * component_terms
             / (
-                walker_prob[sample_walker]
-                * meas_ctx.chol_tail_prob[sample_chol_rel]
+                walker_prob[sample_walker, None]
+                * meas_ctx.chol_tail_prob[sample_chol_rel, None]
             )
         )
-        tail_numerator = jnp.mean(importance_samples)
+        tail_numerator = jnp.mean(importance_samples, axis=0)
         if not sampling.track_half_sample_diagnostic:
-            return tail_numerator, jnp.zeros((), dtype=tail_numerator.dtype)
+            return tail_numerator, jnp.zeros_like(tail_numerator)
 
         first_size = sampling.pair_sample_size // 2
         second_size = sampling.pair_sample_size - first_size
-        first_mean = jnp.mean(importance_samples[:first_size])
-        second_mean = jnp.mean(importance_samples[first_size:])
+        first_mean = jnp.mean(importance_samples[:first_size], axis=0)
+        second_mean = jnp.mean(importance_samples[first_size:], axis=0)
         scale = math.sqrt(first_size * second_size) / sampling.pair_sample_size
         return tail_numerator, scale * (first_mean - second_mean)
 
-    zero_tail = jnp.zeros((), dtype=numerator.dtype)
+    zero_tail = jnp.zeros((2,), dtype=numerator.dtype)
     tail_numerator, half_difference = jax.lax.cond(
         abs_weight_sum > 0.0,
         sample_tail,
         lambda key: (zero_tail, zero_tail),
         rng_key,
     )
-    numerator = numerator.at[2].add(tail_numerator)
+    numerator = numerator.at[1:].add(tail_numerator)
     if sampling.track_half_sample_diagnostic:
         estimator_weight_safe = jnp.where(
             estimator_weight == 0.0, 1.0, estimator_weight
         )
         normalized_difference = half_difference / estimator_weight_safe
+        theta_mean = numerator[0] / estimator_weight_safe
+        energy_difference = (
+            normalized_difference[1] - theta_mean * normalized_difference[0]
+        )
         diagnostics[d_pt_component_sampling_noise_real] = jnp.real(
-            normalized_difference
+            energy_difference
         )
         diagnostics[d_pt_component_sampling_noise_imag] = jnp.imag(
-            normalized_difference
+            energy_difference
         )
     return BlockComponentEstimate(
         weight=estimator_weight,
@@ -1358,6 +1390,7 @@ def stream_ptccsd_mode_population_statistics(
     candidate_np = np.asarray(jax.device_get(candidate_weights), dtype=np.complex128)
     walker_batch_size = math.ceil(n_walkers / min(n_walker_chunks, n_walkers))
     valid = np.isfinite(candidate_np)
+    theta_values = np.zeros(n_walkers, dtype=np.complex128)
 
     # Determine the exact denominator before forming the projected moments.
     # Recomputing these relatively small common intermediates below keeps the
@@ -1386,6 +1419,10 @@ def stream_ptccsd_mode_population_statistics(
                 axis=1,
             )
         valid[walker_start:walker_stop] &= finite_common[:valid_walkers]
+        theta_values[walker_start:walker_stop] = np.asarray(
+            common_np.theta[:valid_walkers],
+            dtype=np.complex128,
+        )
 
     estimator_weights = np.where(valid, candidate_np, 0.0)
     estimator_weight = np.sum(estimator_weights, dtype=np.complex128)
@@ -1396,6 +1433,10 @@ def stream_ptccsd_mode_population_statistics(
         raise ValueError("PT calibration population has no finite absolute estimator weight.")
 
     normalized_weights = estimator_weights / estimator_weight
+    theta_reference = np.sum(
+        normalized_weights * theta_values,
+        dtype=np.complex128,
+    )
     walker_prob = np.abs(estimator_weights) / abs_weight_sum
     term_means = np.zeros(n_chol, dtype=np.float64)
     term_second_moments = np.zeros(n_chol, dtype=np.float64)
@@ -1423,7 +1464,7 @@ def stream_ptccsd_mode_population_statistics(
         batch_normalized = batch_weights / estimator_weight
         batch_prob = np.zeros(walker_batch_size, dtype=np.float64)
         batch_prob[:valid_walkers] = walker_prob[walker_start:walker_stop]
-        residual_sum = np.zeros(walker_batch_size, dtype=np.complex128)
+        component_sum = np.zeros((walker_batch_size, 2), dtype=np.complex128)
 
         for chol_start in range(0, n_chol, chol_batch_size):
             chol_stop = min(chol_start + chol_batch_size, n_chol)
@@ -1440,11 +1481,12 @@ def stream_ptccsd_mode_population_statistics(
                 trial_data,
             )
             terms_np = np.asarray(jax.device_get(terms), dtype=np.complex128)[
-                :, :valid_chol
+                :, :valid_chol, :
             ]
-            terms_np = np.where(batch_prob[:, None] > 0.0, terms_np, 0.0)
-            residual_sum += np.sum(terms_np, axis=1, dtype=np.complex128)
-            projected = np.real(batch_normalized[:, None] * terms_np)
+            terms_np = np.where(batch_prob[:, None, None] > 0.0, terms_np, 0.0)
+            component_sum += np.sum(terms_np, axis=1, dtype=np.complex128)
+            effective = terms_np[..., 1] - theta_reference * terms_np[..., 0]
+            projected = np.real(batch_normalized[:, None] * effective)
             term_means[chol_start:chol_stop] += np.sum(
                 projected,
                 axis=0,
@@ -1463,8 +1505,10 @@ def stream_ptccsd_mode_population_statistics(
         full_components = np.stack(
             (
                 np.asarray(common_np.theta, dtype=np.complex128),
-                np.asarray(common_np.electronic_0, dtype=np.complex128),
-                np.asarray(common_np.h_t_base, dtype=np.complex128) + residual_sum,
+                np.asarray(common_np.electronic_0_base, dtype=np.complex128)
+                + component_sum[:, 0],
+                np.asarray(common_np.h_t_base, dtype=np.complex128)
+                + component_sum[:, 1],
             ),
             axis=1,
         )
@@ -1748,15 +1792,17 @@ def components_pt_thouless_rw_rh(
         meas_ctx,
         trial_data,
     )
-    residual = _ptccsd_thouless_mode_chol_terms(
+    chol_components = _ptccsd_thouless_mode_chol_terms(
         common,
         ham_data.chol,
         meas_ctx.rot_chol,
         meas_ctx,
         trial_data,
     )
-    h_t = common.h_t_base + jnp.sum(residual)
-    return jnp.stack([common.theta, common.electronic_0, h_t])
+    chol_sum = jnp.sum(chol_components, axis=0)
+    electronic_0 = common.electronic_0_base + chol_sum[0]
+    h_t = common.h_t_base + chol_sum[1]
+    return jnp.stack([common.theta, electronic_0, h_t])
 
 
 def energy_pt_thouless_rw_rh(
