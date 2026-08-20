@@ -32,7 +32,6 @@ from ..trial.ptccsd_modes import (
     PtccsdModeTrial,
     PtccsdThoulessModeTrial,
     det_overlap_thouless_r,
-    greenp_thouless,
     greens_pt_r,
     half_green_thouless_r,
     hf_overlap_r,
@@ -433,6 +432,23 @@ def _thouless_green_blocks(
     return green, green_occ, greenp
 
 
+def _thouless_half_green_force_bias_blocks(
+    walker: jax.Array,
+    trial_data: PtccsdThoulessModeTrial,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Build the half-Green blocks needed by the exponential-guide force bias."""
+
+    half_green = half_green_thouless_r(walker, trial_data)
+    nocc = trial_data.nocc
+    green_rows = trial_data.mo_t.conj()[:nocc, :] @ half_green
+    green_occ = green_rows[:, nocc:]
+    greenp = trial_data.mo_t.conj() @ half_green[:, nocc:]
+    greenp = greenp.at[nocc:, :].add(
+        -jnp.eye(trial_data.nvir, dtype=greenp.dtype)
+    )
+    return half_green, green_rows, green_occ, greenp
+
+
 def _thouless_half_green_blocks(
     walker: jax.Array,
     trial_data: PtccsdThoulessModeTrial,
@@ -445,11 +461,10 @@ def _thouless_half_green_blocks(
     shape ``(n_chol, norb, norb)``.
     """
 
-    half_green = half_green_thouless_r(walker, trial_data)
+    half_green, green_rows, green_occ, greenp = (
+        _thouless_half_green_force_bias_blocks(walker, trial_data)
+    )
     green = trial_data.mo_t.conj() @ half_green
-    green_rows = green[: trial_data.nocc, :]
-    green_occ = green[: trial_data.nocc, trial_data.nocc :]
-    greenp = greenp_thouless(green, trial_data)
     return half_green, green, green_rows, green_occ, greenp
 
 
@@ -636,9 +651,8 @@ def force_bias_pt_thouless_rw_rh(
 ) -> jax.Array:
     """Restricted exponential-guide force bias using a half Green function."""
 
-    half_green, _, green_rows, green_occ, greenp = _thouless_half_green_blocks(
-        walker,
-        trial_data,
+    half_green, green_rows, green_occ, greenp = (
+        _thouless_half_green_force_bias_blocks(walker, trial_data)
     )
     f0 = 2.0 * jnp.einsum(
         "giq,iq->g",

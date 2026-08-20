@@ -286,6 +286,24 @@ def _spin_green(walker: jax.Array, mo_t: jax.Array) -> jax.Array:
     return mo_t.conj() @ half_green
 
 
+def _spin_overlap_and_green_occ(
+    walker: jax.Array,
+    mo_t: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Return the determinant overlap and occupied--virtual Green block.
+
+    The exponential guide only needs the occupied--virtual rows of
+    ``G = mo_t.conj() @ half_green``. Forming those rows directly avoids the
+    full ``(norb, norb)`` Green matrix during every overlap evaluation.
+    """
+
+    overlap_matrix = mo_t.conj().T @ walker
+    half_green = jnp.linalg.solve(overlap_matrix.T, walker.T)
+    nocc = int(mo_t.shape[1])
+    green_occ = mo_t.conj()[:nocc, :] @ half_green[:, nocc:]
+    return jnp.linalg.det(overlap_matrix), green_occ
+
+
 def greens_unrestricted(
     walker: tuple[jax.Array, jax.Array],
     trial_data: PtuccsdThoulessModeTrial,
@@ -315,8 +333,11 @@ def theta_t2_u(
     walker: tuple[jax.Array, jax.Array],
     trial_data: PtuccsdThoulessModeTrial,
 ) -> jax.Array:
-    green_a, green_b = greens_unrestricted(walker, trial_data)
-    return theta_t2_from_greens(green_a, green_b, trial_data)
+    walker_a, walker_b = walker
+    walker_b_beta = trial_data.mo_coeff_b.conj().T @ walker_b
+    _, green_occ_a = _spin_overlap_and_green_occ(walker_a, trial_data.mo_t_a)
+    _, green_occ_b = _spin_overlap_and_green_occ(walker_b_beta, trial_data.mo_t_b)
+    return mode_quadratic(trial_data, green_occ_a, green_occ_b)
 
 
 def reference_overlap_u(
@@ -334,7 +355,18 @@ def overlap_u(
     walker: tuple[jax.Array, jax.Array],
     trial_data: PtuccsdThoulessModeTrial,
 ) -> jax.Array:
-    return reference_overlap_u(walker, trial_data) * jnp.exp(theta_t2_u(walker, trial_data))
+    walker_a, walker_b = walker
+    walker_b_beta = trial_data.mo_coeff_b.conj().T @ walker_b
+    overlap_a, green_occ_a = _spin_overlap_and_green_occ(
+        walker_a,
+        trial_data.mo_t_a,
+    )
+    overlap_b, green_occ_b = _spin_overlap_and_green_occ(
+        walker_b_beta,
+        trial_data.mo_t_b,
+    )
+    theta = mode_quadratic(trial_data, green_occ_a, green_occ_b)
+    return overlap_a * overlap_b * jnp.exp(theta)
 
 
 def _split_restricted_walker(

@@ -22,6 +22,8 @@ from trot.meas.ptuccsd_modes import (
     PtuccsdModePairSamplingCfg,
     PtuccsdModePairTuningCfg,
     _energy_components_uw_rh_reference,
+    _force_bias_kernel_rw_rh_full,
+    _force_bias_kernel_uw_rh_full,
     _ptuccsd_mode_chol_index_terms,
     _ptuccsd_mode_chol_pair_terms,
     _ptuccsd_mode_chol_terms,
@@ -60,6 +62,7 @@ from trot.trial.ptuccsd_modes import (
     PtuccsdThoulessModeTrial,
     factorize_t2_modes,
     get_rdm1 as mode_rdm1,
+    greens_unrestricted as mode_greens_unrestricted,
     make_ptuccsd_thouless_mode_trial_data,
     make_ptuccsd_thouless_mode_trial_ops,
     mode_apply,
@@ -317,6 +320,67 @@ def test_full_rank_mode_force_bias_matches_dense_open_shell(
     np.testing.assert_allclose(actual_u, expected_u, rtol=3.0e-11, atol=3.0e-11)
     np.testing.assert_allclose(actual_r, expected_r, rtol=3.0e-11, atol=3.0e-11)
     np.testing.assert_allclose(actual_r, actual_u, rtol=3.0e-12, atol=3.0e-12)
+
+
+def test_half_green_overlap_and_force_bias_match_full_green_in_complex_gauge(
+    trial_cases: TrialCases,
+):
+    case = trial_cases
+    gauge_a = jnp.asarray(
+        [
+            [1.05 + 0.10j, -0.04 + 0.02j, 0.03 - 0.01j],
+            [0.02 - 0.03j, 0.93 - 0.08j, -0.05 + 0.04j],
+            [-0.01 + 0.02j, 0.04 + 0.01j, 1.08 + 0.06j],
+        ]
+    )
+    gauge_b = jnp.asarray(
+        [[1.07 + 0.09j, -0.03 + 0.02j], [0.04 - 0.01j, 0.91 - 0.07j]]
+    )
+    trial = PtuccsdThoulessModeTrial(
+        mo_t_a=case.mode.mo_t_a @ gauge_a,
+        mo_t_b=case.mode.mo_t_b @ gauge_b,
+        mo_coeff_b=case.mode.mo_coeff_b,
+        eigenvalues=case.mode.eigenvalues[:5],
+        modes=case.mode.modes[:5],
+    )
+    cfg = PtuccsdModeMeasCfg(
+        memory_mode="high",
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+    ctx = build_ptuccsd_mode_meas_ctx(case.ham, trial, cfg)
+    noa, nob = trial.nocc
+    walker_u = (case.walker_r[:, :noa], case.walker_r[:, :nob])
+
+    green_a, green_b = mode_greens_unrestricted(walker_u, trial)
+    full_overlap_u = mode_reference_overlap_u(walker_u, trial) * jnp.exp(
+        mode_quadratic(
+            trial,
+            green_a[:noa, noa:],
+            green_b[:nob, nob:],
+        )
+    )
+    np.testing.assert_allclose(
+        mode_overlap_u(walker_u, trial),
+        full_overlap_u,
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        mode_overlap_r(case.walker_r, trial),
+        full_overlap_u,
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+
+    full_u = _force_bias_kernel_uw_rh_full(walker_u, case.ham, ctx, trial)
+    half_u = mode_force_bias_uw(walker_u, case.ham, ctx, trial)
+    full_r = _force_bias_kernel_rw_rh_full(case.walker_r, case.ham, ctx, trial)
+    half_r = mode_force_bias_rw(case.walker_r, case.ham, ctx, trial)
+    np.testing.assert_allclose(half_u, full_u, rtol=3.0e-11, atol=3.0e-11)
+    np.testing.assert_allclose(half_r, full_r, rtol=3.0e-11, atol=3.0e-11)
 
 
 @pytest.mark.parametrize("memory_mode", ["high", "low"])

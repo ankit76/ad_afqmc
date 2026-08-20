@@ -273,6 +273,19 @@ def half_green_thouless_r(
     return jnp.linalg.solve(overlap_mat.T, walker.T)
 
 
+def _det_overlap_and_green_occ_thouless_r(
+    walker: jax.Array,
+    trial_data: PtccsdThoulessModeTrial,
+) -> tuple[jax.Array, jax.Array]:
+    """Return determinant overlap and the needed Green excitation block."""
+
+    overlap_mat = trial_data.mo_t.conj().T @ walker
+    half_green = jnp.linalg.solve(overlap_mat.T, walker.T)
+    nocc = trial_data.nocc
+    green_occ = trial_data.mo_t.conj()[:nocc, :] @ half_green[:, nocc:]
+    return jnp.linalg.det(overlap_mat) ** 2, green_occ
+
+
 def greens_thouless_r(
     walker: jax.Array,
     trial_data: PtccsdThoulessModeTrial,
@@ -298,8 +311,7 @@ def theta_t2_thouless_r(
     walker: jax.Array,
     trial_data: PtccsdThoulessModeTrial,
 ) -> jax.Array:
-    green = greens_thouless_r(walker, trial_data)
-    green_occ = green[: trial_data.nocc, trial_data.nocc :]
+    _, green_occ = _det_overlap_and_green_occ_thouless_r(walker, trial_data)
     return mode_quadratic(trial_data, green_occ)
 
 
@@ -307,9 +319,8 @@ def overlap_ptccsd_thouless_r(
     walker: jax.Array,
     trial_data: PtccsdThoulessModeTrial,
 ) -> jax.Array:
-    return det_overlap_thouless_r(walker, trial_data) * jnp.exp(
-        theta_t2_thouless_r(walker, trial_data)
-    )
+    det_overlap, green_occ = _det_overlap_and_green_occ_thouless_r(walker, trial_data)
+    return det_overlap * jnp.exp(mode_quadratic(trial_data, green_occ))
 
 
 def make_ptccsd_mode_trial_ops(sys: System) -> TrialOps:

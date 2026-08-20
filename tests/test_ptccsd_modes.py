@@ -328,6 +328,20 @@ def test_half_green_thouless_kernels_match_full_oracle_in_complex_gauge(
     )(case.walkers, case.ham, ctx, trial)
     np.testing.assert_allclose(half_components, full_components, rtol=3.0e-10, atol=3.0e-10)
 
+    dense_trial = PtccsdThoulessTrial(
+        mo_t=trial.mo_t,
+        t2=case.dense_thouless.t2,
+    )
+    full_overlap = jax.vmap(pt_thouless_dense_overlap, in_axes=(0, None))(
+        case.walkers,
+        dense_trial,
+    )
+    half_overlap = jax.vmap(pt_thouless_mode_overlap, in_axes=(0, None))(
+        case.walkers,
+        trial,
+    )
+    np.testing.assert_allclose(half_overlap, full_overlap, rtol=3.0e-10, atol=3.0e-10)
+
 
 @pytest.mark.parametrize("memory_mode", ["high", "low"])
 @pytest.mark.parametrize("mixed_precision", [False, True])

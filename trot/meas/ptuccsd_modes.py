@@ -49,6 +49,7 @@ from .ptccsd_modes import (
     select_ptccsd_mode_pair_sampling as _select_ptccsd_mode_pair_sampling,
 )
 from .pt2ccsd import combine_first_order_energy
+from .ucisd_modes import _spin_sum_chol_contract as _ucisd_spin_sum_chol_contract
 
 PtuccsdModeMeasCfg = PtuccsdThoulessMeasCfg
 
@@ -433,13 +434,61 @@ def _half_green_blocks(
     )
 
 
-def force_bias_kernel_uw_rh(
+def _force_bias_half_green_blocks(
+    walker: tuple[jax.Array, jax.Array],
+    trial_data: PtuccsdThoulessModeTrial,
+) -> tuple[
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+    jax.Array,
+]:
+    """Build only the half-Green blocks needed by the guide force bias."""
+
+    walker_a, walker_b = walker
+    walker_b_beta = trial_data.mo_coeff_b.conj().T @ walker_b
+    overlap_a = trial_data.mo_t_a.conj().T @ walker_a
+    overlap_b = trial_data.mo_t_b.conj().T @ walker_b_beta
+    half_green_a = jnp.linalg.solve(overlap_a.T, walker_a.T)
+    half_green_b = jnp.linalg.solve(overlap_b.T, walker_b_beta.T)
+    noa, nob = trial_data.nocc
+
+    green_rows_a = trial_data.mo_t_a.conj()[:noa, :] @ half_green_a
+    green_rows_b = trial_data.mo_t_b.conj()[:nob, :] @ half_green_b
+    green_occ_a = green_rows_a[:, noa:]
+    green_occ_b = green_rows_b[:, nob:]
+
+    greenp_a = trial_data.mo_t_a.conj() @ half_green_a[:, noa:]
+    greenp_b = trial_data.mo_t_b.conj() @ half_green_b[:, nob:]
+    greenp_a = greenp_a.at[noa:, :].add(
+        -jnp.eye(trial_data.nvir[0], dtype=greenp_a.dtype)
+    )
+    greenp_b = greenp_b.at[nob:, :].add(
+        -jnp.eye(trial_data.nvir[1], dtype=greenp_b.dtype)
+    )
+    return (
+        half_green_a,
+        half_green_b,
+        green_rows_a,
+        green_rows_b,
+        green_occ_a,
+        green_occ_b,
+        greenp_a,
+        greenp_b,
+    )
+
+
+def _force_bias_kernel_uw_rh_full(
     walker: tuple[jax.Array, jax.Array],
     ham_data: HamChol,
     meas_ctx: PtuccsdModeMeasCtx,
     trial_data: PtuccsdThoulessModeTrial,
 ) -> jax.Array:
-    """Mode-native PT-UCCSD exponential-guide force bias."""
+    """Full-Green force bias retained as a correctness oracle."""
 
     green_a, green_b, green_occ_a, green_occ_b, greenp_a, greenp_b = _green_blocks(
         walker,
@@ -463,6 +512,66 @@ def force_bias_kernel_uw_rh(
     correction = -_chol_contract(ham_data.chol, t2_green_a, meas_ctx.cfg)
     correction -= _chol_contract(meas_ctx.chol_b, t2_green_b, meas_ctx.cfg)
     return f0_a + f0_b + correction
+
+
+def force_bias_kernel_uw_rh(
+    walker: tuple[jax.Array, jax.Array],
+    ham_data: HamChol,
+    meas_ctx: PtuccsdModeMeasCtx,
+    trial_data: PtuccsdThoulessModeTrial,
+) -> jax.Array:
+    """Half-Green PT-UCCSD exponential-guide force bias."""
+
+    (
+        half_green_a,
+        half_green_b,
+        green_rows_a,
+        green_rows_b,
+        green_occ_a,
+        green_occ_b,
+        greenp_a,
+        greenp_b,
+    ) = _force_bias_half_green_blocks(walker, trial_data)
+
+    f0_a = jnp.einsum(
+        "giq,iq->g", meas_ctx.rot_chol_a, half_green_a, optimize="optimal"
+    )
+    f0_b = jnp.einsum(
+        "giq,iq->g", meas_ctx.rot_chol_b, half_green_b, optimize="optimal"
+    )
+    applied_a, applied_b = _mode_apply_realimag(
+        trial_data,
+        green_occ_a,
+        green_occ_b,
+        meas_ctx.cfg,
+    )
+    t2_green_a = (greenp_a @ applied_a.T) @ green_rows_a
+    t2_green_b = (greenp_b @ applied_b.T) @ green_rows_b
+    correction = _ucisd_spin_sum_chol_contract(
+        ham_data.chol,
+        t2_green_a,
+        t2_green_b,
+        trial_data.mo_coeff_b,
+        meas_ctx.cfg,
+    )
+    return f0_a + f0_b - correction
+
+
+def _force_bias_kernel_rw_rh_full(
+    walker: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: PtuccsdModeMeasCtx,
+    trial_data: PtuccsdThoulessModeTrial,
+) -> jax.Array:
+    """Restricted-walker wrapper for the full-Green force-bias oracle."""
+
+    noa, nob = trial_data.nocc
+    return _force_bias_kernel_uw_rh_full(
+        (walker[:, :noa], walker[:, :nob]),
+        ham_data,
+        meas_ctx,
+        trial_data,
+    )
 
 
 def force_bias_kernel_rw_rh(
