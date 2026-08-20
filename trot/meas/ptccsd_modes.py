@@ -20,6 +20,8 @@ from ..core.ops import (
     MeasOps,
     d_pt_component_sampling_noise_imag,
     d_pt_component_sampling_noise_real,
+    d_pt_estimator_phase_coherence,
+    d_pt_walker_proposal_ess,
     k_energy,
     k_force_bias,
 )
@@ -45,10 +47,6 @@ from .cisd_modes import (
 )
 from .ptccsd import o_pt_components
 from .pt2ccsd import combine_first_order_energy
-
-d_pt_estimator_phase_coherence = "pt_estimator_phase_coherence"
-d_pt_walker_proposal_ess = "pt_walker_proposal_ess"
-
 
 @dataclass(frozen=True)
 class PtccsdModeMeasCfg:
