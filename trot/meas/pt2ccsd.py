@@ -130,6 +130,20 @@ def combine_first_order_energy(h0, components):
     return h0 + electronic_0 + h_t - theta * electronic_0
 
 
+def project_first_order_energy_terms(theta, component_terms):
+    """Project sampled ``[delta electronic_0, delta h_t]`` terms onto energy.
+
+    The PT energy is ``h0 + electronic_0 + h_t - theta * electronic_0``.
+    Holding the exactly evaluated ``theta`` fixed, its change under sampled
+    Cholesky-component fluctuations is therefore
+    ``delta h_t + (1 - theta) * delta electronic_0``.
+    """
+
+    delta_electronic_0 = component_terms[..., 0]
+    delta_h_t = component_terms[..., 1]
+    return delta_h_t + (1.0 - theta) * delta_electronic_0
+
+
 def make_pt2ccsd_meas_ops(
     sys: System,
     memory_mode: str = "low",

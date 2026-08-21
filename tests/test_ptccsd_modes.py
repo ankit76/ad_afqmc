@@ -16,7 +16,9 @@ from trot.core.ops import BlockComponentEstimate, k_energy, k_force_bias
 from trot.core.system import System
 from trot.ham.chol import HamChol
 from trot.meas.pt2ccsd import build_meas_ctx as build_pt2_dense_ctx
+from trot.meas.pt2ccsd import combine_first_order_energy
 from trot.meas.pt2ccsd import energy_kernel_rw_rh as pt2_dense_components
+from trot.meas.pt2ccsd import project_first_order_energy_terms
 from trot.meas.ptccsd import build_ptccsd_meas_ctx
 from trot.meas.ptccsd import energy_components_pt_rw_rh as pt_dense_inverse_components
 from trot.meas.ptccsd import energy_pt_rw_rh as pt_dense_energy
@@ -74,6 +76,23 @@ class PtCases:
     mode: PtccsdModeTrial
     dense_thouless: PtccsdThoulessTrial
     mode_thouless: PtccsdThoulessModeTrial
+
+
+def test_project_first_order_energy_terms_matches_combined_energy_change():
+    components = jnp.asarray(
+        [0.23 - 0.07j, -1.8 + 0.4j, 0.31 - 0.2j], dtype=jnp.complex128
+    )
+    component_delta = jnp.asarray(
+        [0.17 + 0.11j, -0.09 + 0.05j], dtype=jnp.complex128
+    )
+    shifted = components.at[1:].add(component_delta)
+
+    expected = combine_first_order_energy(0.6, shifted) - combine_first_order_energy(
+        0.6, components
+    )
+    projected = project_first_order_energy_terms(components[0], component_delta)
+
+    np.testing.assert_allclose(projected, expected, rtol=2.0e-15, atol=2.0e-15)
 
 
 @pytest.fixture(scope="module")
@@ -764,10 +783,11 @@ def test_ptccsd_sampled_tail_is_unbiased_for_complex_block_numerator(
     )(case.walkers, case.ham, ctx, case.mode_thouless)
     exact_numerator = jnp.sum(candidate_weights[:, None] * exact_components, axis=0)
 
+    rng_key = jax.random.PRNGKey(1213)
     result = jax.jit(pair_sampled_ptccsd_block_components, static_argnums=3)(
         case.walkers,
         candidate_weights,
-        jax.random.PRNGKey(1213),
+        rng_key,
         2,
         case.ham,
         ctx,
@@ -797,6 +817,34 @@ def test_ptccsd_sampled_tail_is_unbiased_for_complex_block_numerator(
         * (jnp.imag(importance_values) - jnp.imag(tail_mean)) ** 2,
         axis=(0, 1),
     )
+    key_walker, key_chol = jax.random.split(rng_key)
+    sample_walker = jax.random.choice(
+        key_walker,
+        case.walkers.shape[0],
+        shape=(sampling.pair_sample_size,),
+        replace=True,
+        p=walker_prob,
+    )
+    sample_chol_rel = jax.random.choice(
+        key_chol,
+        ctx.chol_tail_indices.shape[0],
+        shape=(sampling.pair_sample_size,),
+        replace=True,
+        p=ctx.chol_tail_prob,
+    )
+    sampled_importance = importance_values[sample_walker, sample_chol_rel]
+    first_size = sampling.pair_sample_size // 2
+    second_size = sampling.pair_sample_size - first_size
+    scale = jnp.sqrt(first_size * second_size) / sampling.pair_sample_size
+    half_difference = scale * (
+        jnp.mean(sampled_importance[:first_size], axis=0)
+        - jnp.mean(sampled_importance[first_size:], axis=0)
+    )
+    normalized_difference = half_difference / result.weight
+    theta_mean = result.numerator[0] / result.weight
+    expected_noise = normalized_difference[1] + (
+        1.0 - theta_mean
+    ) * normalized_difference[0]
     real_tolerance = 8.0 * jnp.sqrt(real_variance / sampling.pair_sample_size) + 1.0e-10
     imag_tolerance = 8.0 * jnp.sqrt(imag_variance / sampling.pair_sample_size) + 1.0e-10
 
@@ -809,8 +857,18 @@ def test_ptccsd_sampled_tail_is_unbiased_for_complex_block_numerator(
     assert bool(
         jnp.all(jnp.abs(jnp.imag(result.numerator[1:] - exact_numerator[1:])) < imag_tolerance)
     )
-    assert np.isfinite(result.diagnostics["pt_component_sampling_noise_real"])
-    assert np.isfinite(result.diagnostics["pt_component_sampling_noise_imag"])
+    np.testing.assert_allclose(
+        result.diagnostics["pt_component_sampling_noise_real"],
+        jnp.real(expected_noise),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        result.diagnostics["pt_component_sampling_noise_imag"],
+        jnp.imag(expected_noise),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
 
 
 def test_ptccsd_head_rms_uses_real_phase_projected_walker_scores(pt_cases: PtCases):
@@ -845,7 +903,7 @@ def test_ptccsd_head_rms_uses_real_phase_projected_walker_scores(pt_cases: PtCas
     theta_reference = jnp.sum(normalized_weights * common.theta)
     effective_head = (
         all_terms[:, ctx.chol_head_indices, 1]
-        - theta_reference * all_terms[:, ctx.chol_head_indices, 0]
+        + (1.0 - theta_reference) * all_terms[:, ctx.chol_head_indices, 0]
     )
     projected_head = jnp.real(
         normalized_weights[:, None] * effective_head
@@ -907,7 +965,7 @@ def test_ptccsd_streamed_tuning_statistics_are_real_projected(pt_cases: PtCases)
     normalized_weights = candidate_weights / jnp.sum(candidate_weights)
     walker_prob = jnp.abs(candidate_weights) / jnp.sum(jnp.abs(candidate_weights))
     theta_reference = jnp.sum(normalized_weights * common.theta)
-    effective = all_terms[..., 1] - theta_reference * all_terms[..., 0]
+    effective = all_terms[..., 1] + (1.0 - theta_reference) * all_terms[..., 0]
     projected = jnp.real(normalized_weights[:, None] * effective)
     expected_means = jnp.sum(projected, axis=0)
     expected_seconds = jnp.sum(projected**2 / walker_prob[:, None], axis=0)

@@ -48,7 +48,7 @@ from .ptccsd_modes import (
     PtccsdModePopulationStats as _PtccsdModePopulationStats,
     select_ptccsd_mode_pair_sampling as _select_ptccsd_mode_pair_sampling,
 )
-from .pt2ccsd import combine_first_order_energy
+from .pt2ccsd import combine_first_order_energy, project_first_order_energy_terms
 from .ucisd_modes import _spin_sum_chol_contract as _ucisd_spin_sum_chol_contract
 
 PtuccsdModeMeasCfg = PtuccsdThoulessMeasCfg
@@ -1119,7 +1119,7 @@ def _ptuccsd_mode_chol_index_moments_for_walkers(
         terms_i = jnp.where(valid_i[None, :, None], terms_i, 0.0)
         total = total + jnp.sum(terms_i, axis=1)
         if compute_projection_moments:
-            effective_i = terms_i[..., 1] - theta_reference * terms_i[..., 0]
+            effective_i = project_first_order_energy_terms(theta_reference, terms_i)
             terms_real = jnp.real(effective_i).astype(jnp.float64)
             terms_imag = jnp.imag(effective_i).astype(jnp.float64)
             real_sq = real_sq + jnp.sum(terms_real**2, axis=1, dtype=jnp.float64)
@@ -1221,7 +1221,7 @@ def _build_ptuccsd_reference_chol_scores(
         trial_data,
         n_chunks=n_chunks,
     )
-    effective = terms[:, 1] - common.theta * terms[:, 0]
+    effective = project_first_order_energy_terms(common.theta, terms)
     return jnp.maximum(jnp.abs(jnp.real(effective)).astype(jnp.float64), 1.0e-300)
 
 
@@ -1485,8 +1485,8 @@ def pair_sampled_ptuccsd_block_components(
         )
         normalized_difference = half_difference / estimator_weight_safe
         theta_mean = numerator[0] / estimator_weight_safe
-        energy_difference = (
-            normalized_difference[1] - theta_mean * normalized_difference[0]
+        energy_difference = project_first_order_energy_terms(
+            theta_mean, normalized_difference
         )
         diagnostics[d_pt_component_sampling_noise_real] = jnp.real(
             energy_difference
@@ -1660,7 +1660,7 @@ def stream_ptuccsd_mode_population_statistics(
             ]
             terms_np = np.where(batch_prob[:, None, None] > 0.0, terms_np, 0.0)
             component_sum += np.sum(terms_np, axis=1, dtype=np.complex128)
-            effective = terms_np[..., 1] - theta_reference * terms_np[..., 0]
+            effective = project_first_order_energy_terms(theta_reference, terms_np)
             projected = np.real(batch_normalized[:, None] * effective)
             term_means[chol_start:chol_stop] += np.sum(
                 projected,

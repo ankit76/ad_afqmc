@@ -807,7 +807,7 @@ def test_ucc_sampled_tail_uses_real_projected_walker_proposal(
     theta_reference = jnp.sum(normalized_weights * common.theta)
     effective_head = (
         all_terms[:, ctx.chol_head_indices, 1]
-        - theta_reference * all_terms[:, ctx.chol_head_indices, 0]
+        + (1.0 - theta_reference) * all_terms[:, ctx.chol_head_indices, 0]
     )
     projected_head = jnp.real(
         normalized_weights[:, None] * effective_head
@@ -843,10 +843,11 @@ def test_ucc_sampled_tail_uses_real_projected_walker_proposal(
     real_tolerance = 8.0 * jnp.sqrt(real_variance / sampling.pair_sample_size) + 1.0e-10
     imag_tolerance = 8.0 * jnp.sqrt(imag_variance / sampling.pair_sample_size) + 1.0e-10
 
+    rng_key = jax.random.PRNGKey(2617)
     result = jax.jit(pair_sampled_ptuccsd_block_components, static_argnums=3)(
         walkers,
         candidate_weights,
-        jax.random.PRNGKey(2617),
+        rng_key,
         2,
         case.ham,
         ctx,
@@ -869,8 +870,46 @@ def test_ucc_sampled_tail_uses_real_projected_walker_proposal(
         rtol=3.0e-12,
         atol=3.0e-12,
     )
-    assert np.isfinite(result.diagnostics["pt_component_sampling_noise_real"])
-    assert np.isfinite(result.diagnostics["pt_component_sampling_noise_imag"])
+    key_walker, key_chol = jax.random.split(rng_key)
+    sample_walker = jax.random.choice(
+        key_walker,
+        walkers.shape[0],
+        shape=(sampling.pair_sample_size,),
+        replace=True,
+        p=walker_prob,
+    )
+    sample_chol_rel = jax.random.choice(
+        key_chol,
+        ctx.chol_tail_indices.shape[0],
+        shape=(sampling.pair_sample_size,),
+        replace=True,
+        p=ctx.chol_tail_prob,
+    )
+    sampled_importance = importance_values[sample_walker, sample_chol_rel]
+    first_size = sampling.pair_sample_size // 2
+    second_size = sampling.pair_sample_size - first_size
+    scale = jnp.sqrt(first_size * second_size) / sampling.pair_sample_size
+    half_difference = scale * (
+        jnp.mean(sampled_importance[:first_size], axis=0)
+        - jnp.mean(sampled_importance[first_size:], axis=0)
+    )
+    normalized_difference = half_difference / result.weight
+    theta_mean = result.numerator[0] / result.weight
+    expected_noise = normalized_difference[1] + (
+        1.0 - theta_mean
+    ) * normalized_difference[0]
+    np.testing.assert_allclose(
+        result.diagnostics["pt_component_sampling_noise_real"],
+        jnp.real(expected_noise),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    np.testing.assert_allclose(
+        result.diagnostics["pt_component_sampling_noise_imag"],
+        jnp.imag(expected_noise),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
 
 
 @pytest.mark.parametrize("memory_mode", ["high", "low"])
@@ -926,7 +965,7 @@ def test_ucc_streamed_tuning_statistics_are_real_projected(
     normalized_weights = candidate_weights / jnp.sum(candidate_weights)
     walker_prob = jnp.abs(candidate_weights) / jnp.sum(jnp.abs(candidate_weights))
     theta_reference = jnp.sum(normalized_weights * common.theta)
-    effective = all_terms[..., 1] - theta_reference * all_terms[..., 0]
+    effective = all_terms[..., 1] + (1.0 - theta_reference) * all_terms[..., 0]
     projected = jnp.real(normalized_weights[:, None] * effective)
     expected_means = jnp.sum(projected, axis=0)
     expected_seconds = jnp.sum(projected**2 / walker_prob[:, None], axis=0)
