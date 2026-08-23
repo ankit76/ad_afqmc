@@ -11,7 +11,7 @@ from jax import tree_util
 from ..core.ops import TrialOps
 from ..core.system import System
 from .ptuccsd_thouless import thouless_mo_from_t1
-from .ucisd_k_modes import factorize_ucisd_k_blocks
+from .ucisd_k_modes import UcisdKModeFactorization, factorize_ucisd_k_blocks
 
 
 @dataclass(frozen=True)
@@ -22,8 +22,10 @@ class PtuccsdModeFactorization:
     modes: np.ndarray
     pair_dims: tuple[int, int]
     solver: Literal["dense", "lanczos"]
-    threshold: float
+    threshold: float | None
+    discarded_norm_target: float | None
     discarded_norm_fraction: float
+    natural_rank: int
 
     @property
     def rank(self) -> int:
@@ -39,7 +41,9 @@ def factorize_t2_modes(
     t2ab: np.ndarray,
     t2bb: np.ndarray,
     *,
-    mode_threshold: float = 0.0,
+    mode_threshold: float | None = 0.0,
+    discarded_norm_target: float | None = None,
+    minimum_rank: int = 0,
     solver: Literal["auto", "dense", "lanczos"] = "auto",
     dense_max_dim: int = 2048,
     lanczos_initial_rank: int = 256,
@@ -53,10 +57,12 @@ def factorize_t2_modes(
 
     ``K = [[T2aa, T2ab], [T2ab.T, T2bb]]``.
 
-    The same-spin blocks are flattened over occupied--virtual pairs.  A zero
-    threshold gives an exact full-rank representation and therefore requires
-    the dense solver.  For a positive threshold, ``solver="auto"`` can use the
-    matrix-free Lanczos implementation already validated for UCISD kernels.
+    The same-spin blocks are flattened over occupied--virtual pairs. Selection
+    may use an absolute ``mode_threshold``, a relative
+    ``discarded_norm_target``, or both. A zero target or threshold gives an
+    exact representation and therefore requires the dense solver. For an
+    inexact selection, ``solver="auto"`` can use the matrix-free Lanczos
+    implementation already validated for UCISD kernels.
     """
 
     for name, block in (("t2aa", t2aa), ("t2ab", t2ab), ("t2bb", t2bb)):
@@ -68,6 +74,8 @@ def factorize_t2_modes(
         t2ab,
         t2bb,
         threshold=mode_threshold,
+        discarded_norm_target=discarded_norm_target,
+        minimum_rank=minimum_rank,
         solver=solver,
         dense_max_dim=dense_max_dim,
         lanczos_initial_rank=lanczos_initial_rank,
@@ -81,8 +89,117 @@ def factorize_t2_modes(
         pair_dims=factorization.pair_dims,
         solver=factorization.solver,
         threshold=factorization.threshold,
+        discarded_norm_target=factorization.discarded_norm_target,
         discarded_norm_fraction=factorization.discarded_norm_fraction,
+        natural_rank=factorization.natural_rank,
     )
+
+
+def factorize_ucisd_and_t2_modes_common_rank(
+    ci2aa: np.ndarray,
+    ci2ab: np.ndarray,
+    ci2bb: np.ndarray,
+    t1a: np.ndarray,
+    t1b: np.ndarray,
+    *,
+    mode_threshold: float | None = 0.0,
+    discarded_norm_target: float | None = None,
+    solver: Literal["auto", "dense", "lanczos"] = "auto",
+    dense_max_dim: int = 2048,
+    lanczos_initial_rank: int = 256,
+    lanczos_tol: float = 1.0e-9,
+    lanczos_maxiter: int | None = None,
+    overwrite_ci2: bool = False,
+    verbose: bool = False,
+) -> tuple[UcisdKModeFactorization, PtuccsdModeFactorization]:
+    """Factorize a UCISD guide and raw-``T2`` estimator at a common rank.
+
+    The UCISD guide is selected first. The raw-``T2`` estimator then retains at
+    least that many modes. If the estimator independently needs more modes to
+    satisfy the selection criteria, the guide is extended to the estimator
+    rank. Both returned factorizations therefore meet their own criteria and
+    have the same rank.
+
+    Staged UCCSD-derived ``C2`` arrays contain disconnected ``T1*T1`` terms.
+    These are removed in place from private work arrays before the estimator is
+    factorized. Set ``overwrite_ci2=True`` to use the supplied arrays as that
+    workspace and avoid holding an additional dense copy; on return those
+    arrays contain raw ``T2``.
+    """
+
+    t1a = np.asarray(t1a)
+    t1b = np.asarray(t1b)
+    t2aa = np.asarray(ci2aa) if overwrite_ci2 else np.array(ci2aa, copy=True)
+    t2ab = np.asarray(ci2ab) if overwrite_ci2 else np.array(ci2ab, copy=True)
+    t2bb = np.asarray(ci2bb) if overwrite_ci2 else np.array(ci2bb, copy=True)
+
+    guide = factorize_ucisd_k_blocks(
+        t2aa,
+        t2ab,
+        t2bb,
+        threshold=mode_threshold,
+        discarded_norm_target=discarded_norm_target,
+        solver=solver,
+        dense_max_dim=dense_max_dim,
+        lanczos_initial_rank=lanczos_initial_rank,
+        lanczos_tol=lanczos_tol,
+        lanczos_maxiter=lanczos_maxiter,
+        verbose=verbose,
+    )
+
+    t2aa -= np.einsum("ia,jb->iajb", t1a, t1a, optimize=True)
+    t2aa += np.einsum("ib,ja->iajb", t1a, t1a, optimize=True)
+    t2ab -= np.einsum("ia,jb->iajb", t1a, t1b, optimize=True)
+    t2bb -= np.einsum("ia,jb->iajb", t1b, t1b, optimize=True)
+    t2bb += np.einsum("ib,ja->iajb", t1b, t1b, optimize=True)
+
+    estimator = factorize_t2_modes(
+        t2aa,
+        t2ab,
+        t2bb,
+        mode_threshold=mode_threshold,
+        discarded_norm_target=discarded_norm_target,
+        minimum_rank=guide.rank,
+        solver=solver,
+        dense_max_dim=dense_max_dim,
+        lanczos_initial_rank=lanczos_initial_rank,
+        lanczos_tol=lanczos_tol,
+        lanczos_maxiter=lanczos_maxiter,
+        verbose=verbose,
+    )
+
+    if guide.rank < estimator.rank:
+        t2aa += np.einsum("ia,jb->iajb", t1a, t1a, optimize=True)
+        t2aa -= np.einsum("ib,ja->iajb", t1a, t1a, optimize=True)
+        t2ab += np.einsum("ia,jb->iajb", t1a, t1b, optimize=True)
+        t2bb += np.einsum("ia,jb->iajb", t1b, t1b, optimize=True)
+        t2bb -= np.einsum("ib,ja->iajb", t1b, t1b, optimize=True)
+        guide = factorize_ucisd_k_blocks(
+            t2aa,
+            t2ab,
+            t2bb,
+            threshold=mode_threshold,
+            discarded_norm_target=discarded_norm_target,
+            minimum_rank=estimator.rank,
+            solver=solver,
+            dense_max_dim=dense_max_dim,
+            lanczos_initial_rank=lanczos_initial_rank,
+            lanczos_tol=lanczos_tol,
+            lanczos_maxiter=lanczos_maxiter,
+            verbose=verbose,
+        )
+        t2aa -= np.einsum("ia,jb->iajb", t1a, t1a, optimize=True)
+        t2aa += np.einsum("ib,ja->iajb", t1a, t1a, optimize=True)
+        t2ab -= np.einsum("ia,jb->iajb", t1a, t1b, optimize=True)
+        t2bb -= np.einsum("ia,jb->iajb", t1b, t1b, optimize=True)
+        t2bb += np.einsum("ib,ja->iajb", t1b, t1b, optimize=True)
+
+    if guide.rank != estimator.rank:
+        raise RuntimeError(
+            "failed to construct a common UCISD-guide/PT-estimator mode rank: "
+            f"guide={guide.rank}, estimator={estimator.rank}."
+        )
+    return guide, estimator
 
 
 @tree_util.register_pytree_node_class
@@ -406,7 +523,9 @@ def make_ptuccsd_thouless_mode_trial_data(
     sys: System | None = None,
     *,
     mixed_precision: bool = True,
-    mode_threshold: float = 0.0,
+    mode_threshold: float | None = 0.0,
+    discarded_norm_target: float | None = None,
+    minimum_rank: int = 0,
     mode_solver: Literal["auto", "dense", "lanczos"] = "auto",
     dense_max_dim: int = 2048,
     lanczos_initial_rank: int = 256,
@@ -470,6 +589,8 @@ def make_ptuccsd_thouless_mode_trial_data(
             _t2_to_iajb(data["t2ab"], layout),
             _t2_to_iajb(data["t2bb"], layout),
             mode_threshold=mode_threshold,
+            discarded_norm_target=discarded_norm_target,
+            minimum_rank=minimum_rank,
             solver=mode_solver,
             dense_max_dim=dense_max_dim,
             lanczos_initial_rank=lanczos_initial_rank,
@@ -522,6 +643,7 @@ __all__ = [
     "PtuccsdModeFactorization",
     "PtuccsdThoulessModeTrial",
     "factorize_t2_modes",
+    "factorize_ucisd_and_t2_modes_common_rank",
     "get_rdm1",
     "greens_unrestricted",
     "make_ptuccsd_thouless_mode_trial_data",

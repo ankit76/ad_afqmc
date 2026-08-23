@@ -15,7 +15,9 @@ from .cisd_modes import mode_quadratic
 def decompose_t2_modes(
     t2: np.ndarray,
     *,
-    mode_threshold: float = 0.0,
+    mode_threshold: float | None = 0.0,
+    discarded_norm_target: float | None = None,
+    minimum_rank: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Diagonalize the restricted spin-adapted kernel formed from raw ``T2``.
 
@@ -24,7 +26,8 @@ def decompose_t2_modes(
     ``K_(ia,jb) = 2 t_(ia,jb) - t_(ib,ja)``.
 
     Unlike the CISD-mode construction, ``t2`` must not contain the disconnected
-    ``T1*T1`` contribution.
+    ``T1*T1`` contribution. Selection may use an absolute eigenvalue threshold,
+    a relative Frobenius discarded-norm target, or both.
     """
 
     t2_array = np.asarray(t2)
@@ -38,10 +41,16 @@ def decompose_t2_modes(
         )
     if np.iscomplexobj(t2_array):
         raise ValueError("Restricted PT mode decomposition currently requires real T2 amplitudes.")
-    if mode_threshold < 0.0:
+    if mode_threshold is None and discarded_norm_target is None:
+        raise ValueError("supply mode_threshold, discarded_norm_target, or both.")
+    if mode_threshold is not None and mode_threshold < 0.0:
         raise ValueError("mode_threshold must be nonnegative.")
+    if discarded_norm_target is not None and not 0.0 <= discarded_norm_target < 1.0:
+        raise ValueError("discarded_norm_target must lie in [0, 1).")
 
     pair_dim = nocc * nvir
+    if not 0 <= minimum_rank <= pair_dim:
+        raise ValueError(f"minimum_rank must lie in [0, {pair_dim}], got {minimum_rank}.")
     direct = np.asarray(t2_array, dtype=np.float64).reshape(pair_dim, pair_dim)
     exchange = np.transpose(t2_array, (0, 3, 2, 1)).reshape(pair_dim, pair_dim)
     kernel = 2.0 * direct - exchange
@@ -59,10 +68,31 @@ def decompose_t2_modes(
     order = np.argsort(np.abs(eigenvalues))[::-1]
     eigenvalues = eigenvalues[order]
     modes = eigenvectors[:, order].T.reshape(pair_dim, nocc, nvir)
-    keep = np.abs(eigenvalues) > mode_threshold
-    if not np.any(keep):
-        raise ValueError("mode_threshold removed every raw-T2 mode.")
-    return eigenvalues[keep], modes[keep]
+    threshold_rank = (
+        int(np.count_nonzero(np.abs(eigenvalues) > mode_threshold))
+        if mode_threshold is not None
+        else 0
+    )
+    norm_rank = 0
+    full_norm_sq = kernel_norm**2
+    if discarded_norm_target is not None and full_norm_sq > 0.0:
+        required_norm_sq = (1.0 - discarded_norm_target**2) * full_norm_sq
+        cumulative_norm_sq = np.cumsum(eigenvalues**2, dtype=np.float64)
+        norm_rank = int(
+            np.searchsorted(
+                cumulative_norm_sq,
+                min(required_norm_sq, cumulative_norm_sq[-1]),
+                side="left",
+            )
+            + 1
+        )
+    natural_rank = max(threshold_rank, norm_rank)
+    if natural_rank == 0 and discarded_norm_target is not None:
+        natural_rank = 1
+    retained_rank = max(natural_rank, minimum_rank)
+    if retained_rank == 0:
+        raise ValueError("mode selection removed every raw-T2 mode.")
+    return eigenvalues[:retained_rank], modes[:retained_rank]
 
 
 def _validate_modes(
@@ -187,7 +217,9 @@ def make_ptccsd_mode_trial_data(
     data: dict,
     *,
     mixed_precision: bool = True,
-    mode_threshold: float = 0.0,
+    mode_threshold: float | None = 0.0,
+    discarded_norm_target: float | None = None,
+    minimum_rank: int = 0,
 ) -> PtccsdModeTrial:
     t1 = jnp.asarray(data["t1"], dtype=jnp.float64)
     if "eigenvalues" in data and "modes" in data:
@@ -197,6 +229,8 @@ def make_ptccsd_mode_trial_data(
         eigenvalues, modes = decompose_t2_modes(
             np.asarray(data["t2"]),
             mode_threshold=mode_threshold,
+            discarded_norm_target=discarded_norm_target,
+            minimum_rank=minimum_rank,
         )
     mode_dtype = jnp.float32 if mixed_precision else jnp.float64
     return PtccsdModeTrial(
@@ -210,7 +244,9 @@ def make_ptccsd_thouless_mode_trial_data(
     data: dict,
     *,
     mixed_precision: bool = True,
-    mode_threshold: float = 0.0,
+    mode_threshold: float | None = 0.0,
+    discarded_norm_target: float | None = None,
+    minimum_rank: int = 0,
 ) -> PtccsdThoulessModeTrial:
     if "mo_t" in data:
         mo_t = jnp.asarray(data["mo_t"])
@@ -224,6 +260,8 @@ def make_ptccsd_thouless_mode_trial_data(
         eigenvalues, modes = decompose_t2_modes(
             np.asarray(data["t2"]),
             mode_threshold=mode_threshold,
+            discarded_norm_target=discarded_norm_target,
+            minimum_rank=minimum_rank,
         )
     mode_dtype = jnp.float32 if mixed_precision else jnp.float64
     return PtccsdThoulessModeTrial(

@@ -149,6 +149,34 @@ def pt_cases() -> PtCases:
     )
 
 
+def test_restricted_discarded_norm_target_selects_minimum_rank(pt_cases: PtCases):
+    t2 = np.asarray(pt_cases.dense.t2)
+    nocc, nvir = t2.shape[:2]
+    direct = t2.reshape(nocc * nvir, nocc * nvir)
+    exchange = t2.transpose(0, 3, 2, 1).reshape(nocc * nvir, nocc * nvir)
+    kernel = 2.0 * direct - exchange
+    eigenvalues = np.sort(np.abs(np.linalg.eigvalsh(kernel)))[::-1]
+    full_norm_sq = float(np.vdot(eigenvalues, eigenvalues).real)
+    discarded_at_two = np.sqrt(np.sum(eigenvalues[2:] ** 2) / full_norm_sq)
+    discarded_at_three = np.sqrt(np.sum(eigenvalues[3:] ** 2) / full_norm_sq)
+    target = float(0.5 * (discarded_at_two + discarded_at_three))
+
+    natural_values, _ = decompose_t2_modes(
+        t2,
+        mode_threshold=None,
+        discarded_norm_target=target,
+    )
+    extended_values, _ = decompose_t2_modes(
+        t2,
+        mode_threshold=None,
+        discarded_norm_target=target,
+        minimum_rank=4,
+    )
+
+    assert natural_values.size == 3
+    assert extended_values.size == 4
+
+
 @pytest.mark.parametrize("n_mode_chunks", [1, 2, 5])
 def test_dense_and_full_rank_pt_modes_match(pt_cases: PtCases, n_mode_chunks: int):
     case = pt_cases

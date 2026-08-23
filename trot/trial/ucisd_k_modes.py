@@ -20,8 +20,10 @@ class UcisdKModeFactorization:
     modes: np.ndarray
     pair_dims: tuple[int, int]
     solver: Literal["dense", "lanczos"]
-    threshold: float
+    threshold: float | None
+    discarded_norm_target: float | None
     discarded_norm_fraction: float
+    natural_rank: int
 
     @property
     def rank(self) -> int:
@@ -96,7 +98,9 @@ def factorize_ucisd_k_blocks(
     ci2ab: np.ndarray,
     ci2bb: np.ndarray,
     *,
-    threshold: float,
+    threshold: float | None = None,
+    discarded_norm_target: float | None = None,
+    minimum_rank: int = 0,
     solver: Literal["auto", "dense", "lanczos"] = "auto",
     dense_max_dim: int = 2048,
     lanczos_initial_rank: int = 256,
@@ -112,12 +116,23 @@ def factorize_ucisd_k_blocks(
     through a matrix-free ARPACK solve. ``"auto"`` selects the dense solver
     for modest pair spaces and Lanczos for larger ones.
 
-    The Lanczos solve grows its requested rank until the smallest computed
-    magnitude lies at or below ``threshold``. At that point all eigenvalues
-    omitted by the largest-magnitude solve also lie below the threshold.
+    Selection may be controlled by an absolute eigenvalue ``threshold``, a
+    relative Frobenius ``discarded_norm_target``, or both.  When both are
+    supplied, enough modes are retained to satisfy both criteria.  The
+    ``minimum_rank`` option may retain additional modes, for example to give a
+    guide and estimator a common rank.
+
+    The Lanczos solve grows its requested rank until the supplied selection
+    criteria can be certified from the largest-magnitude eigenpairs.  The full
+    Frobenius norm is evaluated directly from the dense spin blocks, so a
+    discarded-norm target does not require computing the discarded modes.
     """
-    if threshold < 0.0:
+    if threshold is None and discarded_norm_target is None:
+        raise ValueError("supply threshold, discarded_norm_target, or both.")
+    if threshold is not None and threshold < 0.0:
         raise ValueError("mode threshold must be nonnegative.")
+    if discarded_norm_target is not None and not 0.0 <= discarded_norm_target < 1.0:
+        raise ValueError("discarded_norm_target must lie in [0, 1).")
     if solver not in ("auto", "dense", "lanczos"):
         raise ValueError("solver must be 'auto', 'dense', or 'lanczos'.")
     if dense_max_dim <= 0:
@@ -131,6 +146,10 @@ def factorize_ucisd_k_blocks(
 
     aa, ab, bb, pair_dims = _validate_ucisd_blocks(ci2aa, ci2ab, ci2bb)
     combined_dim = int(sum(pair_dims))
+    if not 0 <= minimum_rank <= combined_dim:
+        raise ValueError(
+            f"minimum_rank must lie in [0, {combined_dim}], got {minimum_rank}."
+        )
     full_norm_sq = (
         float(np.vdot(aa, aa).real)
         + 2.0 * float(np.vdot(ab, ab).real)
@@ -140,8 +159,11 @@ def factorize_ucisd_k_blocks(
 
     selected_solver: Literal["dense", "lanczos"]
     if solver == "auto":
+        exact_selection = threshold == 0.0 or discarded_norm_target == 0.0
         selected_solver = (
-            "dense" if threshold == 0.0 or combined_dim <= dense_max_dim else "lanczos"
+            "dense"
+            if exact_selection or minimum_rank == combined_dim or combined_dim <= dense_max_dim
+            else "lanczos"
         )
     else:
         selected_solver = solver
@@ -149,14 +171,28 @@ def factorize_ucisd_k_blocks(
         print(
             "[modes] combined UCISD K factorization: "
             f"pair_dims={pair_dims}, combined_dim={combined_dim}, "
-            f"solver={selected_solver}, threshold={threshold:.1e}"
+            f"solver={selected_solver}, "
+            f"threshold={threshold if threshold is not None else 'none'}, "
+            "discarded_norm_target="
+            f"{discarded_norm_target if discarded_norm_target is not None else 'none'}, "
+            f"minimum_rank={minimum_rank}"
         )
 
-    if selected_solver == "lanczos" and threshold == 0.0:
+    if selected_solver == "lanczos" and (
+        threshold == 0.0
+        or discarded_norm_target == 0.0
+        or minimum_rank == combined_dim
+    ):
         raise ValueError(
-            "threshold=0 requires the dense solver because a complete basis cannot "
-            "be obtained from scipy.sparse.linalg.eigsh."
+            "an exact or full-rank selection requires the dense solver because a "
+            "complete basis cannot be obtained from scipy.sparse.linalg.eigsh."
         )
+
+    required_retained_norm_sq = (
+        (1.0 - discarded_norm_target**2) * full_norm_sq
+        if discarded_norm_target is not None
+        else None
+    )
 
     if selected_solver == "dense" or combined_dim <= 2:
         selected_solver = "dense"
@@ -196,7 +232,7 @@ def factorize_ucisd_k_blocks(
             matmat=matmat,
             dtype=np.dtype(np.float64),
         )
-        requested_rank = min(lanczos_initial_rank, combined_dim - 1)
+        requested_rank = min(max(lanczos_initial_rank, minimum_rank), combined_dim - 1)
         rng = np.random.default_rng(91_733)
         v0 = rng.standard_normal(combined_dim)
         while True:
@@ -210,19 +246,56 @@ def factorize_ucisd_k_blocks(
                 maxiter=lanczos_maxiter,
                 v0=v0,
             )
-            if np.count_nonzero(np.abs(eigenvalues) > threshold) < requested_rank:
+            threshold_satisfied = threshold is None or (
+                np.count_nonzero(np.abs(eigenvalues) > threshold) < requested_rank
+            )
+            retained_norm_satisfied = required_retained_norm_sq is None or (
+                float(np.vdot(eigenvalues, eigenvalues).real)
+                >= required_retained_norm_sq
+            )
+            if threshold_satisfied and retained_norm_satisfied:
                 break
             if requested_rank == combined_dim - 1:
                 raise RuntimeError(
-                    "Lanczos found that at least combined_dim - 1 modes exceed the "
-                    "threshold. Use solver='dense' or increase the threshold."
+                    "Lanczos could not satisfy the requested mode selection before "
+                    "reaching combined_dim - 1 modes; use solver='dense' or relax "
+                    "the selection criteria."
                 )
             requested_rank = min(combined_dim - 1, 2 * requested_rank)
 
     eigenvalues_all = np.asarray(eigenvalues, dtype=np.float64)
     eigenvectors_all = np.asarray(eigenvectors, dtype=np.float64)
     order = np.argsort(np.abs(eigenvalues_all))[::-1]
-    retained_indices = order[np.abs(eigenvalues_all[order]) > threshold]
+    ordered_eigenvalues = eigenvalues_all[order]
+
+    threshold_rank = (
+        int(np.count_nonzero(np.abs(ordered_eigenvalues) > threshold))
+        if threshold is not None
+        else 0
+    )
+    norm_rank = 0
+    if required_retained_norm_sq is not None and full_norm_sq > 0.0:
+        cumulative_norm_sq = np.cumsum(ordered_eigenvalues**2, dtype=np.float64)
+        norm_rank = int(
+            np.searchsorted(
+                cumulative_norm_sq,
+                min(required_retained_norm_sq, cumulative_norm_sq[-1]),
+                side="left",
+            )
+            + 1
+        )
+    natural_rank = max(threshold_rank, norm_rank)
+    if natural_rank == 0 and discarded_norm_target is not None:
+        natural_rank = 1
+    retained_rank = max(natural_rank, minimum_rank)
+    if retained_rank == 0:
+        raise ValueError("mode selection removed every UCISD mode.")
+    if retained_rank > ordered_eigenvalues.size:
+        raise RuntimeError(
+            f"mode selection requires {retained_rank} eigenpairs but only "
+            f"{ordered_eigenvalues.size} were computed."
+        )
+    retained_indices = order[:retained_rank]
     eigenvalues = np.asarray(eigenvalues_all[retained_indices], dtype=np.float64)
     modes = np.empty((retained_indices.size, combined_dim), dtype=np.float64)
     for output_index, input_index in enumerate(retained_indices):
@@ -237,15 +310,18 @@ def factorize_ucisd_k_blocks(
         print(
             "[modes] retained combined UCISD K modes: "
             f"rank={eigenvalues.size}/{combined_dim}, storage={mode_gib:.3f} GiB, "
-            f"discarded_norm_fraction={discarded_norm_fraction:.3e}"
+            f"discarded_norm_fraction={discarded_norm_fraction:.3e}, "
+            f"natural_rank={natural_rank}"
         )
     return UcisdKModeFactorization(
         eigenvalues=eigenvalues,
         modes=modes,
         pair_dims=pair_dims,
         solver=selected_solver,
-        threshold=float(threshold),
+        threshold=float(threshold) if threshold is not None else None,
+        discarded_norm_target=discarded_norm_target,
         discarded_norm_fraction=discarded_norm_fraction,
+        natural_rank=natural_rank,
     )
 
 

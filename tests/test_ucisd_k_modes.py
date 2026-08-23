@@ -288,6 +288,78 @@ def test_dense_and_lanczos_factorizations_reconstruct_same_truncated_kernel():
     )
 
 
+def test_discarded_norm_target_selects_same_dense_and_lanczos_rank():
+    _, _, blocks = _make_trials(seed=1869)
+    c2aa, c2ab, c2bb = blocks
+    aa = c2aa.reshape(c2aa.shape[0] * c2aa.shape[1], -1)
+    ab = c2ab.reshape(c2ab.shape[0] * c2ab.shape[1], -1)
+    bb = c2bb.reshape(c2bb.shape[0] * c2bb.shape[1], -1)
+    kernel = np.block([[aa, ab], [ab.T, bb]])
+    eigenvalues = np.sort(np.abs(np.linalg.eigvalsh(kernel)))[::-1]
+    full_norm_sq = float(np.vdot(eigenvalues, eigenvalues).real)
+    discarded_at_three = np.sqrt(np.sum(eigenvalues[3:] ** 2) / full_norm_sq)
+    discarded_at_four = np.sqrt(np.sum(eigenvalues[4:] ** 2) / full_norm_sq)
+    target = float(0.5 * (discarded_at_three + discarded_at_four))
+
+    dense = factorize_ucisd_k_blocks(
+        c2aa,
+        c2ab,
+        c2bb,
+        threshold=None,
+        discarded_norm_target=target,
+        solver="dense",
+    )
+    lanczos = factorize_ucisd_k_blocks(
+        c2aa,
+        c2ab,
+        c2bb,
+        threshold=None,
+        discarded_norm_target=target,
+        solver="lanczos",
+        lanczos_initial_rank=5,
+        lanczos_tol=1.0e-12,
+    )
+
+    assert dense.rank == 4
+    assert dense.natural_rank == 4
+    assert dense.discarded_norm_fraction <= target
+    assert lanczos.rank == dense.rank
+    assert lanczos.natural_rank == dense.natural_rank
+    np.testing.assert_allclose(
+        lanczos.discarded_norm_fraction,
+        dense.discarded_norm_fraction,
+        rtol=2.0e-10,
+        atol=2.0e-12,
+    )
+
+
+def test_minimum_rank_retains_extra_modes_without_changing_natural_rank():
+    _, _, blocks = _make_trials(seed=1870)
+    c2aa, c2ab, c2bb = blocks
+    natural = factorize_ucisd_k_blocks(
+        c2aa,
+        c2ab,
+        c2bb,
+        threshold=None,
+        discarded_norm_target=0.5,
+        solver="dense",
+    )
+    requested_rank = natural.rank + 2
+    extended = factorize_ucisd_k_blocks(
+        c2aa,
+        c2ab,
+        c2bb,
+        threshold=None,
+        discarded_norm_target=0.5,
+        minimum_rank=requested_rank,
+        solver="dense",
+    )
+
+    assert extended.natural_rank == natural.rank
+    assert extended.rank == requested_rank
+    assert extended.discarded_norm_fraction < natural.discarded_norm_fraction
+
+
 def test_k_mode_loader_mixed_precision_and_measurements():
     exact, mode_double, _ = _make_trials(seed=1871)
     sys = System(mode_double.norb, mode_double.nocc, walker_kind="restricted")

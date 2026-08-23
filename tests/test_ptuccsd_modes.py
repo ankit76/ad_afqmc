@@ -61,6 +61,7 @@ from trot.prop.types import QmcParams
 from trot.trial.ptuccsd_modes import (
     PtuccsdThoulessModeTrial,
     factorize_t2_modes,
+    factorize_ucisd_and_t2_modes_common_rank,
     get_rdm1 as mode_rdm1,
     greens_unrestricted as mode_greens_unrestricted,
     make_ptuccsd_thouless_mode_trial_data,
@@ -83,6 +84,7 @@ from trot.trial.ptuccsd_thouless import (
     reference_overlap_u as dense_reference_overlap_u,
     theta_t2_u as dense_theta_t2_u,
 )
+from trot.trial.ucisd_k_modes import factorize_ucisd_k_blocks
 
 
 def _same_spin_tensor(
@@ -1345,6 +1347,107 @@ def test_positive_threshold_retains_expected_combined_modes(trial_cases: TrialCa
     assert factorization.solver == "dense"
     assert factorization.discarded_norm_fraction > 0.0
     np.testing.assert_allclose(actual_kernel, expected_kernel, rtol=3.0e-12, atol=3.0e-12)
+
+
+def test_discarded_norm_target_retains_minimum_required_combined_modes(
+    trial_cases: TrialCases,
+):
+    case = trial_cases
+    eigenvalues = np.sort(np.abs(np.linalg.eigvalsh(case.kernel)))[::-1]
+    full_norm_sq = float(np.vdot(eigenvalues, eigenvalues).real)
+    discarded_at_three = np.sqrt(np.sum(eigenvalues[3:] ** 2) / full_norm_sq)
+    discarded_at_four = np.sqrt(np.sum(eigenvalues[4:] ** 2) / full_norm_sq)
+    target = float(0.5 * (discarded_at_three + discarded_at_four))
+
+    natural = factorize_t2_modes(
+        np.asarray(case.dense.t2aa),
+        np.asarray(case.dense.t2ab),
+        np.asarray(case.dense.t2bb),
+        mode_threshold=None,
+        discarded_norm_target=target,
+        solver="dense",
+    )
+    extended = factorize_t2_modes(
+        np.asarray(case.dense.t2aa),
+        np.asarray(case.dense.t2ab),
+        np.asarray(case.dense.t2bb),
+        mode_threshold=None,
+        discarded_norm_target=target,
+        minimum_rank=6,
+        solver="dense",
+    )
+
+    assert natural.rank == 4
+    assert natural.natural_rank == 4
+    assert natural.discarded_norm_fraction <= target
+    assert extended.rank == 6
+    assert extended.natural_rank == natural.natural_rank
+    assert extended.discarded_norm_fraction < natural.discarded_norm_fraction
+
+
+def test_ucisd_guide_and_t2_estimator_use_common_norm_controlled_rank(
+    trial_cases: TrialCases,
+):
+    case = trial_cases
+    noa, nob = case.dense.nocc
+    t1a = np.asarray(case.dense.mo_t_a[noa:, :]).T
+    t1b = np.asarray(case.dense.mo_t_b[nob:, :]).T
+    t2aa = np.asarray(case.dense.t2aa)
+    t2ab = np.asarray(case.dense.t2ab)
+    t2bb = np.asarray(case.dense.t2bb)
+    ci2aa = (
+        t2aa
+        + np.einsum("ia,jb->iajb", t1a, t1a)
+        - np.einsum("ib,ja->iajb", t1a, t1a)
+    )
+    ci2ab = t2ab + np.einsum("ia,jb->iajb", t1a, t1b)
+    ci2bb = (
+        t2bb
+        + np.einsum("ia,jb->iajb", t1b, t1b)
+        - np.einsum("ib,ja->iajb", t1b, t1b)
+    )
+    target = 0.35
+
+    guide_natural = factorize_ucisd_k_blocks(
+        ci2aa,
+        ci2ab,
+        ci2bb,
+        threshold=None,
+        discarded_norm_target=target,
+        solver="dense",
+    )
+    estimator_natural = factorize_t2_modes(
+        t2aa,
+        t2ab,
+        t2bb,
+        mode_threshold=None,
+        discarded_norm_target=target,
+        solver="dense",
+    )
+    ci2aa_work = ci2aa.copy()
+    ci2ab_work = ci2ab.copy()
+    ci2bb_work = ci2bb.copy()
+    guide, estimator = factorize_ucisd_and_t2_modes_common_rank(
+        ci2aa_work,
+        ci2ab_work,
+        ci2bb_work,
+        t1a,
+        t1b,
+        mode_threshold=None,
+        discarded_norm_target=target,
+        solver="dense",
+        overwrite_ci2=True,
+    )
+
+    expected_rank = max(guide_natural.rank, estimator_natural.rank)
+    assert guide.rank == estimator.rank == expected_rank
+    assert guide.natural_rank == guide_natural.rank
+    assert estimator.natural_rank == estimator_natural.rank
+    assert guide.discarded_norm_fraction <= target
+    assert estimator.discarded_norm_fraction <= target
+    np.testing.assert_allclose(ci2aa_work, t2aa, rtol=0.0, atol=2.0e-17)
+    np.testing.assert_allclose(ci2ab_work, t2ab, rtol=0.0, atol=2.0e-17)
+    np.testing.assert_allclose(ci2bb_work, t2bb, rtol=0.0, atol=2.0e-17)
 
 
 def test_loader_factories_and_pytree_support_restricted_open_shell(trial_cases: TrialCases):
