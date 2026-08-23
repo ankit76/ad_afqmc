@@ -599,6 +599,69 @@ def test_k_mode_pair_sampled_full_head_matches_deterministic_block_energy():
     )
 
 
+def test_k_mode_one_electron_pair_sampled_energy_matches_deterministic_energy():
+    trial = UcisdKModeTrial(
+        mo_coeff_a=jnp.eye(2, dtype=jnp.float64),
+        mo_coeff_b=jnp.eye(2, dtype=jnp.float64),
+        c1a=jnp.asarray([[0.04]], dtype=jnp.float64),
+        c1b=jnp.zeros((0, 2), dtype=jnp.float64),
+        eigenvalues=jnp.asarray([0.0], dtype=jnp.float64),
+        modes=jnp.asarray([[1.0]], dtype=jnp.float64),
+    )
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(1932),
+        norb=2,
+        n_chol=3,
+        basis="restricted",
+    )
+    sampling = UcisdKModePairSamplingCfg(
+        chol_head_size=3,
+        pair_sample_size=4,
+        head_chol_batch_size=1,
+        track_half_sample_diagnostic=True,
+    )
+    ops = make_ucisd_k_mode_meas_ops(
+        System(trial.norb, trial.nocc, walker_kind="restricted"),
+        mixed_precision=False,
+        energy_sampling=sampling,
+    )
+    ctx = ops.build_meas_ctx(ham, trial)
+    walkers = jnp.asarray(
+        [
+            [[1.0 + 0.02j], [0.1 - 0.03j]],
+            [[0.98 - 0.01j], [0.08 + 0.02j]],
+        ],
+        dtype=jnp.complex128,
+    )
+    weights = jnp.asarray([1.0, 0.8], dtype=jnp.float64)
+    exact = jax.vmap(k_mode_energy_kernel, in_axes=(0, None, None, None))(
+        walkers,
+        ham,
+        ctx,
+        trial,
+    )
+    sampled = jax.jit(pair_sampled_block_energy, static_argnums=4)(
+        walkers,
+        weights,
+        jnp.ones_like(weights, dtype=jnp.complex128),
+        jax.random.PRNGKey(1934),
+        1,
+        ham,
+        ctx,
+        trial,
+        jnp.asarray(0.0),
+        jnp.asarray(20.0),
+    )
+
+    np.testing.assert_allclose(
+        sampled.energy,
+        jnp.sum(weights * jnp.real(exact)) / jnp.sum(weights),
+        rtol=3.0e-12,
+        atol=3.0e-12,
+    )
+    assert bool(jnp.isfinite(sampled.energy))
+
+
 def test_k_mode_pair_sampled_tail_matches_the_drawn_importance_estimator():
     _, trial, _ = _make_trials(seed=1933, rank=5)
     ham = testing.make_random_ham_chol(

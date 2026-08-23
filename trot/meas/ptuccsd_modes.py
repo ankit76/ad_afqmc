@@ -310,8 +310,9 @@ def _mode_quadratic_batched_realimag(
         )
 
     leading_shape = matrices_a.shape[:-2]
-    vectors_a = matrices_a.reshape((-1, trial_data.pair_dim[0]))
-    vectors_b = matrices_b.reshape((-1, trial_data.pair_dim[1]))
+    batch_size = math.prod(leading_shape)
+    vectors_a = matrices_a.reshape((batch_size, trial_data.pair_dim[0]))
+    vectors_b = matrices_b.reshape((batch_size, trial_data.pair_dim[1]))
     rank = trial_data.mode_rank
     result_dtype = (
         jnp.complex128

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
@@ -114,8 +115,9 @@ def _combined_pair_batch(
             f"{matrices_a.shape} and {matrices_b.shape}."
         )
     leading_shape = matrices_a.shape[:-2]
-    a = matrices_a.reshape((-1, trial_data.pair_dim[0]))
-    b = matrices_b.reshape((-1, trial_data.pair_dim[1]))
+    batch_size = math.prod(leading_shape)
+    a = matrices_a.reshape((batch_size, trial_data.pair_dim[0]))
+    b = matrices_b.reshape((batch_size, trial_data.pair_dim[1]))
     return jnp.concatenate((a, b), axis=1), leading_shape
 
 

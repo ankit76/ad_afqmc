@@ -17,6 +17,8 @@ from trot.meas.ucisd import (
     force_bias_kernel_rw_rh as dense_force_bias_kernel,
 )
 from trot.meas.ucisd_k import (
+    _combined_pair_batch,
+    _k_quadratic_batched_realimag,
     build_meas_ctx as build_k_meas_ctx,
     energy_kernel_rw_rh as k_energy_kernel,
     force_bias_kernel_rw_rh as k_force_bias_kernel,
@@ -106,6 +108,78 @@ def _walker(trial: UcisdKTrial, seed: int = 1511) -> jax.Array:
         max(trial.nocc),
         mix=0.18,
     )
+
+
+def test_combined_k_batch_supports_an_empty_beta_pair_space():
+    trial = UcisdKTrial(
+        mo_coeff_a=jnp.eye(2, dtype=jnp.float64),
+        mo_coeff_b=jnp.eye(2, dtype=jnp.float64),
+        c1a=jnp.zeros((1, 1), dtype=jnp.float64),
+        c1b=jnp.zeros((0, 2), dtype=jnp.float64),
+        k=jnp.asarray([[0.4]], dtype=jnp.float64),
+    )
+    matrices_a = jnp.asarray(
+        [[[0.2 + 0.1j]], [[-0.3 + 0.05j]], [[0.1 - 0.2j]]],
+        dtype=jnp.complex128,
+    )
+    matrices_b = jnp.zeros((3, 0, 2), dtype=jnp.complex128)
+
+    vectors, leading_shape = _combined_pair_batch(trial, matrices_a, matrices_b)
+    quadratic = jax.jit(_k_quadratic_batched_realimag, static_argnums=(3, 4))(
+        trial,
+        matrices_a,
+        matrices_b,
+        _double_cfg(),
+        1,
+    )
+
+    assert leading_shape == (3,)
+    assert vectors.shape == (3, 1)
+    np.testing.assert_allclose(vectors[:, 0], matrices_a[:, 0, 0])
+    np.testing.assert_allclose(
+        quadratic,
+        0.5 * trial.k[0, 0] * matrices_a[:, 0, 0] ** 2,
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
+
+
+def test_combined_k_one_electron_measurement_matches_dense():
+    c1a = jnp.asarray([[0.04]], dtype=jnp.float64)
+    c1b = jnp.zeros((0, 2), dtype=jnp.float64)
+    dense = UcisdTrial(
+        mo_coeff_a=jnp.eye(2, dtype=jnp.float64),
+        mo_coeff_b=jnp.eye(2, dtype=jnp.float64),
+        c1a=c1a,
+        c1b=c1b,
+        c2aa=jnp.zeros((1, 1, 1, 1), dtype=jnp.float64),
+        c2ab=jnp.zeros((1, 1, 0, 2), dtype=jnp.float64),
+        c2bb=jnp.zeros((0, 2, 0, 2), dtype=jnp.float64),
+    )
+    trial = UcisdKTrial(
+        mo_coeff_a=dense.mo_coeff_a,
+        mo_coeff_b=dense.mo_coeff_b,
+        c1a=c1a,
+        c1b=c1b,
+        k=jnp.zeros((1, 1), dtype=jnp.float64),
+    )
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(1503),
+        norb=2,
+        n_chol=3,
+        basis="restricted",
+    )
+    walker = jnp.asarray([[1.0 + 0.02j], [0.1 - 0.03j]], dtype=jnp.complex128)
+    dense_ctx = build_dense_meas_ctx(ham, dense, cfg=_double_cfg())
+    k_ctx = build_k_meas_ctx(ham, trial, cfg=_double_cfg())
+
+    dense_fb = dense_force_bias_kernel(walker, ham, dense_ctx, dense)
+    candidate_fb = jax.jit(k_force_bias_kernel)(walker, ham, k_ctx, trial)
+    dense_energy = dense_energy_kernel(walker, ham, dense_ctx, dense)
+    candidate_energy = jax.jit(k_energy_kernel)(walker, ham, k_ctx, trial)
+
+    np.testing.assert_allclose(candidate_fb, dense_fb, rtol=3.0e-12, atol=3.0e-12)
+    np.testing.assert_allclose(candidate_energy, dense_energy, rtol=3.0e-12, atol=3.0e-12)
 
 
 def test_ucisd_kernel_and_trial_data_conversion_discard_dense_blocks():

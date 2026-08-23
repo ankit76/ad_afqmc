@@ -24,6 +24,7 @@ from trot.meas.ptuccsd_modes import (
     _energy_components_uw_rh_reference,
     _force_bias_kernel_rw_rh_full,
     _force_bias_kernel_uw_rh_full,
+    _mode_quadratic_batched_realimag,
     _ptuccsd_mode_chol_index_terms,
     _ptuccsd_mode_chol_pair_terms,
     _ptuccsd_mode_chol_terms,
@@ -200,6 +201,104 @@ def _restricted_walker_population(case: TrialCases) -> jax.Array:
             case.walker_r - 0.015 * jnp.roll(case.walker_r, 2, axis=0),
         )
     )
+
+
+def test_ucc_mode_batch_supports_an_empty_beta_pair_space():
+    trial = PtuccsdThoulessModeTrial(
+        mo_t_a=jnp.asarray([[1.0], [0.0]], dtype=jnp.float64),
+        mo_t_b=jnp.zeros((2, 0), dtype=jnp.float64),
+        mo_coeff_b=jnp.eye(2, dtype=jnp.float64),
+        eigenvalues=jnp.asarray([0.4], dtype=jnp.float64),
+        modes=jnp.asarray([[1.0]], dtype=jnp.float64),
+    )
+    matrices_a = jnp.asarray(
+        [[[0.2 + 0.1j]], [[-0.3 + 0.05j]], [[0.1 - 0.2j]]],
+        dtype=jnp.complex128,
+    )
+    matrices_b = jnp.zeros((3, 0, 2), dtype=jnp.complex128)
+    cfg = PtuccsdModeMeasCfg(
+        memory_mode="high",
+        mixed_real_dtype=jnp.float64,
+        mixed_complex_dtype=jnp.complex128,
+        mixed_real_dtype_testing=jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex128,
+    )
+
+    quadratic = jax.jit(
+        _mode_quadratic_batched_realimag,
+        static_argnums=(3, 4),
+    )(trial, matrices_a, matrices_b, cfg, 1)
+
+    np.testing.assert_allclose(
+        quadratic,
+        0.5 * trial.eigenvalues[0] * matrices_a[:, 0, 0] ** 2,
+        rtol=2.0e-12,
+        atol=2.0e-12,
+    )
+
+
+def test_ucc_one_electron_pair_sampled_estimator_is_finite_and_exact_with_full_head():
+    trial = PtuccsdThoulessModeTrial(
+        mo_t_a=jnp.asarray([[1.0], [0.04]], dtype=jnp.float64),
+        mo_t_b=jnp.zeros((2, 0), dtype=jnp.float64),
+        mo_coeff_b=jnp.eye(2, dtype=jnp.float64),
+        eigenvalues=jnp.asarray([0.0], dtype=jnp.float64),
+        modes=jnp.asarray([[1.0]], dtype=jnp.float64),
+    )
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(2502),
+        norb=2,
+        n_chol=3,
+        basis="restricted",
+    )
+    walkers = jnp.asarray(
+        [
+            [[1.0 + 0.02j], [0.1 - 0.03j]],
+            [[0.98 - 0.01j], [0.08 + 0.02j]],
+        ],
+        dtype=jnp.complex128,
+    )
+    weights = jnp.asarray([1.0 + 0.1j, 0.8 - 0.05j], dtype=jnp.complex128)
+    sampling = PtuccsdModePairSamplingCfg(
+        chol_head_size=ham.chol.shape[0],
+        pair_sample_size=4,
+        head_chol_batch_size=1,
+        track_half_sample_diagnostic=True,
+    )
+    ctx = build_ptuccsd_mode_meas_ctx(
+        ham,
+        trial,
+        PtuccsdModeMeasCfg(
+            memory_mode="high",
+            mixed_real_dtype=jnp.float64,
+            mixed_complex_dtype=jnp.complex128,
+            mixed_real_dtype_testing=jnp.float64,
+            mixed_complex_dtype_testing=jnp.complex128,
+        ),
+        component_sampling=sampling,
+    )
+    exact = jax.vmap(
+        components_ptuccsd_mode_rw_rh,
+        in_axes=(0, None, None, None),
+    )(walkers, ham, ctx, trial)
+    sampled = jax.jit(pair_sampled_ptuccsd_block_components, static_argnums=3)(
+        walkers,
+        weights,
+        jax.random.PRNGKey(2504),
+        1,
+        ham,
+        ctx,
+        trial,
+    )
+
+    np.testing.assert_allclose(sampled.weight, jnp.sum(weights), rtol=2.0e-12, atol=2.0e-12)
+    np.testing.assert_allclose(
+        sampled.numerator,
+        jnp.sum(weights[:, None] * exact, axis=0),
+        rtol=4.0e-11,
+        atol=4.0e-11,
+    )
+    assert bool(jnp.all(jnp.isfinite(sampled.numerator)))
 
 
 @pytest.mark.parametrize("rank", [None, 5, 0])
