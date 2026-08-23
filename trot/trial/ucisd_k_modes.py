@@ -10,6 +10,7 @@ from jax import tree_util
 
 from ..core.ops import TrialOps
 from ..core.system import System
+from .mode_factorization import format_dense_memory_selection
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,7 @@ def factorize_ucisd_k_blocks(
     discarded_norm_target: float | None = None,
     minimum_rank: int = 0,
     solver: Literal["auto", "dense", "lanczos"] = "auto",
-    dense_max_dim: int = 2048,
+    dense_max_dim: int | None = None,
     lanczos_initial_rank: int = 256,
     lanczos_tol: float = 1.0e-9,
     lanczos_maxiter: int | None = None,
@@ -114,7 +115,9 @@ def factorize_ucisd_k_blocks(
     :func:`numpy.linalg.eigh`. ``solver="lanczos"`` keeps the staged spin
     blocks separate and adaptively requests the largest-magnitude eigenpairs
     through a matrix-free ARPACK solve. ``"auto"`` selects the dense solver
-    for modest pair spaces and Lanczos for larger ones.
+    whenever its estimated peak fits the currently available host/cgroup
+    memory, and uses Lanczos otherwise. ``dense_max_dim`` is accepted for
+    compatibility but no longer limits the automatic dense path.
 
     Selection may be controlled by an absolute eigenvalue ``threshold``, a
     relative Frobenius ``discarded_norm_target``, or both.  When both are
@@ -135,8 +138,8 @@ def factorize_ucisd_k_blocks(
         raise ValueError("discarded_norm_target must lie in [0, 1).")
     if solver not in ("auto", "dense", "lanczos"):
         raise ValueError("solver must be 'auto', 'dense', or 'lanczos'.")
-    if dense_max_dim <= 0:
-        raise ValueError("dense_max_dim must be positive.")
+    if dense_max_dim is not None and dense_max_dim <= 0:
+        raise ValueError("dense_max_dim must be positive when provided.")
     if lanczos_initial_rank <= 0:
         raise ValueError("lanczos_initial_rank must be positive.")
     if lanczos_tol <= 0.0:
@@ -158,11 +161,22 @@ def factorize_ucisd_k_blocks(
     full_norm = float(np.sqrt(full_norm_sq))
 
     selected_solver: Literal["dense", "lanczos"]
+    dense_memory_safe = True
+    dense_memory_message = ""
     if solver == "auto":
+        dense_memory_safe, dense_memory_message = format_dense_memory_selection(combined_dim)
         exact_selection = threshold == 0.0 or discarded_norm_target == 0.0
+        if (exact_selection or minimum_rank == combined_dim) and not dense_memory_safe:
+            raise MemoryError(
+                "exact mode selection requires dense diagonalization, but its estimated "
+                f"memory exceeds the automatic budget: {dense_memory_message}. "
+                "Request more host memory or set solver='dense' to override."
+            )
         selected_solver = (
             "dense"
-            if exact_selection or minimum_rank == combined_dim or combined_dim <= dense_max_dim
+            if exact_selection
+            or minimum_rank == combined_dim
+            or dense_memory_safe
             else "lanczos"
         )
     else:
@@ -177,6 +191,13 @@ def factorize_ucisd_k_blocks(
             f"{discarded_norm_target if discarded_norm_target is not None else 'none'}, "
             f"minimum_rank={minimum_rank}"
         )
+        if solver == "auto":
+            print(
+                "[modes] dense auto-selection memory estimate: "
+                f"{dense_memory_message}"
+            )
+            if dense_max_dim is not None:
+                print("[modes] dense_max_dim is deprecated and ignored by solver='auto'.")
 
     if selected_solver == "lanczos" and (
         threshold == 0.0

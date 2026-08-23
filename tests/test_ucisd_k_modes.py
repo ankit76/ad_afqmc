@@ -40,6 +40,7 @@ from trot.prop.afqmc import make_prop_ops
 from trot.prop.blocks import block
 from trot.prop.types import PropState, QmcParams
 from trot.trial.ucisd_k import UcisdKTrial, overlap_r as k_overlap_r
+from trot.trial import ucisd_k_modes as ucisd_k_modes_module
 from trot.trial.ucisd_k_modes import (
     UcisdKModeTrial,
     factorize_ucisd_k_blocks,
@@ -331,6 +332,46 @@ def test_discarded_norm_target_selects_same_dense_and_lanczos_rank():
         rtol=2.0e-10,
         atol=2.0e-12,
     )
+
+
+def test_auto_solver_respects_available_host_memory(monkeypatch):
+    _, _, blocks = _make_trials(seed=1868)
+    c2aa, c2ab, c2bb = blocks
+
+    monkeypatch.setattr(
+        ucisd_k_modes_module,
+        "format_dense_memory_selection",
+        lambda dimension: (False, f"mock insufficient memory for {dimension}"),
+    )
+    lanczos = factorize_ucisd_k_blocks(
+        c2aa,
+        c2ab,
+        c2bb,
+        threshold=None,
+        discarded_norm_target=0.5,
+        solver="auto",
+        dense_max_dim=1,
+        lanczos_initial_rank=5,
+        lanczos_tol=1.0e-12,
+    )
+
+    monkeypatch.setattr(
+        ucisd_k_modes_module,
+        "format_dense_memory_selection",
+        lambda dimension: (True, f"mock sufficient memory for {dimension}"),
+    )
+    dense = factorize_ucisd_k_blocks(
+        c2aa,
+        c2ab,
+        c2bb,
+        threshold=None,
+        discarded_norm_target=0.5,
+        solver="auto",
+        dense_max_dim=1,
+    )
+
+    assert lanczos.solver == "lanczos"
+    assert dense.solver == "dense"
 
 
 def test_minimum_rank_retains_extra_modes_without_changing_natural_rank():

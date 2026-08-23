@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -9,7 +10,7 @@ from jax import tree_util
 
 from ..core.ops import TrialOps
 from ..core.system import System
-from .cisd_modes import mode_quadratic
+from .cisd_modes import factorize_cisd_k_modes, mode_quadratic
 
 
 def decompose_t2_modes(
@@ -18,6 +19,12 @@ def decompose_t2_modes(
     mode_threshold: float | None = 0.0,
     discarded_norm_target: float | None = None,
     minimum_rank: int = 0,
+    solver: Literal["auto", "dense", "lanczos"] = "auto",
+    dense_max_dim: int | None = None,
+    lanczos_initial_rank: int = 256,
+    lanczos_tol: float = 1.0e-9,
+    lanczos_maxiter: int | None = None,
+    verbose: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Diagonalize the restricted spin-adapted kernel formed from raw ``T2``.
 
@@ -30,69 +37,19 @@ def decompose_t2_modes(
     a relative Frobenius discarded-norm target, or both.
     """
 
-    t2_array = np.asarray(t2)
-    if t2_array.ndim != 4:
-        raise ValueError(f"t2 must have rank 4, got shape {t2_array.shape}.")
-    nocc, nvir, nocc_2, nvir_2 = t2_array.shape
-    if (nocc_2, nvir_2) != (nocc, nvir):
-        raise ValueError(
-            "t2 must have shape (nocc, nvir, nocc, nvir); "
-            f"got {t2_array.shape}."
-        )
-    if np.iscomplexobj(t2_array):
-        raise ValueError("Restricted PT mode decomposition currently requires real T2 amplitudes.")
-    if mode_threshold is None and discarded_norm_target is None:
-        raise ValueError("supply mode_threshold, discarded_norm_target, or both.")
-    if mode_threshold is not None and mode_threshold < 0.0:
-        raise ValueError("mode_threshold must be nonnegative.")
-    if discarded_norm_target is not None and not 0.0 <= discarded_norm_target < 1.0:
-        raise ValueError("discarded_norm_target must lie in [0, 1).")
-
-    pair_dim = nocc * nvir
-    if not 0 <= minimum_rank <= pair_dim:
-        raise ValueError(f"minimum_rank must lie in [0, {pair_dim}], got {minimum_rank}.")
-    direct = np.asarray(t2_array, dtype=np.float64).reshape(pair_dim, pair_dim)
-    exchange = np.transpose(t2_array, (0, 3, 2, 1)).reshape(pair_dim, pair_dim)
-    kernel = 2.0 * direct - exchange
-    kernel_norm = float(np.linalg.norm(kernel))
-    symmetry_error = (
-        float(np.linalg.norm(kernel - kernel.T)) / kernel_norm if kernel_norm > 0.0 else 0.0
+    factorization = factorize_cisd_k_modes(
+        t2,
+        threshold=mode_threshold,
+        discarded_norm_target=discarded_norm_target,
+        minimum_rank=minimum_rank,
+        solver=solver,
+        dense_max_dim=dense_max_dim,
+        lanczos_initial_rank=lanczos_initial_rank,
+        lanczos_tol=lanczos_tol,
+        lanczos_maxiter=lanczos_maxiter,
+        verbose=verbose,
     )
-    if symmetry_error > 1.0e-10:
-        raise ValueError(
-            "spin-adapted raw-T2 kernel is not symmetric: "
-            f"relative error={symmetry_error:.3e}."
-        )
-
-    eigenvalues, eigenvectors = np.linalg.eigh(kernel)
-    order = np.argsort(np.abs(eigenvalues))[::-1]
-    eigenvalues = eigenvalues[order]
-    modes = eigenvectors[:, order].T.reshape(pair_dim, nocc, nvir)
-    threshold_rank = (
-        int(np.count_nonzero(np.abs(eigenvalues) > mode_threshold))
-        if mode_threshold is not None
-        else 0
-    )
-    norm_rank = 0
-    full_norm_sq = kernel_norm**2
-    if discarded_norm_target is not None and full_norm_sq > 0.0:
-        required_norm_sq = (1.0 - discarded_norm_target**2) * full_norm_sq
-        cumulative_norm_sq = np.cumsum(eigenvalues**2, dtype=np.float64)
-        norm_rank = int(
-            np.searchsorted(
-                cumulative_norm_sq,
-                min(required_norm_sq, cumulative_norm_sq[-1]),
-                side="left",
-            )
-            + 1
-        )
-    natural_rank = max(threshold_rank, norm_rank)
-    if natural_rank == 0 and discarded_norm_target is not None:
-        natural_rank = 1
-    retained_rank = max(natural_rank, minimum_rank)
-    if retained_rank == 0:
-        raise ValueError("mode selection removed every raw-T2 mode.")
-    return eigenvalues[:retained_rank], modes[:retained_rank]
+    return factorization.eigenvalues, factorization.modes
 
 
 def _validate_modes(

@@ -49,9 +49,11 @@ from trot.meas.cisd_modes import (
     stream_cisd_mode_population_statistics,
 )
 from trot.prop.types import PropState
+from trot.trial import cisd_modes as cisd_modes_module
 from trot.trial.cisd import CisdTrial, overlap_r as dense_overlap_r
 from trot.trial.cisd_modes import (
     CisdModeTrial,
+    factorize_cisd_k_modes,
     make_cisd_mode_trial_data,
     make_cisd_mode_trial_ops,
     mode_apply,
@@ -148,6 +150,70 @@ def test_mode_helpers_match_explicit_k_contractions():
     np.testing.assert_allclose(quadratic, expected_quadratic, rtol=1.0e-12, atol=1.0e-12)
 
 
+def test_restricted_dense_and_lanczos_factorizations_match():
+    dense_trial, _, kernel, _ = _make_dense_and_mode_trials(seed=821)
+    magnitudes = np.sort(np.abs(np.linalg.eigvalsh(kernel)))[::-1]
+    threshold = float(0.5 * (magnitudes[3] + magnitudes[4]))
+
+    dense = factorize_cisd_k_modes(
+        np.asarray(dense_trial.ci2),
+        threshold=threshold,
+        solver="dense",
+    )
+    lanczos = factorize_cisd_k_modes(
+        np.asarray(dense_trial.ci2),
+        threshold=threshold,
+        solver="lanczos",
+        lanczos_initial_rank=5,
+        lanczos_tol=1.0e-12,
+    )
+
+    dense_modes = dense.modes.reshape(dense.rank, -1)
+    dense_kernel = (dense_modes.T * dense.eigenvalues) @ dense_modes
+    lanczos_kernel = (
+        lanczos.modes.reshape(lanczos.rank, -1).T * lanczos.eigenvalues
+    ) @ lanczos.modes.reshape(lanczos.rank, -1)
+    assert dense.rank == 4
+    assert lanczos.rank == dense.rank
+    np.testing.assert_allclose(lanczos_kernel, dense_kernel, rtol=2.0e-10, atol=2.0e-12)
+
+
+def test_restricted_auto_solver_respects_available_host_memory(monkeypatch):
+    dense_trial, _, _, _ = _make_dense_and_mode_trials(seed=823)
+    amplitudes = np.asarray(dense_trial.ci2)
+
+    monkeypatch.setattr(
+        cisd_modes_module,
+        "format_dense_memory_selection",
+        lambda dimension: (False, f"mock insufficient memory for {dimension}"),
+    )
+    lanczos = factorize_cisd_k_modes(
+        amplitudes,
+        threshold=None,
+        discarded_norm_target=0.5,
+        solver="auto",
+        dense_max_dim=1,
+        lanczos_initial_rank=5,
+        lanczos_tol=1.0e-12,
+    )
+
+    monkeypatch.setattr(
+        cisd_modes_module,
+        "format_dense_memory_selection",
+        lambda dimension: (True, f"mock sufficient memory for {dimension}"),
+    )
+    dense = factorize_cisd_k_modes(
+        amplitudes,
+        threshold=None,
+        discarded_norm_target=0.5,
+        solver="auto",
+        dense_max_dim=1,
+    )
+
+    assert lanczos.solver == "lanczos"
+    assert dense.solver == "dense"
+
+
 def test_mixed_trial_data_uses_lambda64_vectors32_and_dp_reductions():
     dense_trial, mode_dp, _, eigenvectors = _make_dense_and_mode_trials()
     sys = System(
@@ -183,6 +249,33 @@ def test_mixed_trial_data_uses_lambda64_vectors32_and_dp_reductions():
     mixed_overlap = mode_overlap_r(walker, mode_mixed)
     relative_error = float(jnp.abs(mixed_overlap - dense_overlap) / jnp.abs(dense_overlap))
     assert relative_error < 1.0e-5
+
+
+def test_mode_trial_data_can_factor_dense_rcisd_amplitudes():
+    dense_trial, mode_dp, _, _ = _make_dense_and_mode_trials(seed=841)
+    sys = System(
+        norb=dense_trial.norb,
+        nelec=(dense_trial.nocc_full, dense_trial.nocc_full),
+        walker_kind="restricted",
+    )
+    loaded = make_cisd_mode_trial_data(
+        {
+            "ci1": np.asarray(dense_trial.ci1),
+            "ci2": np.asarray(dense_trial.ci2),
+        },
+        sys,
+        mixed_precision=False,
+        mode_solver="dense",
+    )
+
+    assert loaded.mode_rank == mode_dp.mode_rank
+    reconstructed = (
+        loaded.modes.reshape(loaded.mode_rank, -1).T * loaded.eigenvalues
+    ) @ loaded.modes.reshape(loaded.mode_rank, -1)
+    expected = (
+        mode_dp.modes.reshape(mode_dp.mode_rank, -1).T * mode_dp.eigenvalues
+    ) @ mode_dp.modes.reshape(mode_dp.mode_rank, -1)
+    np.testing.assert_allclose(reconstructed, expected, rtol=2.0e-12, atol=2.0e-12)
 
 
 def test_mode_trial_is_a_pytree_and_accepts_consistent_truncated_storage():

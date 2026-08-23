@@ -11,7 +11,10 @@ from jax import tree_util
 from ..core.ops import TrialOps
 from ..core.system import System
 from .ptuccsd_thouless import thouless_mo_from_t1
-from .ucisd_k_modes import UcisdKModeFactorization, factorize_ucisd_k_blocks
+from .ucisd_k_modes import (
+    UcisdKModeFactorization,
+    factorize_ucisd_k_blocks,
+)
 
 
 @dataclass(frozen=True)
@@ -45,7 +48,7 @@ def factorize_t2_modes(
     discarded_norm_target: float | None = None,
     minimum_rank: int = 0,
     solver: Literal["auto", "dense", "lanczos"] = "auto",
-    dense_max_dim: int = 2048,
+    dense_max_dim: int | None = None,
     lanczos_initial_rank: int = 256,
     lanczos_tol: float = 1.0e-9,
     lanczos_maxiter: int | None = None,
@@ -105,7 +108,7 @@ def factorize_ucisd_and_t2_modes_common_rank(
     mode_threshold: float | None = 0.0,
     discarded_norm_target: float | None = None,
     solver: Literal["auto", "dense", "lanczos"] = "auto",
-    dense_max_dim: int = 2048,
+    dense_max_dim: int | None = None,
     lanczos_initial_rank: int = 256,
     lanczos_tol: float = 1.0e-9,
     lanczos_maxiter: int | None = None,
@@ -527,7 +530,7 @@ def make_ptuccsd_thouless_mode_trial_data(
     discarded_norm_target: float | None = None,
     minimum_rank: int = 0,
     mode_solver: Literal["auto", "dense", "lanczos"] = "auto",
-    dense_max_dim: int = 2048,
+    dense_max_dim: int | None = None,
     lanczos_initial_rank: int = 256,
     lanczos_tol: float = 1.0e-9,
     lanczos_maxiter: int | None = None,
