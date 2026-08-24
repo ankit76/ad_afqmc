@@ -748,6 +748,7 @@ def stage(
     verbose: bool = False,
     ham: HamInput | None = None,
     trial: TrialInput | None = None,
+    derived_trial_key: str | None = None,
 ) -> StagedInputs:
     """
     Stage inputs from a pyscf mf or cc object.
@@ -781,13 +782,16 @@ def stage(
             Optionally provide HamInput. If None, will be staged from obj.
         trial:
             Optionally provide TrialInput. If None, will be staged from obj.
+        derived_trial_key:
+            Optional derived representation to load when an existing cache is
+            reused.  Fresh staging always constructs and writes the raw trial.
 
     Returns:
         StagedInputs containing HamInput, TrialInput, and metadata.
     """
     cache_path = Path(cache).expanduser().resolve() if cache is not None else None
     if cache_path is not None and cache_path.exists() and not overwrite:
-        return load(cache_path)
+        return load(cache_path, derived_trial_key=derived_trial_key)
 
     t0 = time.time()
 
@@ -854,23 +858,35 @@ def dump(staged: StagedInputs, path: Union[str, Path]) -> None:
     _stage_end(t_dump, "staged inputs written")
 
 
-def load(path: Union[str, Path]) -> StagedInputs:
+def load(
+    path: Union[str, Path],
+    *,
+    derived_trial_key: str | None = None,
+) -> StagedInputs:
     """
     Load staged inputs from a single file written by dump().
 
     Args:
         path: input file path
+        derived_trial_key:
+            Optional key below ``trial/derived``.  When supplied, load that
+            complete derived trial representation without reading the raw
+            amplitude datasets in ``trial/data``.
 
     Returns:
         StagedInputs
     """
     p = Path(path).expanduser().resolve()
     t_load = _stage_begin(f"loading staged inputs from {p}")
-    staged = _load_h5(p)
+    staged = _load_h5(p, derived_trial_key=derived_trial_key)
     _stage_end(
         t_load,
         "staged inputs loaded",
-        details=f"norb={staged.ham.norb} nchol={staged.ham.chol.shape[0]} trial={staged.trial.kind}",
+        details=(
+            f"norb={staged.ham.norb} nchol={staged.ham.chol.shape[0]} "
+            f"trial={staged.trial.kind} "
+            f"representation={derived_trial_key or 'raw'}"
+        ),
     )
     return staged
 
@@ -1415,7 +1431,11 @@ def _to_json_str(x: Any) -> str:
     return str(x)
 
 
-def _load_h5(path: Path) -> StagedInputs:
+def _load_h5(
+    path: Path,
+    *,
+    derived_trial_key: str | None = None,
+) -> StagedInputs:
     with h5py.File(path, "r") as f:
         meta = json.loads(_to_json_str(f.attrs["meta_json"]))
         if "frozen" in meta:
@@ -1440,7 +1460,22 @@ def _load_h5(path: Path) -> StagedInputs:
 
         t_trial = _stage_begin("reading trial input from cache")
         gtr: Any = f["trial"]
-        gdata = gtr["data"]
+        if derived_trial_key is None:
+            gdata = gtr["data"]
+        else:
+            derived_path = f"derived/{derived_trial_key}"
+            if derived_path not in gtr:
+                available = tuple(sorted(gtr.get("derived", {}).keys()))
+                raise KeyError(
+                    f"derived trial representation {derived_trial_key!r} is not present; "
+                    f"available={available}."
+                )
+            derived_group = gtr[derived_path]
+            gdata = derived_group["data"]
+            meta = dict(meta)
+            meta["trial_representation"] = json.loads(
+                _to_json_str(derived_group.attrs["metadata_json"])
+            )
         trial_data = {k: np.array(gdata[k]) for k in gdata.keys()}
         trial = TrialInput(
             kind=str(gtr.attrs["kind"]),

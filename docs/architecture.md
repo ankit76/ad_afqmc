@@ -286,6 +286,51 @@ mean, err = afqmc.kernel()
 Key attributes: `walker_kind`, `mixed_precision`, `staged`, `job`, `e_tot`,
 `e_err`.
 
+#### Retained-mode CISD/UCISD trials
+
+The opt-in CISD workflow is configured as one nested object rather than a
+collection of flags on `AFQMC`. Mode compression is a host-side trial
+preparation step; walker--Cholesky pair sampling is a runtime measurement
+policy tuned after equilibration:
+
+```python
+from trot.afqmc import Afqmc
+from trot.cisd_workflow import CisdWorkflowConfig
+
+workflow = CisdWorkflowConfig.pair_sampled(
+    discarded_norm_target=0.1,
+    solver="auto",
+)
+afqmc = Afqmc(
+    mycc,
+    cache="afqmc.h5",
+    cisd_workflow=workflow,
+    n_walkers=200,
+    n_eql_blocks=50,
+    n_blocks=1000,
+)
+
+# Prefer doing this directly after the PySCF CC calculation on its CPU node.
+# The raw amplitudes remain in trial/data; the smaller derived modes are cached
+# alongside them below trial/derived.
+afqmc.prepare_cisd_trial_cache()
+```
+
+The GPU job can then load only the selected derived representation:
+
+```python
+afqmc = Afqmc.from_staged("afqmc.h5", cisd_workflow=workflow)
+afqmc.walker_kind = "restricted"
+energy, error = afqmc.kernel(target_error=2.0e-4)
+```
+
+Keeping the raw amplitudes makes a later change in compression policy
+reproducible without rerunning CC. Derived representations are keyed by the
+complete `CisdModeConfig`, so several cutoffs can coexist in one staged file.
+If no matching cached representation exists, `setup()` can still construct it
+from the raw amplitudes, but doing so during the GPU job is usually less
+convenient.
+
 ### 2. `setup()` function (mid-level)
 
 Defined in `setup.py`. Builds a `Job` from a PySCF object, `StagedInputs`, or

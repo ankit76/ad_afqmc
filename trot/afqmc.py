@@ -6,6 +6,7 @@ configure_once()
 
 import copy
 import dataclasses
+import shutil
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Literal, Union, cast
@@ -18,6 +19,12 @@ print = partial(print, flush=True)
 from jax.sharding import Mesh
 
 from . import staging
+from .cisd_workflow import (
+    CisdWorkflowConfig,
+    PreparedCisdModes,
+    cached_representation_key,
+    prepare_cisd_modes,
+)
 from .core.system import WalkerKind
 from .driver import QmcResult
 from .prop.types import QmcParams, QmcParamsBase, QmcParamsFp, QmcParamsLno
@@ -98,6 +105,11 @@ class Afqmc:
     error_method : {"gamma", "blocking"} | None, optional
         Primary energy-error estimator. Both analyses are always evaluated;
         "gamma" is reported by default.
+    cisd_workflow : CisdWorkflowConfig | None, optional
+        Opt-in retained-mode and pair-sampled energy workflow for staged CISD
+        or UCISD trials. Mode construction can be cached on a CPU node with
+        :meth:`prepare_cisd_trial_cache`; pair-sampling is tuned after AFQMC
+        equilibration.
     """
 
     params_cls = QmcParams
@@ -119,6 +131,7 @@ class Afqmc:
         n_walkers: int | None = None,
         n_chunks: int | None = None,
         error_method: Literal["gamma", "blocking"] | None = None,
+        cisd_workflow: CisdWorkflowConfig | None = None,
     ):
         self._obj = mf_or_cc
         self._cc: Any = None
@@ -143,6 +156,7 @@ class Afqmc:
 
         self.walker_kind: WalkerKind | None = None  # resolved in kernel
         self.mixed_precision = True
+        self.cisd_workflow = cisd_workflow
 
         self.params: QmcParamsBase | None = None  # resolved in kernel
         defaults = self.params_cls()
@@ -158,6 +172,7 @@ class Afqmc:
 
         self._staged: StagedInputs | None = None
         self._job: Job | None = None
+        self._job_cisd_workflow: CisdWorkflowConfig | None = None
         self._cache_key: tuple | None = None
 
         self.e_tot: Any = None
@@ -233,6 +248,12 @@ class Afqmc:
         if meas_cfg is not None:
             self._dump_cfg("meas_cfg", meas_cfg)
             print("")
+        if self.cisd_workflow is not None:
+            self._dump_cfg("cisd_workflow", self.cisd_workflow)
+            representation = job.staged.meta.get("trial_representation")
+            if representation is not None:
+                self._dump_cfg("trial_repr", representation)
+            print("")
         self._dump_params(params)
 
     def _key(self) -> tuple:
@@ -247,6 +268,7 @@ class Afqmc:
             str(self.cache) if self.cache is not None else None,
             bool(self.overwrite_cache),
             cache_mtime,
+            repr(self.cisd_workflow) if self.cisd_workflow is not None else None,
         )
 
     def stage(self, *, force: bool = False) -> StagedInputs:
@@ -271,6 +293,11 @@ class Afqmc:
         if self._staged is not None and self._cache_key == key and not force:
             return self._staged
 
+        derived_trial_key = (
+            cached_representation_key(self.cache, self.cisd_workflow)
+            if self.cache is not None and self.cache.exists()
+            else None
+        )
         staged = stage_inputs(
             self._obj,
             norb_frozen_core=(
@@ -280,6 +307,7 @@ class Afqmc:
             cache=self.cache,
             overwrite=self.overwrite_cache if self.cache is not None else False,
             verbose=self.verbose,
+            derived_trial_key=derived_trial_key,
         )
         self._staged = staged
         self._cache_key = key
@@ -289,7 +317,68 @@ class Afqmc:
     def save_staged(self, path: Union[str, Path]) -> None:
         """Write current staged inputs to a single file cache."""
         staged = self.stage()
-        dump_staged(staged, path)
+        destination = Path(path).expanduser().resolve()
+        if self.cache is not None and self.cache.exists():
+            if destination != self.cache:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.cache, destination)
+            return
+        dump_staged(staged, destination)
+
+    def prepare_cisd_trial_cache(
+        self,
+        path: Union[str, Path] | None = None,
+        *,
+        overwrite: bool = False,
+    ) -> PreparedCisdModes:
+        """Build and cache the configured CISD modes on the current host.
+
+        The raw staged amplitudes remain canonical in ``trial/data`` and the
+        derived modes are added below ``trial/derived`` in the same HDF5 file.
+        Calling this immediately after the PySCF CC calculation keeps the
+        factorization on the CPU preparation node. A later GPU-side
+        :meth:`from_staged` call loads only the selected derived representation.
+        """
+
+        if self.cisd_workflow is None:
+            raise ValueError(
+                "prepare_cisd_trial_cache requires cisd_workflow to be configured."
+            )
+        cache_path = (
+            Path(path).expanduser().resolve()
+            if path is not None
+            else self.cache
+        )
+        if cache_path is None:
+            raise ValueError(
+                "prepare_cisd_trial_cache requires a path argument or Afqmc(cache=...)."
+            )
+
+        if cache_path.exists():
+            prepared = prepare_cisd_modes(
+                cache_path,
+                self.cisd_workflow.modes,
+                overwrite=overwrite,
+                verbose=self.verbose,
+            )
+        else:
+            staged = self.stage()
+            prepared = prepare_cisd_modes(
+                staged,
+                self.cisd_workflow.modes,
+                cache=cache_path,
+                overwrite=overwrite,
+                verbose=self.verbose,
+            )
+
+        if self.cache is not None and cache_path == self.cache:
+            self._staged = load_staged(
+                cache_path,
+                derived_trial_key=prepared.cache_key,
+            )
+            self._cache_key = self._key()
+            self._job = None
+        return prepared
 
     # def load_staged(self, path: Union[str, Path]): -> StagedInputs:
     #    """Load staged inputs from a cache file and attach them to this object."""
@@ -346,12 +435,23 @@ class Afqmc:
         """
         Assemble a runnable Job from current settings and staged inputs.
         """
-        if self._job is not None and not force and (mesh is None or self._job.mesh is mesh):
+        if (
+            self._job is not None
+            and not force
+            and self._job_cisd_workflow == self.cisd_workflow
+            and (mesh is None or self._job.mesh is mesh)
+        ):
             return self._job
 
         staged = self.stage()
         qmc_params = self._make_params()
         self.params = qmc_params
+
+        setup_kwargs: dict[str, Any] = {}
+        if self.cisd_workflow is not None:
+            if self.setup_fn is not setup_job:
+                raise ValueError("cisd_workflow is currently supported only by standard AFQMC.")
+            setup_kwargs["cisd_workflow"] = self.cisd_workflow
 
         job = self.setup_fn(
             staged,
@@ -365,8 +465,10 @@ class Afqmc:
             prop_ops=prop_ops,
             block_fn=block_fn,
             prop_kwargs=prop_kwargs,
+            **setup_kwargs,
         )
         self._job = job
+        self._job_cisd_workflow = self.cisd_workflow
         return job
 
     def _coerce_result(self, value: Any) -> Any:
@@ -398,13 +500,17 @@ class Afqmc:
 
     @classmethod
     def _from_staged_common(cls, path: Union[str, Path], **kwargs: Any):
-        staged = load_staged(path)
+        cache_path = Path(path).expanduser().resolve()
+        workflow = kwargs.get("cisd_workflow")
+        derived_trial_key = cached_representation_key(cache_path, workflow)
+        staged = load_staged(cache_path, derived_trial_key=derived_trial_key)
         meta = staged.meta
 
         af = cls(
             None,
             norb_frozen_core=meta["frozen"],
             chol_cut=meta["chol_cut"],
+            cache=cache_path,
             **kwargs,
         )
         af._staged = staged
@@ -424,6 +530,7 @@ class Afqmc:
         n_walkers: int | None = None,
         n_chunks: int = 1,
         error_method: Literal["gamma", "blocking"] | None = None,
+        cisd_workflow: CisdWorkflowConfig | None = None,
     ) -> Afqmc:
         """
         Returns a new AFQMC object from a previously staged calculations
@@ -444,6 +551,7 @@ class Afqmc:
             n_walkers=n_walkers,
             n_chunks=n_chunks,
             error_method=error_method,
+            cisd_workflow=cisd_workflow,
         )
 
 

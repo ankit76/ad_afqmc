@@ -13,6 +13,11 @@ from jax.sharding import Mesh
 print = partial(print, flush=True)
 
 from . import driver
+from .cisd_workflow import (
+    CisdWorkflowConfig,
+    cached_representation_key,
+    make_cisd_runtime_bundle,
+)
 from .driver import QmcResult
 from .core.ops import MeasOps, TrialOps
 from .core.system import System, WalkerKind
@@ -120,6 +125,7 @@ def _resolve_staged(
     cache: Union[str, Path] | None,
     overwrite: bool,
     verbose: bool,
+    cisd_workflow: CisdWorkflowConfig | None = None,
 ) -> StagedInputs:
     staged: StagedInputs
     if isinstance(obj_or_staged, StagedInputs):
@@ -132,9 +138,15 @@ def _resolve_staged(
         else None
     )
     if p is not None and p.exists():
-        staged = load(p)
+        derived_trial_key = cached_representation_key(p, cisd_workflow)
+        staged = load(p, derived_trial_key=derived_trial_key)
         return staged
 
+    derived_trial_key = (
+        cached_representation_key(cache, cisd_workflow)
+        if cache is not None and Path(cache).expanduser().resolve().exists()
+        else None
+    )
     staged = stage(
         obj_or_staged,
         norb_frozen_core=norb_frozen_core,
@@ -142,6 +154,7 @@ def _resolve_staged(
         cache=cache,
         overwrite=overwrite,
         verbose=verbose,
+        derived_trial_key=derived_trial_key,
     )
     return staged
 
@@ -365,6 +378,7 @@ def _assemble_job(
     block_fn: Callable[..., Any] | None = None,
     params_kwargs: dict[str, Any] | None = None,
     prop_kwargs: dict[str, Any] | None = None,
+    cisd_workflow: CisdWorkflowConfig | None = None,
     params_builder: Callable[..., QmcParamsBase],
     prop_builder: Callable[..., Any],
     default_block_fn: Callable[..., Any],
@@ -388,6 +402,7 @@ def _assemble_job(
         cache=cache,
         overwrite=overwrite,
         verbose=verbose,
+        cisd_workflow=cisd_workflow,
     )
     ham = staged.ham
 
@@ -396,11 +411,37 @@ def _assemble_job(
 
     qmc_params = params_builder(params=params, **(params_kwargs or {}))
 
+    workflow_bundle = None
+    if cisd_workflow is not None:
+        if any(value is not None for value in (trial_data, trial_ops, meas_ops)):
+            raise ValueError(
+                "cisd_workflow cannot be combined with trial_data, trial_ops, or "
+                "meas_ops overrides."
+            )
+        workflow_bundle = make_cisd_runtime_bundle(
+            sys,
+            staged,
+            mixed_precision=mixed_precision,
+            workflow=cisd_workflow,
+        )
+        staged = workflow_bundle.staged
+        trial_data = workflow_bundle.trial_data
+        trial_ops = workflow_bundle.trial_ops
+        meas_ops = workflow_bundle.meas_ops
+
     if trial_data is None or trial_ops is None or meas_ops is None:
         td, to, mo = _make_trial_bundle(sys, staged, mixed_precision)
         trial_data = td if trial_data is None else trial_data
         trial_ops = to if trial_ops is None else trial_ops
         meas_ops = mo if meas_ops is None else meas_ops
+
+    if workflow_bundle is not None:
+        # Mode-native data must use the explicit generic runtime path rather
+        # than the dense CISD host-layout specialization selected from the raw
+        # staged trial kind.
+        trial_data_override = trial_data
+        trial_ops_override = trial_ops
+        meas_ops_override = meas_ops
 
     runtime_layout = make_runtime_layout(
         staged=staged,
@@ -456,6 +497,7 @@ def setup(
     walker_kind: WalkerKind | None = None,
     mesh: Mesh | None = None,
     mixed_precision: bool = True,
+    cisd_workflow: CisdWorkflowConfig | None = None,
     # params options
     params: QmcParams | None = None,
     # overrides for customized runs
@@ -482,6 +524,11 @@ def setup(
         staged = stage(cc, cache="afqmc.h5")
         job = setup(staged, walker_kind="restricted", mixed_precision=False, params=myparams)
         job.kernel()
+
+    Retained-mode CISD/UCISD usage:
+        workflow = CisdWorkflowConfig.pair_sampled(discarded_norm_target=0.1)
+        job = setup("afqmc.h5", walker_kind="restricted", cisd_workflow=workflow)
+        job.kernel(target_error=2.0e-4)
     """
     return _assemble_job(
         obj_or_staged,
@@ -494,6 +541,7 @@ def setup(
         walker_kind=walker_kind,
         mesh=mesh,
         mixed_precision=mixed_precision,
+        cisd_workflow=cisd_workflow,
         params=params,
         trial_data=trial_data,
         trial_ops=trial_ops,
