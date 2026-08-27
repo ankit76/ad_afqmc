@@ -480,7 +480,47 @@ class HamInput:
     chol_cut: float
     frozen: int | NDArray
     source_kind: str  # "mf" or "cc"
-    basis: HamBasis  # "restricted" or "generalized"
+    basis: HamBasis  # "restricted", "unrestricted", or "generalized"
+    # For basis="unrestricted", h1/chol are the alpha tensors and these are
+    # the beta tensors in the same padded runtime dimension.
+    h1_b: Array | None = None
+    chol_b: Array | None = None
+    norb_spin: Tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.basis != "unrestricted":
+            return
+        if self.h1_b is None or self.chol_b is None or self.norb_spin is None:
+            raise ValueError(
+                "An unrestricted HamInput requires h1_b, chol_b, and norb_spin."
+            )
+        if tuple(np.asarray(self.h1).shape) != (self.norb, self.norb):
+            raise ValueError(
+                f"unrestricted alpha h1 must have shape {(self.norb, self.norb)}."
+            )
+        if tuple(np.asarray(self.h1_b).shape) != (self.norb, self.norb):
+            raise ValueError(
+                f"unrestricted beta h1 must have shape {(self.norb, self.norb)}."
+            )
+        expected_chol = (int(np.asarray(self.chol).shape[0]), self.norb, self.norb)
+        if tuple(np.asarray(self.chol).shape) != expected_chol:
+            raise ValueError(f"unrestricted alpha chol must have shape {expected_chol}.")
+        if tuple(np.asarray(self.chol_b).shape) != expected_chol:
+            raise ValueError(f"unrestricted beta chol must have shape {expected_chol}.")
+        norb_a, norb_b = (int(self.norb_spin[0]), int(self.norb_spin[1]))
+        if norb_a <= 0 or norb_b <= 0 or max(norb_a, norb_b) != self.norb:
+            raise ValueError(
+                "norb_spin must contain positive native dimensions whose maximum "
+                f"equals norb={self.norb}, got {self.norb_spin}."
+            )
+
+    @property
+    def h1_a(self) -> Array:
+        return self.h1
+
+    @property
+    def chol_a(self) -> Array:
+        return self.chol
 
 
 @dataclass(frozen=True, slots=True)
@@ -1405,6 +1445,15 @@ def _dump_h5(staged: StagedInputs, path: Path) -> None:
         gham.create_dataset("h0", data=np.array(staged.ham.h0))
         gham.create_dataset("h1", data=staged.ham.h1)
         gham.create_dataset("chol", data=staged.ham.chol)
+        if staged.ham.h1_b is not None:
+            gham.create_dataset("h1_b", data=staged.ham.h1_b)
+        if staged.ham.chol_b is not None:
+            gham.create_dataset("chol_b", data=staged.ham.chol_b)
+        if staged.ham.norb_spin is not None:
+            gham.create_dataset(
+                "norb_spin",
+                data=np.asarray(staged.ham.norb_spin, dtype=np.int64),
+            )
         gham.create_dataset("nelec", data=np.array(staged.ham.nelec, dtype=np.int64))
         gham.attrs["norb"] = staged.ham.norb
         gham.attrs["chol_cut"] = staged.ham.chol_cut
@@ -1453,6 +1502,16 @@ def _load_h5(
             frozen=_load_frozen(gham),
             source_kind=str(gham.attrs["source_kind"]),
             basis=cast(HamBasis, str(gham.attrs["basis"])),
+            h1_b=np.array(gham["h1_b"]) if "h1_b" in gham else None,
+            chol_b=np.array(gham["chol_b"]) if "chol_b" in gham else None,
+            norb_spin=(
+                (
+                    int(np.array(gham["norb_spin"])[0]),
+                    int(np.array(gham["norb_spin"])[1]),
+                )
+                if "norb_spin" in gham
+                else None
+            ),
         )
         _stage_end(
             t_ham, "Hamiltonian loaded", details=f"norb={ham.norb} nchol={ham.chol.shape[0]}"

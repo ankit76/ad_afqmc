@@ -21,7 +21,7 @@ from .cisd_workflow import (
 from .driver import QmcResult
 from .core.ops import MeasOps, TrialOps
 from .core.system import System, WalkerKind
-from .ham.chol import HamChol
+from .ham.chol import HamCholData
 from .prop.afqmc import make_prop_ops
 from .prop.blocks import block as default_block
 from .prop.types import PropOps, PropState, QmcParams, QmcParamsBase
@@ -104,7 +104,7 @@ def _make_params(
 
 
 def _make_prop(
-    ham_data: HamChol,
+    ham_data: HamCholData,
     walker_kind: str,
     sys: System | None = None,
     *,
@@ -284,7 +284,7 @@ class Job:
     staged: StagedInputs
     sys: System
     params: QmcParamsBase
-    ham_data: HamChol
+    ham_data: HamCholData
     trial_data: object
     trial_ops: TrialOps
     meas_ops: MeasOps

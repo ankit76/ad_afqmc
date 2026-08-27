@@ -12,7 +12,7 @@ from jax.sharding import Mesh
 
 from .core.ops import MeasOps, TrialOps, k_energy
 from .core.system import System
-from .ham.chol import HamChol
+from .ham.chol import HamChol, HamCholData, HamCholUhf
 from .meas.cisd import CisdMeasCfg, CisdMeasCtx, get_cisd_meas_cfg
 from .meas.rhf import RhfMeasCfg, RhfMeasCtx, get_rhf_meas_cfg
 from .prop.chol_afqmc_ops import CholAfqmcCtx
@@ -39,7 +39,7 @@ def _setup_end(start: float, message: str, *, details: str | None = None) -> Non
 
 @dataclass(frozen=True)
 class PreparedRuntime:
-    ham_data: HamChol
+    ham_data: HamCholData
     state: PropState
     meas_ctx: object
     prop_ctx: object
@@ -50,7 +50,7 @@ class RuntimeJob(Protocol):
     sys: System
     params: QmcParamsBase
     params_cls: ClassVar[type[QmcParamsBase]]
-    ham_data: HamChol
+    ham_data: HamCholData
     trial_data: object
     trial_ops: TrialOps
     meas_ops: MeasOps
@@ -59,7 +59,11 @@ class RuntimeJob(Protocol):
 
 
 class RuntimeLayout(Protocol):
-    def make_initial_ham_data(self, ham: HamInput | HamChol, mesh: Mesh | None) -> HamChol: ...
+    def make_initial_ham_data(
+        self,
+        ham: HamInput | HamCholData,
+        mesh: Mesh | None,
+    ) -> HamCholData: ...
 
     def prepare(
         self,
@@ -86,7 +90,64 @@ def _padded_model_length(length: int, mesh: Mesh | None) -> int:
     return length + (n_model - remainder)
 
 
-def _make_ham_data(ham: HamInput | HamChol, mesh: Mesh | None, *, compact_chol: bool) -> HamChol:
+def _make_ham_data(
+    ham: HamInput | HamCholData,
+    mesh: Mesh | None,
+    *,
+    compact_chol: bool,
+) -> HamCholData:
+    if isinstance(ham, HamCholUhf) or ham.basis == "unrestricted":
+        if isinstance(ham, HamCholUhf):
+            h1_a = ham.h1_a
+            h1_b = ham.h1_b
+            chol_a = ham.chol_a
+            chol_b = ham.chol_b
+            norb_spin = ham.norb_spin
+        else:
+            if ham.h1_b is None or ham.chol_b is None:
+                raise ValueError("An unrestricted HamInput requires beta h1 and Cholesky tensors.")
+            h1_a = ham.h1
+            h1_b = ham.h1_b
+            chol_a = ham.chol
+            chol_b = ham.chol_b
+            norb_spin = ham.norb_spin
+
+        runtime_n_chol = _padded_model_length(int(chol_a.shape[0]), mesh)
+        if int(chol_b.shape[0]) != int(chol_a.shape[0]):
+            raise ValueError("Split-spin Cholesky tensors must have the same field dimension.")
+        if compact_chol:
+            n_chol = int(chol_a.shape[0])
+            if runtime_n_chol != n_chol:
+                assert mesh is not None
+                print(
+                    f"[shard] padding chol from {n_chol} to {runtime_n_chol} "
+                    f"to shard evenly over n_model={_model_axis_size(mesh)}.",
+                    flush=True,
+                )
+            chol_a = np.zeros((0, 0, 0), dtype=np.asarray(chol_a).dtype)
+            chol_b = np.zeros((0, 0, 0), dtype=np.asarray(chol_b).dtype)
+
+        if mesh is not None and mesh.size > 1 and has_model_axis(mesh):
+            return HamCholUhf(
+                h0=replicate(jnp.asarray(ham.h0), mesh),
+                h1_a=replicate(h1_a, mesh),
+                h1_b=replicate(h1_b, mesh),
+                chol_a=shard_model_axis(chol_a, mesh),
+                chol_b=shard_model_axis(chol_b, mesh, announce_padding=False),
+                nchol=runtime_n_chol if compact_chol else None,
+                norb_spin=norb_spin,
+            )
+
+        return HamCholUhf(
+            h0=jnp.asarray(ham.h0),
+            h1_a=jnp.asarray(h1_a),
+            h1_b=jnp.asarray(h1_b),
+            chol_a=jnp.asarray(chol_a),
+            chol_b=jnp.asarray(chol_b),
+            nchol=runtime_n_chol,
+            norb_spin=norb_spin,
+        )
+
     chol = ham.chol
     runtime_n_chol = _padded_model_length(int(chol.shape[0]), mesh)
     if compact_chol:
@@ -297,7 +358,7 @@ def _init_state_from_prebuilt_ctx(
     *,
     trial_data: object,
     trial_rdm1: jax.Array,
-    ham_data_runtime: HamChol,
+    ham_data_runtime: HamCholData,
     meas_ctx: object,
 ) -> PropState:
     from . import walkers as wk
@@ -332,7 +393,7 @@ def _init_state_from_prebuilt_ctx(
 
 
 def _compact_ham_data_for_runtime(ham_data: Any, meas_ctx: Any) -> Any:
-    if not isinstance(ham_data, HamChol):
+    if not isinstance(ham_data, (HamChol, HamCholUhf)):
         return ham_data
 
     from .meas.ghf import GhfCholMeasCtx
@@ -340,6 +401,35 @@ def _compact_ham_data_for_runtime(ham_data: Any, meas_ctx: Any) -> Any:
     from .meas.uhf import UhfMeasCtx
 
     if isinstance(meas_ctx, (RhfMeasCtx, UhfMeasCtx, GhfCholMeasCtx)):
+        if isinstance(ham_data, HamCholUhf):
+            chol_a = ham_data.chol_a
+            chol_b = ham_data.chol_b
+            if isinstance(chol_a, jax.Array):
+                compact_a = jax.device_put(
+                    jnp.zeros((0, 0, 0), dtype=chol_a.dtype),
+                    chol_a.sharding,
+                )
+                compact_b = jax.device_put(
+                    jnp.zeros((0, 0, 0), dtype=chol_b.dtype),
+                    chol_b.sharding,
+                )
+            else:
+                compact_a = jnp.asarray(
+                    np.zeros((0, 0, 0), dtype=np.asarray(chol_a).dtype)
+                )
+                compact_b = jnp.asarray(
+                    np.zeros((0, 0, 0), dtype=np.asarray(chol_b).dtype)
+                )
+            return HamCholUhf(
+                h0=ham_data.h0,
+                h1_a=ham_data.h1_a,
+                h1_b=ham_data.h1_b,
+                chol_a=compact_a,
+                chol_b=compact_b,
+                nchol=ham_data.nchol,
+                norb_spin=ham_data.norb_spin,
+            )
+
         chol = ham_data.chol
         if isinstance(chol, jax.Array):
             compact_chol = jax.device_put(
@@ -361,7 +451,11 @@ def _compact_ham_data_for_runtime(ham_data: Any, meas_ctx: Any) -> Any:
 
 @dataclass(frozen=True)
 class DefaultRuntimeLayout:
-    def make_initial_ham_data(self, ham: HamInput | HamChol, mesh: Mesh | None) -> HamChol:
+    def make_initial_ham_data(
+        self,
+        ham: HamInput | HamCholData,
+        mesh: Mesh | None,
+    ) -> HamCholData:
         return _make_ham_data(ham, mesh, compact_chol=False)
 
     def prepare(
@@ -416,7 +510,11 @@ class RhfHostRuntimeLayout:
     mixed_precision: bool = True
     rhf_meas_cfg: RhfMeasCfg = RhfMeasCfg()
 
-    def make_initial_ham_data(self, ham: HamInput | HamChol, mesh: Mesh | None) -> HamChol:
+    def make_initial_ham_data(
+        self,
+        ham: HamInput | HamCholData,
+        mesh: Mesh | None,
+    ) -> HamCholData:
         return _make_ham_data(ham, mesh, compact_chol=True)
 
     def prepare(
@@ -477,7 +575,11 @@ class RhfHostRuntimeLayout:
 class CisdHostRuntimeLayout:
     mixed_precision: bool = True
 
-    def make_initial_ham_data(self, ham: HamInput | HamChol, mesh: Mesh | None) -> HamChol:
+    def make_initial_ham_data(
+        self,
+        ham: HamInput | HamCholData,
+        mesh: Mesh | None,
+    ) -> HamCholData:
         return _make_ham_data(ham, mesh, compact_chol=False)
 
     def prepare(

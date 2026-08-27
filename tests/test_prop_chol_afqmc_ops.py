@@ -5,8 +5,10 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
-from trot.ham.chol import HamChol
+from trot.ham.chol import HamChol, HamCholUhf
 from trot.prop.chol_afqmc_ops import (
+    CholAfqmcCtx,
+    UhfCholAfqmcCtx,
     _build_prop_ctx,
     _make_vhs_split_flat,
     _packed_upper_size,
@@ -120,6 +122,106 @@ def test_packed_and_full_trotter_actions_match():
     )
 
     np.testing.assert_allclose(packed_walker, full_walker, rtol=1.0e-12, atol=1.0e-12)
+
+
+@pytest.mark.parametrize("packed_cholesky", [False, True])
+def test_split_uhf_reduces_to_restricted_hamiltonian(packed_cholesky):
+    norb, n_fields = 5, 7
+    ham = _make_small_ham(norb=norb, n_fields=n_fields, h0=0.3, seed=51)
+    ham_uhf = HamCholUhf(
+        h0=ham.h0,
+        h1_a=ham.h1,
+        h1_b=ham.h1,
+        chol_a=ham.chol,
+        chol_b=ham.chol,
+    )
+    dm_a = jnp.diag(jnp.asarray([1.0, 0.7, 0.0, 0.0, 0.0]))
+    dm_b = jnp.diag(jnp.asarray([1.0, 0.0, 0.0, 0.0, 0.0]))
+    dm = jnp.stack((dm_a, dm_b))
+
+    ctx = _build_prop_ctx(
+        ham,
+        dm,
+        0.007,
+        packed_cholesky=packed_cholesky,
+    )
+    ctx_uhf = _build_prop_ctx(
+        ham_uhf,
+        dm,
+        0.007,
+        packed_cholesky=packed_cholesky,
+    )
+    assert isinstance(ctx, CholAfqmcCtx)
+    assert isinstance(ctx_uhf, UhfCholAfqmcCtx)
+    np.testing.assert_allclose(ctx_uhf.mf_shifts, ctx.mf_shifts, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(ctx_uhf.h0_prop, ctx.h0_prop, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(
+        ctx_uhf.exp_h1_half_a,
+        ctx.exp_h1_half,
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+    np.testing.assert_allclose(
+        ctx_uhf.exp_h1_half_b,
+        ctx.exp_h1_half,
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+
+    walker = (
+        jax.random.normal(jax.random.PRNGKey(52), (norb, 2)).astype(jnp.complex128),
+        jax.random.normal(jax.random.PRNGKey(53), (norb, 1)).astype(jnp.complex128),
+    )
+    field = jax.random.normal(jax.random.PRNGKey(54), (n_fields))
+    field = field + 1.0j * jax.random.normal(jax.random.PRNGKey(55), (n_fields))
+    reference_ops = make_trotter_ops("restricted", "unrestricted")
+    split_ops = make_trotter_ops("unrestricted", "unrestricted")
+    reference = reference_ops.apply_trotter(walker, field, ctx, 6)
+    split = split_ops.apply_trotter(walker, field, ctx_uhf, 6)
+    np.testing.assert_allclose(split[0], reference[0], rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(split[1], reference[1], rtol=1.0e-12, atol=1.0e-12)
+
+
+def test_split_uhf_uses_shared_fields_and_preserves_zero_padding():
+    norb, n_fields = 4, 5
+    ham_a = _make_small_ham(norb=norb, n_fields=n_fields, seed=61)
+    ham_b = _make_small_ham(norb=norb, n_fields=n_fields, seed=62)
+    h1_b = ham_b.h1.at[-1, :].set(0.0).at[:, -1].set(0.0)
+    chol_b = ham_b.chol.at[:, -1, :].set(0.0).at[:, :, -1].set(0.0)
+    ham = HamCholUhf(
+        h0=jnp.asarray(-0.2),
+        h1_a=ham_a.h1,
+        h1_b=h1_b,
+        chol_a=ham_a.chol,
+        chol_b=chol_b,
+        norb_spin=(4, 3),
+    )
+    dm = jnp.stack(
+        (
+            jnp.diag(jnp.asarray([1.0, 1.0, 0.0, 0.0])),
+            jnp.diag(jnp.asarray([1.0, 0.0, 0.0, 0.0])),
+        )
+    )
+    ctx = _build_prop_ctx(ham, dm, 0.01)
+    assert isinstance(ctx, UhfCholAfqmcCtx)
+    expected_mf = 1.0j * (
+        jnp.einsum("gij,ji->g", ham.chol_a, dm[0])
+        + jnp.einsum("gij,ji->g", ham.chol_b, dm[1])
+    )
+    np.testing.assert_allclose(ctx.mf_shifts, expected_mf, rtol=1.0e-12, atol=1.0e-12)
+
+    walker_a = jax.random.normal(jax.random.PRNGKey(63), (norb, 2)).astype(jnp.complex128)
+    walker_b = jax.random.normal(jax.random.PRNGKey(64), (norb, 1)).astype(jnp.complex128)
+    walker_b = walker_b.at[-1].set(0.0)
+    field = jax.random.normal(jax.random.PRNGKey(65), (n_fields))
+    field = field + 1.0j * jax.random.normal(jax.random.PRNGKey(66), (n_fields))
+    split = make_trotter_ops("unrestricted", "unrestricted").apply_trotter(
+        (walker_a, walker_b),
+        field,
+        ctx,
+        6,
+    )
+    np.testing.assert_allclose(split[1][-1], 0.0, rtol=0.0, atol=0.0)
 
 
 if __name__ == "__main__":

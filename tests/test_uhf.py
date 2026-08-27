@@ -6,6 +6,7 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax import lax
 from pyscf import gto, scf
@@ -13,6 +14,8 @@ from pyscf import gto, scf
 from trot import testing
 from trot.afqmc import Afqmc
 from trot.core.ops import k_energy, k_force_bias
+from trot.core.system import System
+from trot.ham.chol import HamChol, HamCholUhf
 from trot.meas.uhf import (
     build_meas_ctx,
     energy_kernel_gw_rh,
@@ -290,6 +293,86 @@ def test_energy_equal_when_wg_eq_wu():
         eg = energy_kernel_gw_rh(wi, ham, ctx, trial)
 
         assert jnp.allclose(eu, eg, atol=1e-12), (eu, eg)
+
+
+def test_split_uhf_measurement_reduces_to_restricted_hamiltonian():
+    norb, nup, ndn, n_chol = 6, 2, 1, 8
+    key = jax.random.PRNGKey(101)
+    k_ham, k_trial, k_walker = jax.random.split(key, 3)
+    ham = testing.make_random_ham_chol(k_ham, norb, n_chol)
+    split_ham = HamCholUhf(
+        h0=ham.h0,
+        h1_a=ham.h1,
+        h1_b=ham.h1,
+        chol_a=ham.chol,
+        chol_b=ham.chol,
+    )
+    trial = _make_uhf_trial(k_trial, norb, nup, ndn)
+    sys = System(norb=norb, nelec=(nup, ndn), walker_kind="unrestricted")
+    walker = cast(tuple, testing.make_walkers(k_walker, sys))
+    ctx = build_meas_ctx(ham, trial)
+    split_ctx = build_meas_ctx(split_ham, trial)
+
+    for regular, split in zip(ctx.tree_flatten()[0], split_ctx.tree_flatten()[0], strict=True):
+        np.testing.assert_allclose(split, regular, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(
+        force_bias_kernel_uw_rh(walker, split_ham, split_ctx, trial),
+        force_bias_kernel_uw_rh(walker, ham, ctx, trial),
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+    np.testing.assert_allclose(
+        energy_kernel_uw_rh(walker, split_ham, split_ctx, trial),
+        energy_kernel_uw_rh(walker, ham, ctx, trial),
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+
+
+def test_split_uhf_measurement_uses_native_beta_tensors():
+    norb, nup, ndn, n_chol = 5, 2, 1, 7
+    key = jax.random.PRNGKey(111)
+    k_a, k_b, k_trial, k_walker = jax.random.split(key, 4)
+    ham_a = testing.make_random_ham_chol(k_a, norb, n_chol)
+    ham_b = testing.make_random_ham_chol(k_b, norb, n_chol)
+    split_ham = HamCholUhf(
+        h0=ham_a.h0,
+        h1_a=ham_a.h1,
+        h1_b=ham_b.h1,
+        chol_a=ham_a.chol,
+        chol_b=ham_b.chol,
+    )
+    trial = _make_uhf_trial(k_trial, norb, nup, ndn)
+    sys = System(norb=norb, nelec=(nup, ndn), walker_kind="unrestricted")
+    walker = cast(tuple, testing.make_walkers(k_walker, sys))
+    ctx = build_meas_ctx(split_ham, trial)
+
+    ca_h = trial.mo_coeff_a.conj().T
+    cb_h = trial.mo_coeff_b.conj().T
+    assert jnp.allclose(ctx.rot_h1_a, ca_h @ split_ham.h1_a)
+    assert jnp.allclose(ctx.rot_h1_b, cb_h @ split_ham.h1_b)
+    assert jnp.allclose(
+        ctx.rot_chol_a,
+        jnp.einsum("pi,gij->gpj", ca_h, split_ham.chol_a),
+    )
+    assert jnp.allclose(
+        ctx.rot_chol_b,
+        jnp.einsum("pi,gij->gpj", cb_h, split_ham.chol_b),
+    )
+
+    wu, wd = walker
+    mu = ca_h @ wu
+    md = cb_h @ wd
+    gu = jnp.linalg.solve(mu.T, wu.T)
+    gd = jnp.linalg.solve(md.T, wd.T)
+    expected_fb = jnp.einsum("gij,ij->g", ctx.rot_chol_a, gu)
+    expected_fb += jnp.einsum("gij,ij->g", ctx.rot_chol_b, gd)
+    assert jnp.allclose(
+        force_bias_kernel_uw_rh(walker, split_ham, ctx, trial),
+        expected_fb,
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
 
 
 def mf():

@@ -9,7 +9,7 @@ from jax import tree_util
 
 from ..core.ops import MeasOps, k_energy, k_force_bias, o_density_corr, o_rdm1
 from ..core.system import System
-from ..ham.chol import HamChol
+from ..ham.chol import HamChol, HamCholData, HamCholUhf
 from ..trial.uhf import UhfTrial, overlap_g, overlap_r, overlap_u
 
 
@@ -29,7 +29,7 @@ def _build_bra_generalized(trial_data: UhfTrial) -> jax.Array:
 
 def force_bias_kernel_rw_rh(
     walker: jax.Array,
-    ham_data: HamChol,
+    ham_data: HamCholData,
     meas_ctx: UhfMeasCtx,
     trial_data: UhfTrial,
 ) -> jax.Array:
@@ -42,7 +42,7 @@ def force_bias_kernel_rw_rh(
 
 def force_bias_kernel_uw_rh(
     walker: tuple[jax.Array, jax.Array],
-    ham_data: HamChol,
+    ham_data: HamCholData,
     meas_ctx: UhfMeasCtx,
     trial_data: UhfTrial,
 ) -> jax.Array:
@@ -59,7 +59,7 @@ def force_bias_kernel_uw_rh(
 
 def force_bias_kernel_gw_rh(
     walker: jax.Array,
-    ham_data: HamChol,
+    ham_data: HamCholData,
     meas_ctx: UhfMeasCtx,
     trial_data: UhfTrial,
 ) -> jax.Array:
@@ -191,7 +191,7 @@ def density_corr_kernel_gw(
 
 def energy_kernel_rw_rh(
     walker: jax.Array,
-    ham_data: HamChol,
+    ham_data: HamCholData,
     meas_ctx: UhfMeasCtx,
     trial_data: UhfTrial,
 ) -> jax.Array:
@@ -204,7 +204,7 @@ def energy_kernel_rw_rh(
 
 def energy_kernel_uw_rh(
     walker: tuple[jax.Array, jax.Array],
-    ham_data: HamChol,
+    ham_data: HamCholData,
     meas_ctx: UhfMeasCtx,
     trial_data: UhfTrial,
 ) -> jax.Array:
@@ -233,7 +233,7 @@ def energy_kernel_uw_rh(
 
 def energy_kernel_gw_rh(
     walker: jax.Array,
-    ham_data: HamChol,
+    ham_data: HamCholData,
     meas_ctx: UhfMeasCtx,
     trial_data: UhfTrial,
 ) -> jax.Array:
@@ -315,15 +315,26 @@ class UhfMeasCtx:
         )
 
 
-def build_meas_ctx(ham_data: HamChol, trial_data: UhfTrial) -> UhfMeasCtx:
-    if ham_data.basis != "restricted":
-        raise ValueError("UHF MeasOps currently assumes HamChol.basis == 'restricted'.")
+def build_meas_ctx(ham_data: HamCholData, trial_data: UhfTrial) -> UhfMeasCtx:
     caH = trial_data.mo_coeff_a.conj().T  # (nocc[0], norb)
     cbH = trial_data.mo_coeff_b.conj().T  # (nocc[1], norb)
-    rot_h1_a = caH @ ham_data.h1  # (nocc[0], norb)
-    rot_h1_b = cbH @ ham_data.h1  # (nocc[1], norb)
-    rot_chol_a = jnp.einsum("pi,gij->gpj", caH, ham_data.chol, optimize="optimal")
-    rot_chol_b = jnp.einsum("pi,gij->gpj", cbH, ham_data.chol, optimize="optimal")
+    if isinstance(ham_data, HamCholUhf):
+        h1_a = ham_data.h1_a
+        h1_b = ham_data.h1_b
+        chol_a = ham_data.chol_a
+        chol_b = ham_data.chol_b
+    elif isinstance(ham_data, HamChol) and ham_data.basis == "restricted":
+        h1_a = h1_b = ham_data.h1
+        chol_a = chol_b = ham_data.chol
+    else:
+        raise ValueError(
+            "UHF MeasOps requires a restricted HamChol or an unrestricted HamCholUhf."
+        )
+
+    rot_h1_a = caH @ h1_a  # (nocc[0], norb)
+    rot_h1_b = cbH @ h1_b  # (nocc[1], norb)
+    rot_chol_a = jnp.einsum("pi,gij->gpj", caH, chol_a, optimize="optimal")
+    rot_chol_b = jnp.einsum("pi,gij->gpj", cbH, chol_b, optimize="optimal")
     rot_chol_flat_a = rot_chol_a.reshape(rot_chol_a.shape[0], -1)
     rot_chol_flat_b = rot_chol_b.reshape(rot_chol_b.shape[0], -1)
     return UhfMeasCtx(

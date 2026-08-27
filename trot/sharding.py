@@ -10,7 +10,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from .ham.chol import HamChol
+from .ham.chol import HamChol, HamCholUhf
 from .ham.hubbard import HamHubbard
 from .prop.types import PropState
 
@@ -174,6 +174,27 @@ def shard_ham_data(ham_data: THam, mesh: Mesh | None) -> THam:
                 chol=shard_model_axis(ham_data.chol, mesh),
                 basis=ham_data.basis,
                 nchol=nchol,
+            ),
+        )
+
+    if isinstance(ham_data, HamCholUhf):
+        nchol = ham_data.nchol if int(ham_data.chol_a.shape[0]) == 0 else None
+        chol_a = shard_model_axis(ham_data.chol_a, mesh)
+        chol_b = shard_model_axis(
+            ham_data.chol_b,
+            mesh,
+            announce_padding=False,
+        )
+        return cast(
+            THam,
+            HamCholUhf(
+                h0=replicate(ham_data.h0, mesh),
+                h1_a=replicate(ham_data.h1_a, mesh),
+                h1_b=replicate(ham_data.h1_b, mesh),
+                chol_a=chol_a,
+                chol_b=chol_b,
+                nchol=nchol,
+                norb_spin=ham_data.norb_spin,
             ),
         )
 

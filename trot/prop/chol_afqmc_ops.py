@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax, tree_util
 
-from ..ham.chol import HamChol
+from ..ham.chol import HamChol, HamCholData, HamCholUhf
 from .utils import taylor_expm_action
 
 # contains low level details of AFQMC chol propagation
@@ -53,8 +53,71 @@ class CholAfqmcCtx:
         )
 
 
+@tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class UhfCholAfqmcCtx:
+    """Propagation data for a padded split-spin Cholesky Hamiltonian."""
+
+    dt: jax.Array
+    sqrt_dt: jax.Array
+    exp_h1_half_a: jax.Array
+    exp_h1_half_b: jax.Array
+    mf_shifts: jax.Array
+    h0_prop: jax.Array
+    chol_flat_a: jax.Array
+    chol_flat_b: jax.Array
+    norb: int
+    chol_packed: bool = False
+
+    @property
+    def chol_flat(self) -> jax.Array:
+        """Alpha layout alias used only to obtain the shared field count."""
+        return self.chol_flat_a
+
+    def tree_flatten(self):
+        return (
+            self.dt,
+            self.sqrt_dt,
+            self.exp_h1_half_a,
+            self.exp_h1_half_b,
+            self.mf_shifts,
+            self.h0_prop,
+            self.chol_flat_a,
+            self.chol_flat_b,
+        ), (self.norb, self.chol_packed)
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        norb, chol_packed = aux
+        (
+            dt,
+            sqrt_dt,
+            exp_h1_half_a,
+            exp_h1_half_b,
+            mf_shifts,
+            h0_prop,
+            chol_flat_a,
+            chol_flat_b,
+        ) = children
+        return cls(
+            dt=dt,
+            sqrt_dt=sqrt_dt,
+            exp_h1_half_a=exp_h1_half_a,
+            exp_h1_half_b=exp_h1_half_b,
+            mf_shifts=mf_shifts,
+            h0_prop=h0_prop,
+            chol_flat_a=chol_flat_a,
+            chol_flat_b=chol_flat_b,
+            norb=norb,
+            chol_packed=chol_packed,
+        )
+
+
+PropCholCtx = CholAfqmcCtx | UhfCholAfqmcCtx
+
+
 class TrotterOps(NamedTuple):
-    apply_trotter: Callable[[Any, jax.Array, CholAfqmcCtx, int], Any]  # (w, field, ctx, n_terms)->w
+    apply_trotter: Callable[[Any, jax.Array, PropCholCtx, int], Any]
 
 
 def _as_total_rdm1_restricted(dm: jax.Array) -> jax.Array:
@@ -69,13 +132,24 @@ def _get_dm(rdm1: jax.Array, ham_basis: str) -> jax.Array:
             dm = _as_total_rdm1_restricted(rdm1)
         case "generalized":
             dm = rdm1
+        case "unrestricted":
+            if rdm1.ndim != 3 or rdm1.shape[0] != 2:
+                raise ValueError(
+                    "An unrestricted Hamiltonian requires rdm1 with shape (2, norb, norb)."
+                )
+            dm = rdm1
         case _:
             raise ValueError(f"Unknown Hamiltonian basis kind: {ham_basis}")
     return dm
 
 
-def _mf_shifts(ham_data: HamChol, rdm1: jax.Array) -> jax.Array:
+def _mf_shifts(ham_data: HamCholData, rdm1: jax.Array) -> jax.Array:
     dm = _get_dm(rdm1, ham_data.basis)
+    if isinstance(ham_data, HamCholUhf):
+        return 1.0j * (
+            jnp.einsum("gij,ji->g", ham_data.chol_a, dm[0], optimize="optimal")
+            + jnp.einsum("gij,ji->g", ham_data.chol_b, dm[1], optimize="optimal")
+        )
     return 1.0j * jnp.einsum("gij,ji->g", ham_data.chol, dm, optimize="optimal")
 
 
@@ -132,7 +206,23 @@ def _make_vhs_split_flat(
     return vhs.reshape(n, n)
 
 
-def _get_h1_eff(ham_data: HamChol, mf: jax.Array) -> jax.Array:
+def _get_h1_eff(
+    ham_data: HamCholData,
+    mf: jax.Array,
+) -> jax.Array | tuple[jax.Array, jax.Array]:
+    if isinstance(ham_data, HamCholUhf):
+        mf_r = (1.0j * mf).real
+
+        def spin_block(h1: jax.Array, chol: jax.Array) -> jax.Array:
+            v0m = 0.5 * jnp.einsum("gik,gkj->ij", chol, chol, optimize="optimal")
+            v1m = jnp.einsum("g,gik->ik", mf_r, chol, optimize="optimal")
+            return h1 - v0m - v1m
+
+        return (
+            spin_block(ham_data.h1_a, ham_data.chol_a),
+            spin_block(ham_data.h1_b, ham_data.chol_b),
+        )
+
     match ham_data.basis:
         case "restricted" | "generalized":
             v0m = 0.5 * jnp.einsum("gik,gkj->ij", ham_data.chol, ham_data.chol, optimize="optimal")
@@ -146,12 +236,12 @@ def _get_h1_eff(ham_data: HamChol, mf: jax.Array) -> jax.Array:
 
 
 def _build_prop_ctx(
-    ham_data: HamChol,
+    ham_data: HamCholData,
     rdm1: jax.Array,
     dt: float,
     chol_flat_precision: jnp.dtype = jnp.float64,
     packed_cholesky: bool = False,
-) -> CholAfqmcCtx:
+) -> PropCholCtx:
     dt_a = jnp.array(dt)
     sqrt_dt = jnp.sqrt(dt_a)
 
@@ -159,6 +249,36 @@ def _build_prop_ctx(
     h0_prop = -ham_data.h0 - 0.5 * jnp.sum(mf**2)
     h1_eff = _get_h1_eff(ham_data, mf)
 
+    if isinstance(ham_data, HamCholUhf):
+        assert isinstance(h1_eff, tuple)
+        h1_eff_a, h1_eff_b = h1_eff
+        exp_h1_half_a = _build_exp_h1_half_from_h1(h1_eff_a, dt_a)
+        exp_h1_half_b = _build_exp_h1_half_from_h1(h1_eff_b, dt_a)
+        norb = ham_data.chol_a.shape[1]
+        chol_flat_a = _prepare_chol_for_vhs(
+            ham_data.chol_a,
+            dtype=chol_flat_precision,
+            packed_cholesky=packed_cholesky,
+        )
+        chol_flat_b = _prepare_chol_for_vhs(
+            ham_data.chol_b,
+            dtype=chol_flat_precision,
+            packed_cholesky=packed_cholesky,
+        )
+        return UhfCholAfqmcCtx(
+            dt=dt_a,
+            sqrt_dt=sqrt_dt,
+            exp_h1_half_a=exp_h1_half_a,
+            exp_h1_half_b=exp_h1_half_b,
+            mf_shifts=mf,
+            h0_prop=h0_prop,
+            chol_flat_a=chol_flat_a,
+            chol_flat_b=chol_flat_b,
+            norb=norb,
+            chol_packed=packed_cholesky,
+        )
+
+    assert isinstance(h1_eff, jax.Array)
     exp_h1_half = _build_exp_h1_half_from_h1(h1_eff, dt_a)
     norb = ham_data.chol.shape[1]
     chol_flat = _prepare_chol_for_vhs(
@@ -183,9 +303,11 @@ def _apply_one_body_half_array(w: jax.Array, prop_ctx: CholAfqmcCtx) -> jax.Arra
 
 
 def _apply_one_body_half_unrestricted(
-    w_ud: Tuple[jax.Array, jax.Array], prop_ctx: CholAfqmcCtx
+    w_ud: Tuple[jax.Array, jax.Array], prop_ctx: PropCholCtx
 ) -> Tuple[jax.Array, jax.Array]:
     wu, wd = w_ud
+    if isinstance(prop_ctx, UhfCholAfqmcCtx):
+        return (prop_ctx.exp_h1_half_a @ wu, prop_ctx.exp_h1_half_b @ wd)
     e = prop_ctx.exp_h1_half
     return (e @ wu, e @ wd)
 
@@ -227,6 +349,24 @@ def _apply_two_body_unrestricted(
     return (
         taylor_expm_action(a, vhs, wu, n_terms),
         taylor_expm_action(a, vhs, wd, n_terms),
+    )
+
+
+def _apply_two_body_unrestricted_split(
+    w_ud: Tuple[jax.Array, jax.Array],
+    field: jax.Array,
+    prop_ctx: UhfCholAfqmcCtx,
+    n_terms: int,
+    *,
+    make_vhs: Callable[[jax.Array, jax.Array, UhfCholAfqmcCtx], jax.Array],
+) -> Tuple[jax.Array, jax.Array]:
+    wu, wd = w_ud
+    vhs_a = make_vhs(prop_ctx.chol_flat_a, field, prop_ctx).astype(wu.dtype)
+    vhs_b = make_vhs(prop_ctx.chol_flat_b, field, prop_ctx).astype(wd.dtype)
+    a = (1.0j * prop_ctx.sqrt_dt).astype(wu.dtype)
+    return (
+        taylor_expm_action(a, vhs_a, wu, n_terms),
+        taylor_expm_action(a, vhs_b, wd, n_terms),
     )
 
 
@@ -273,6 +413,25 @@ def _apply_trotter_u(
     return a
 
 
+def _apply_trotter_u_split(
+    w_ud: Tuple[jax.Array, jax.Array],
+    field: jax.Array,
+    prop_ctx: UhfCholAfqmcCtx,
+    n_terms: int,
+    *,
+    make_vhs: Callable[[jax.Array, jax.Array, UhfCholAfqmcCtx], jax.Array],
+) -> Tuple[jax.Array, jax.Array]:
+    w1 = _apply_one_body_half_unrestricted(w_ud, prop_ctx)
+    w2 = _apply_two_body_unrestricted_split(
+        w1,
+        field,
+        prop_ctx,
+        n_terms,
+        make_vhs=make_vhs,
+    )
+    return _apply_one_body_half_unrestricted(w2, prop_ctx)
+
+
 def _apply_trotter_g_from_restricted(
     w: jax.Array,
     field: jax.Array,
@@ -305,13 +464,15 @@ def make_trotter_ops(ham_basis: str, walker_kind: str, mixed_precision: bool = F
             chol_flat=ctx.chol_flat,
             x=field.astype(vhs_complex_dtype),
             n=ctx.norb,
-            chol_packed=ctx.chol_packed,
+            # Free-projection contexts predate packed Cholesky storage and
+            # therefore intentionally have no ``chol_packed`` attribute.
+            chol_packed=getattr(ctx, "chol_packed", False),
         )
 
     if walker_kind not in ("restricted", "unrestricted", "generalized"):
         raise ValueError(f"unknown walker_kind: {walker_kind}")
 
-    if ham_basis not in ("restricted", "generalized"):
+    if ham_basis not in ("restricted", "unrestricted", "generalized"):
         raise ValueError(f"unknown ham_basis: {ham_basis}")
 
     match ham_basis, walker_kind:
@@ -326,6 +487,24 @@ def make_trotter_ops(ham_basis: str, walker_kind: str, mixed_precision: bool = F
         case "restricted", "generalized":
             apply_trotter = (
                 lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_g_from_restricted(
+                    w, f, ctx, n_terms, make_vhs=mv
+                )
+            )
+        case "unrestricted", "unrestricted":
+            def make_vhs_split(
+                chol_flat: jax.Array,
+                field: jax.Array,
+                ctx: UhfCholAfqmcCtx,
+            ) -> jax.Array:
+                return _make_vhs_split_flat(
+                    chol_flat=chol_flat,
+                    x=field.astype(vhs_complex_dtype),
+                    n=ctx.norb,
+                    chol_packed=ctx.chol_packed,
+                )
+
+            apply_trotter = (
+                lambda w, f, ctx, n_terms, mv=make_vhs_split: _apply_trotter_u_split(
                     w, f, ctx, n_terms, make_vhs=mv
                 )
             )
