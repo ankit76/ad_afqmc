@@ -626,6 +626,139 @@ def make_ptuccsd_thouless_mode_trial_data(
     return trial_data
 
 
+def make_split_ptuccsd_thouless_mode_trial_data(
+    data: dict,
+    norb_spin: tuple[int, int],
+    sys: System | None = None,
+    *,
+    discarded_norm_target: float = 0.01,
+    mixed_precision: bool = False,
+    minimum_rank: int = 0,
+    mode_solver: Literal["auto", "dense", "lanczos"] = "auto",
+    dense_max_dim: int | None = None,
+    lanczos_initial_rank: int = 256,
+    lanczos_tol: float = 1.0e-9,
+    lanczos_maxiter: int | None = None,
+    verbose: bool = True,
+) -> PtuccsdThoulessModeTrial:
+    """Factor a staged split-space raw ``T2`` before runtime zero padding.
+
+    LNO staging pads each spin's virtual axes to one common runtime orbital
+    dimension.  Including those structural zeros in the eigensolver needlessly
+    enlarges the combined pair kernel.  This builder slices the native alpha
+    and beta virtual spaces given by ``norb_spin``, factorizes that smaller
+    kernel, and pads only the retained mode rows back to the runtime shapes.
+
+    ``discarded_norm_target=0`` retains the full native kernel.  Selection is
+    deliberately based only on the relative discarded norm; no absolute mode
+    threshold is applied.
+    """
+
+    mo_t_a = (
+        jnp.asarray(data["mo_t_a"])
+        if "mo_t_a" in data
+        else thouless_mo_from_t1(jnp.asarray(data["t1a"]))
+    )
+    mo_t_b = (
+        jnp.asarray(data["mo_t_b"])
+        if "mo_t_b" in data
+        else thouless_mo_from_t1(jnp.asarray(data["t1b"]))
+    )
+    if mo_t_a.ndim != 2 or mo_t_b.ndim != 2 or mo_t_a.shape[0] != mo_t_b.shape[0]:
+        raise ValueError(
+            "split PT-UCCSD references must be rank-2 arrays with a common "
+            f"runtime orbital dimension, got {mo_t_a.shape} and {mo_t_b.shape}."
+        )
+
+    runtime_norb = int(mo_t_a.shape[0])
+    noa, nob = int(mo_t_a.shape[1]), int(mo_t_b.shape[1])
+    native_norb = (int(norb_spin[0]), int(norb_spin[1]))
+    if max(native_norb) != runtime_norb:
+        raise ValueError(
+            "the largest native split orbital dimension must equal the runtime "
+            f"dimension {runtime_norb}, got norb_spin={native_norb}."
+        )
+    if native_norb[0] <= noa or native_norb[1] <= nob:
+        raise ValueError(
+            "split PT-UCCSD mode factorization requires at least one native "
+            f"virtual orbital per spin, got nocc={(noa, nob)} and "
+            f"norb_spin={native_norb}."
+        )
+
+    runtime_nvir = (runtime_norb - noa, runtime_norb - nob)
+    native_nvir = (native_norb[0] - noa, native_norb[1] - nob)
+    layout = str(data.get("t2_layout", "pyscf")).lower()
+    t2aa = _t2_to_iajb(data["t2aa"], layout)
+    t2ab = _t2_to_iajb(data["t2ab"], layout)
+    t2bb = _t2_to_iajb(data["t2bb"], layout)
+    expected_shapes = (
+        (noa, runtime_nvir[0], noa, runtime_nvir[0]),
+        (noa, runtime_nvir[0], nob, runtime_nvir[1]),
+        (nob, runtime_nvir[1], nob, runtime_nvir[1]),
+    )
+    for name, block, expected in zip(
+        ("t2aa", "t2ab", "t2bb"),
+        (t2aa, t2ab, t2bb),
+        expected_shapes,
+    ):
+        if block.shape != expected:
+            raise ValueError(f"{name} must have padded shape {expected}, got {block.shape}.")
+
+    t2aa_native = t2aa[:, : native_nvir[0], :, : native_nvir[0]]
+    t2ab_native = t2ab[:, : native_nvir[0], :, : native_nvir[1]]
+    t2bb_native = t2bb[:, : native_nvir[1], :, : native_nvir[1]]
+    factorization = factorize_t2_modes(
+        t2aa_native,
+        t2ab_native,
+        t2bb_native,
+        mode_threshold=None,
+        discarded_norm_target=discarded_norm_target,
+        minimum_rank=minimum_rank,
+        solver=mode_solver,
+        dense_max_dim=dense_max_dim,
+        lanczos_initial_rank=lanczos_initial_rank,
+        lanczos_tol=lanczos_tol,
+        lanczos_maxiter=lanczos_maxiter,
+        verbose=False,
+    )
+
+    rank = factorization.rank
+    padded_modes = []
+    offset = 0
+    for nocc, native_vir, runtime_vir in zip(
+        (noa, nob), native_nvir, runtime_nvir
+    ):
+        size = nocc * native_vir
+        spin_modes = factorization.modes[:, offset : offset + size].reshape(
+            rank, nocc, native_vir
+        )
+        padded_modes.append(
+            np.pad(spin_modes, ((0, 0), (0, 0), (0, runtime_vir - native_vir))).reshape(
+                rank, -1
+            )
+        )
+        offset += size
+
+    trial_data = make_ptuccsd_thouless_mode_trial_data(
+        {
+            "mo_t_a": mo_t_a,
+            "mo_t_b": mo_t_b,
+            "mo_coeff_b": data.get("mo_coeff_b", data.get("mo_b")),
+            "eigenvalues": factorization.eigenvalues,
+            "modes": np.concatenate(padded_modes, axis=1),
+        },
+        sys,
+        mixed_precision=mixed_precision,
+    )
+    if verbose:
+        print(
+            "[lno-pt] connected-T2 modes: "
+            f"rank={rank}/{factorization.combined_dim}, "
+            f"discarded_norm_fraction={factorization.discarded_norm_fraction:.3e}"
+        )
+    return trial_data
+
+
 def make_ptuccsd_thouless_mode_trial_ops(sys: System) -> TrialOps:
     walker_kind = sys.walker_kind.lower()
     if walker_kind == "restricted":
@@ -649,6 +782,7 @@ __all__ = [
     "factorize_ucisd_and_t2_modes_common_rank",
     "get_rdm1",
     "greens_unrestricted",
+    "make_split_ptuccsd_thouless_mode_trial_data",
     "make_ptuccsd_thouless_mode_trial_data",
     "make_ptuccsd_thouless_mode_trial_ops",
     "mode_apply",

@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = ["jaxlib[cuda]"] 
+lno = ["pyscf_forge>=1.0.3"]
 
 [tool.setuptools.packages.find]
 include = ["trot*"]
