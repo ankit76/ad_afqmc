@@ -8,7 +8,12 @@ import pytest
 
 from trot.core.system import System
 from trot.ham.chol import HamCholUhf
-from trot.meas.lno_ptuccsd_modes import make_lno_ptuccsd_mode_estimator_ops
+from trot.meas.lno_ptuccsd_modes import (
+    _chol_terms,
+    _energy_common,
+    _project_energy_terms,
+    make_lno_ptuccsd_mode_estimator_ops,
+)
 from trot.meas.lno_ptuccsd_thouless import make_lno_estimator_ops
 from trot.meas.ptuccsd_modes import PtuccsdModePairSamplingCfg
 from trot.trial.ptuccsd_modes import PtuccsdThoulessModeTrial, factorize_t2_modes
@@ -101,6 +106,31 @@ def _truncate(mode, rank=5):
     )
 
 
+def _dense_reconstruction(mode):
+    modes = np.asarray(mode.modes)
+    kernel = (modes.T * np.asarray(mode.eigenvalues)) @ modes
+    da, _ = mode.pair_dim
+    noa, nob = mode.nocc
+    nva, nvb = mode.nvir
+    return PtuccsdThoulessTrial(
+        mo_t_a=mode.mo_t_a,
+        mo_t_b=mode.mo_t_b,
+        mo_coeff_b=mode.mo_coeff_b,
+        t2aa=jnp.asarray(kernel[:da, :da].reshape(noa, nva, noa, nva)),
+        t2ab=jnp.asarray(kernel[:da, da:].reshape(noa, nva, nob, nvb)),
+        t2bb=jnp.asarray(kernel[da:, da:].reshape(nob, nvb, nob, nvb)),
+    )
+
+
+def _two_walker_population(case):
+    walkers = (
+        jnp.stack((case["walker"][0], case["walker"][0] + 0.01j)),
+        jnp.stack((case["walker"][1], case["walker"][1] - 0.015j)),
+    )
+    weights = jnp.asarray([0.8 + 0.1j, 1.1 - 0.04j])
+    return walkers, weights
+
+
 @pytest.mark.parametrize("split", [False, True])
 def test_full_rank_mode_components_match_dense_historical_lno(split):
     case = _case(split=split)
@@ -125,23 +155,14 @@ def test_full_rank_mode_components_match_dense_historical_lno(split):
     np.testing.assert_allclose(actual, expected, rtol=5.0e-11, atol=5.0e-11)
 
 
-def test_truncated_modes_match_dense_reconstruction_under_lno_weighting():
+@pytest.mark.parametrize("mode_batch_size", [1, 2, 32])
+def test_truncated_mode_batches_match_dense_reconstruction_under_lno_weighting(
+    mode_batch_size,
+):
     case = _case(split=True)
     base = case["mode"]
     truncated = _truncate(base)
-    modes = np.asarray(truncated.modes)
-    kernel = (modes.T * np.asarray(truncated.eigenvalues)) @ modes
-    da, db = truncated.pair_dim
-    noa, nob = truncated.nocc
-    nva, nvb = truncated.nvir
-    dense = PtuccsdThoulessTrial(
-        mo_t_a=truncated.mo_t_a,
-        mo_t_b=truncated.mo_t_b,
-        mo_coeff_b=truncated.mo_coeff_b,
-        t2aa=jnp.asarray(kernel[:da, :da].reshape(noa, nva, noa, nva)),
-        t2ab=jnp.asarray(kernel[:da, da:].reshape(noa, nva, nob, nvb)),
-        t2bb=jnp.asarray(kernel[da:, da:].reshape(nob, nvb, nob, nvb)),
-    )
+    dense = _dense_reconstruction(truncated)
     # Deliberately nonsymmetric weights catch an accidental W rather than W.T
     # in V[k,a] = sum_i U[i,a] W[i,k].
     weight_a = jnp.asarray([[0.2, 0.3], [-0.1, 0.7]])
@@ -153,24 +174,133 @@ def test_truncated_modes_match_dense_reconstruction_under_lno_weighting():
     expected = dense_ops.components(case["walker"], case["ham"], dense_ctx, dense)
 
     mode_ops = make_lno_ptuccsd_mode_estimator_ops(
-        case["sys"], weight_a, weight_b, mixed_precision=False
+        case["sys"],
+        weight_a,
+        weight_b,
+        mode_batch_size=mode_batch_size,
+        mixed_precision=False,
     )
     mode_ctx = mode_ops.build_estimator_ctx(case["ham"], truncated)
     actual = mode_ops.components(case["walker"], case["ham"], mode_ctx, truncated)
     np.testing.assert_allclose(actual, expected, rtol=5.0e-11, atol=5.0e-11)
 
 
-def test_full_head_pair_sampling_matches_deterministic_population_numerator():
+def test_head_cholesky_batch_sizes_match_full_complex_population_numerator():
     case = _case()
     weight_a, weight_b = case["weights"]
     trial = _truncate(case["mode"])
-    sampling = PtuccsdModePairSamplingCfg(
-        chol_head_size=case["ham"].chol_a.shape[0],
-        pair_sample_size=4,
-        rank_head_by_guide=True,
-        walker_guide_policy="head_rms",
+    walkers, weights = _two_walker_population(case)
+    deterministic_ops = make_lno_ptuccsd_mode_estimator_ops(
+        case["sys"],
+        weight_a,
+        weight_b,
+        mixed_precision=False,
+        testing=True,
     )
-    ops = make_lno_ptuccsd_mode_estimator_ops(
+    deterministic_ctx = deterministic_ops.build_estimator_ctx(case["ham"], trial)
+    components = jnp.stack(
+        [
+            deterministic_ops.components(
+                (walkers[0][i], walkers[1][i]),
+                case["ham"],
+                deterministic_ctx,
+                trial,
+            )
+            for i in range(2)
+        ]
+    )
+    expected = jnp.sum(weights[:, None] * components, axis=0)
+
+    numerators = []
+    full_head_size = case["ham"].chol_a.shape[0]
+    for head_batch_size in (0, full_head_size, 1, 2):
+        sampling = PtuccsdModePairSamplingCfg(
+            chol_head_size=case["ham"].chol_a.shape[0],
+            pair_sample_size=4,
+            rank_head_by_guide=True,
+            guide_chol_batch_size=full_head_size,
+            head_chol_batch_size=head_batch_size,
+            walker_guide_policy="head_rms",
+        )
+        ops = make_lno_ptuccsd_mode_estimator_ops(
+            case["sys"],
+            weight_a,
+            weight_b,
+            mixed_precision=False,
+            testing=True,
+            component_sampling=sampling,
+        )
+        ctx = ops.build_estimator_ctx(case["ham"], trial)
+        np.testing.assert_allclose(
+            ops.components(
+                (walkers[0][0], walkers[1][0]),
+                case["ham"],
+                ctx,
+                trial,
+            ),
+            components[0],
+            rtol=5.0e-11,
+            atol=5.0e-11,
+        )
+        sampled = ops.block_components(
+            walkers,
+            weights,
+            jax.random.PRNGKey(7),
+            1,
+            case["ham"],
+            ctx,
+            trial,
+        )
+        np.testing.assert_allclose(sampled.weight, jnp.sum(weights), atol=1.0e-12)
+        np.testing.assert_allclose(
+            sampled.numerator,
+            expected,
+            rtol=5.0e-11,
+            atol=5.0e-11,
+        )
+        numerators.append(sampled.numerator)
+
+    for numerator in numerators[1:]:
+        np.testing.assert_allclose(
+            numerator,
+            numerators[0],
+            rtol=5.0e-11,
+            atol=5.0e-11,
+        )
+
+
+@pytest.mark.parametrize("guide_chol_batch_size", [1, 2, 4])
+def test_batched_reference_scores_match_unbatched(guide_chol_batch_size):
+    case = _case(split=True)
+    weight_a, weight_b = case["weights"]
+    trial = _truncate(case["mode"])
+
+    unbatched_ops = make_lno_ptuccsd_mode_estimator_ops(
+        case["sys"], weight_a, weight_b, mixed_precision=False, testing=True
+    )
+    unbatched_ctx = unbatched_ops.build_estimator_ctx(case["ham"], trial)
+    reference_walker = (trial.mo_t_a, trial.mo_coeff_b @ trial.mo_t_b)
+    common = _energy_common(reference_walker, case["ham"], unbatched_ctx, trial)
+    terms = _chol_terms(
+        common,
+        unbatched_ctx.cholbar_a,
+        unbatched_ctx.cholbar_b,
+        unbatched_ctx,
+        trial,
+    )
+    expected = jnp.maximum(
+        jnp.abs(jnp.real(_project_energy_terms(common.theta_f, terms))),
+        1.0e-300,
+    )
+
+    sampling = PtuccsdModePairSamplingCfg(
+        chol_head_size=2,
+        pair_sample_size=2,
+        rank_head_by_guide=True,
+        guide_chol_batch_size=guide_chol_batch_size,
+        head_chol_batch_size=1,
+    )
+    batched_ops = make_lno_ptuccsd_mode_estimator_ops(
         case["sys"],
         weight_a,
         weight_b,
@@ -178,35 +308,62 @@ def test_full_head_pair_sampling_matches_deterministic_population_numerator():
         testing=True,
         component_sampling=sampling,
     )
-    ctx = ops.build_estimator_ctx(case["ham"], trial)
-    walkers = (
-        jnp.stack((case["walker"][0], case["walker"][0] + 0.01j)),
-        jnp.stack((case["walker"][1], case["walker"][1] - 0.015j)),
-    )
-    weights = jnp.asarray([0.8 + 0.1j, 1.1 - 0.04j])
-    components = jnp.stack(
-        [
-            ops.components(
-                (walkers[0][i], walkers[1][i]), case["ham"], ctx, trial
-            )
-            for i in range(2)
-        ]
-    )
-    sampled = ops.block_components(
-        walkers,
-        weights,
-        jax.random.PRNGKey(7),
-        1,
-        case["ham"],
-        ctx,
-        trial,
-    )
-    np.testing.assert_allclose(sampled.weight, jnp.sum(weights), atol=1.0e-12)
+    batched_ctx = batched_ops.build_estimator_ctx(case["ham"], trial)
     np.testing.assert_allclose(
-        sampled.numerator,
-        jnp.sum(weights[:, None] * components, axis=0),
+        batched_ctx.reference_chol_scores,
+        expected,
         rtol=5.0e-11,
         atol=5.0e-11,
+    )
+
+
+def test_mixed_precision_streaming_tracks_double_precision():
+    case = _case(split=True)
+    weight_a, weight_b = case["weights"]
+    trial = _truncate(case["mode"])
+    mixed_trial = PtuccsdThoulessModeTrial(
+        mo_t_a=trial.mo_t_a,
+        mo_t_b=trial.mo_t_b,
+        mo_coeff_b=trial.mo_coeff_b,
+        eigenvalues=trial.eigenvalues,
+        modes=trial.modes.astype(jnp.float32),
+    )
+    sampling = PtuccsdModePairSamplingCfg(
+        chol_head_size=case["ham"].chol_a.shape[0],
+        pair_sample_size=2,
+        guide_chol_batch_size=1,
+        head_chol_batch_size=1,
+        walker_guide_policy="head_rms",
+    )
+    walkers, weights = _two_walker_population(case)
+
+    numerators = []
+    for current_trial, mixed_precision in ((trial, False), (mixed_trial, True)):
+        ops = make_lno_ptuccsd_mode_estimator_ops(
+            case["sys"],
+            weight_a,
+            weight_b,
+            mixed_precision=mixed_precision,
+            component_sampling=sampling,
+            mode_batch_size=2,
+        )
+        ctx = ops.build_estimator_ctx(case["ham"], current_trial)
+        estimate = ops.block_components(
+            walkers,
+            weights,
+            jax.random.PRNGKey(9),
+            2,
+            case["ham"],
+            ctx,
+            current_trial,
+        )
+        numerators.append(estimate.numerator)
+
+    np.testing.assert_allclose(
+        numerators[1],
+        numerators[0],
+        rtol=3.0e-5,
+        atol=3.0e-5,
     )
 
 

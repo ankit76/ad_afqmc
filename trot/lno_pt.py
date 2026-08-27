@@ -114,6 +114,8 @@ def setup_lno_pt(
             chol_head_size=round(nchol / 8),
             pair_sample_size=4096,
             rank_head_by_guide=True,
+            guide_chol_batch_size=16,
+            head_chol_batch_size=16,
             tail_probability_uniform_mix=0.01,
             track_half_sample_diagnostic=True,
             walker_guide_policy="head_rms",
@@ -140,6 +142,8 @@ def setup_lno_pt(
 
     identity = jnp.eye(sys.norb, dtype=jnp.float64)
     guide_data = UhfTrial(identity[:, : sys.nup], identity[:, : sys.ndn])
+    if params is None:
+        params = QmcParams(n_chunks=16, auto_n_chunks=True)
     guide_job = setup(
         source,
         walker_kind="unrestricted",

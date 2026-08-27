@@ -50,6 +50,7 @@ class LnoPtuccsdModeMeasCtx:
     chol_tail_prob: jax.Array
     cfg: PtuccsdModeMeasCfg
     component_sampling: PtuccsdModePairSamplingCfg | None
+    mode_batch_size: int
 
     def tree_flatten(self):
         children = (
@@ -71,12 +72,17 @@ class LnoPtuccsdModeMeasCtx:
             self.chol_tail_indices,
             self.chol_tail_prob,
         )
-        return children, (self.cfg, self.component_sampling)
+        return children, (self.cfg, self.component_sampling, self.mode_batch_size)
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        cfg, component_sampling = aux
-        return cls(*children, cfg=cfg, component_sampling=component_sampling)
+        cfg, component_sampling, mode_batch_size = aux
+        return cls(
+            *children,
+            cfg=cfg,
+            component_sampling=component_sampling,
+            mode_batch_size=mode_batch_size,
+        )
 
 
 class LnoPtuccsdModeCommon(NamedTuple):
@@ -103,15 +109,88 @@ def _same_spin_exchange(
     modes: jax.Array,
     green_occ: jax.Array,
     eigenvalues: jax.Array,
+    mode_batch_size: int,
 ) -> jax.Array:
     """Contract ``sum_r lambda_r V_r @ G.T @ U_r`` without dense T2."""
 
-    intermediate = jnp.einsum(
-        "ria,ja->rij", projected_modes, green_occ, optimize="optimal"
+    rank = int(eigenvalues.shape[0])
+    zero = jnp.zeros(
+        (projected_modes.shape[1], modes.shape[2]),
+        dtype=green_occ.dtype,
     )
-    return jnp.einsum(
-        "r,rij,rjb->ib", eigenvalues, intermediate, modes, optimize="optimal"
-    )
+    if rank == 0:
+        return zero
+
+    batch_size = min(mode_batch_size, rank)
+    n_batches = math.ceil(rank / batch_size)
+    padded_size = n_batches * batch_size
+    indices = jnp.arange(padded_size, dtype=jnp.int32).reshape(n_batches, batch_size)
+    valid = indices < rank
+    indices = jnp.minimum(indices, rank - 1)
+
+    def scan_batch(total, xs):
+        indices_i, valid_i = xs
+        projected_i = projected_modes[indices_i]
+        modes_i = modes[indices_i]
+        values_i = jnp.where(valid_i, eigenvalues[indices_i], 0.0)
+        intermediate = jnp.einsum(
+            "ria,ja->rij", projected_i, green_occ, optimize="optimal"
+        )
+        contribution = jnp.einsum(
+            "r,rij,rjb->ib", values_i, intermediate, modes_i, optimize="optimal"
+        )
+        return total + contribution, None
+
+    result, _ = lax.scan(scan_batch, zero, (indices, valid))
+    return result
+
+
+def _mode_h2_t2(
+    modes_a: jax.Array,
+    modes_b: jax.Array,
+    projected_a: jax.Array,
+    projected_b: jax.Array,
+    eigenvalues: jax.Array,
+    glgp_a: jax.Array,
+    glgp_b: jax.Array,
+    mode_batch_size: int,
+) -> jax.Array:
+    """Evaluate the retained-mode Cholesky bilinear in bounded mode batches."""
+
+    rank = int(eigenvalues.shape[0])
+    zero = jnp.zeros(glgp_a.shape[0], dtype=glgp_a.dtype)
+    if rank == 0:
+        return zero
+
+    batch_size = min(mode_batch_size, rank)
+    n_batches = math.ceil(rank / batch_size)
+    padded_size = n_batches * batch_size
+    indices = jnp.arange(padded_size, dtype=jnp.int32).reshape(n_batches, batch_size)
+    valid = indices < rank
+    indices = jnp.minimum(indices, rank - 1)
+
+    def scan_batch(total, xs):
+        indices_i, valid_i = xs
+        modes_a_i = modes_a[indices_i]
+        modes_b_i = modes_b[indices_i]
+        projected_a_i = projected_a[indices_i]
+        projected_b_i = projected_b[indices_i]
+        values_i = jnp.where(valid_i, eigenvalues[indices_i], 0.0)
+        pua = jnp.einsum("ria,gia->gr", modes_a_i, glgp_a, optimize="optimal")
+        pub = jnp.einsum("ria,gia->gr", modes_b_i, glgp_b, optimize="optimal")
+        pva = jnp.einsum(
+            "ria,gia->gr", projected_a_i, glgp_a, optimize="optimal"
+        )
+        pvb = jnp.einsum(
+            "ria,gia->gr", projected_b_i, glgp_b, optimize="optimal"
+        )
+        contribution = 0.5 * jnp.einsum(
+            "r,gr,gr->g", values_i, pva + pvb, pua + pub, optimize="optimal"
+        )
+        return total + contribution, None
+
+    result, _ = lax.scan(scan_batch, zero, (indices, valid))
+    return result
 
 
 def _energy_common(
@@ -157,13 +236,13 @@ def _energy_common(
         "r,r,rjb->jb", eigenvalues, pva, modes_a, optimize="optimal"
     )
     t2g_aa_e = 0.25 * _same_spin_exchange(
-        projected_a, modes_a, ga, eigenvalues
+        projected_a, modes_a, ga, eigenvalues, meas_ctx.mode_batch_size
     )
     t2g_bb_c = 0.25 * jnp.einsum(
         "r,r,rjb->jb", eigenvalues, pvb, modes_b, optimize="optimal"
     )
     t2g_bb_e = 0.25 * _same_spin_exchange(
-        projected_b, modes_b, gb, eigenvalues
+        projected_b, modes_b, gb, eigenvalues, meas_ctx.mode_batch_size
     )
     t2g_ab_a = 0.5 * jnp.einsum(
         "r,r,rjb->jb", eigenvalues, pva, modes_b, optimize="optimal"
@@ -311,12 +390,15 @@ def _chol_terms(
     glgp_b = jnp.einsum(
         "gip,pa->gia", gl_b, common.greenp_b, optimize="optimal"
     ).astype(cfg.mixed_complex_dtype_testing)
-    pua = jnp.einsum("ria,gia->gr", modes_a, glgp_a, optimize="optimal")
-    pub = jnp.einsum("ria,gia->gr", modes_b, glgp_b, optimize="optimal")
-    pva = jnp.einsum("ria,gia->gr", projected_a, glgp_a, optimize="optimal")
-    pvb = jnp.einsum("ria,gia->gr", projected_b, glgp_b, optimize="optimal")
-    h2_t2 = 0.5 * jnp.einsum(
-        "r,gr,gr->g", eigenvalues, pva + pvb, pua + pub, optimize="optimal"
+    h2_t2 = _mode_h2_t2(
+        modes_a,
+        modes_b,
+        projected_a,
+        projected_b,
+        eigenvalues,
+        glgp_a,
+        glgp_b,
+        meas_ctx.mode_batch_size,
     )
 
     d_a = jnp.einsum(
@@ -347,9 +429,19 @@ def _chol_terms(
 
 def _components(walker, ham_data, meas_ctx, trial_data):
     common = _energy_common(walker, ham_data, meas_ctx, trial_data)
-    terms = _chol_terms(
-        common, meas_ctx.cholbar_a, meas_ctx.cholbar_b, meas_ctx, trial_data
-    )
+    sampling = meas_ctx.component_sampling
+    if sampling is None:
+        terms = _chol_terms(
+            common, meas_ctx.cholbar_a, meas_ctx.cholbar_b, meas_ctx, trial_data
+        )
+    else:
+        terms = _chol_index_terms(
+            common,
+            jnp.arange(meas_ctx.cholbar_a.shape[0], dtype=jnp.int32),
+            meas_ctx,
+            trial_data,
+            chol_batch_size=sampling.guide_chol_batch_size,
+        )
     total = jnp.sum(terms, axis=0)
     return jnp.stack(
         (
@@ -391,6 +483,69 @@ def _chol_terms_for_walkers(
     )(common)
 
 
+def _head_chol_moments_for_walkers(
+    common,
+    chol_indices,
+    meas_ctx,
+    trial_data,
+    *,
+    n_walker_chunks,
+    chol_batch_size,
+    theta_reference,
+    compute_projected_moment,
+):
+    """Stream the exact head sum and its per-walker projected squared norm."""
+
+    n_walkers = int(common.theta_f.shape[0])
+    component_dtype = jnp.result_type(
+        common.theta_f,
+        common.e0_f_base,
+        common.h_t_f_base,
+        common.e0_base,
+    )
+    zero_total = jnp.zeros((n_walkers, 3), dtype=component_dtype)
+    zero_moment = jnp.zeros((n_walkers,), dtype=jnp.float64)
+    head_size = int(chol_indices.shape[0])
+    if head_size == 0:
+        return zero_total, zero_moment
+
+    batch_size = min(chol_batch_size, head_size)
+    n_batches = math.ceil(head_size / batch_size)
+    padded_size = n_batches * batch_size
+    padded_indices = jnp.pad(
+        chol_indices, (0, padded_size - head_size)
+    ).reshape(n_batches, batch_size)
+    valid = (jnp.arange(padded_size) < head_size).reshape(n_batches, batch_size)
+
+    def scan_batch(carry, xs):
+        total, projected_moment = carry
+        indices_i, valid_i = xs
+        terms_i = _chol_terms_for_walkers(
+            common,
+            indices_i,
+            meas_ctx,
+            trial_data,
+            n_chunks=n_walker_chunks,
+        )
+        terms_i = jnp.where(valid_i[None, :, None], terms_i, 0.0)
+        total = total + jnp.sum(terms_i, axis=1)
+        if compute_projected_moment:
+            projected_i = _project_energy_terms(theta_reference, terms_i)
+            projected_moment = projected_moment + jnp.sum(
+                jnp.abs(projected_i) ** 2,
+                axis=1,
+                dtype=jnp.float64,
+            )
+        return (total, projected_moment), None
+
+    result, _ = lax.scan(
+        scan_batch,
+        (zero_total, zero_moment),
+        (padded_indices, valid),
+    )
+    return result
+
+
 def _chol_pair_terms(
     common,
     sample_walker,
@@ -411,6 +566,30 @@ def _chol_pair_terms(
         n_chunks=n_chunks,
         in_axes=(0, 0),
     )(sample_walker, sample_chol)
+
+
+def _chol_index_terms(
+    common,
+    chol_indices,
+    meas_ctx,
+    trial_data,
+    *,
+    chol_batch_size,
+):
+    """Evaluate one walker's indexed Cholesky terms in bounded batches."""
+
+    n_chol = int(chol_indices.shape[0])
+    n_chunks = max(1, math.ceil(n_chol / chol_batch_size))
+    return wk.vmap_chunked(
+        lambda chol_i: _chol_terms(
+            common,
+            meas_ctx.cholbar_a[chol_i][None],
+            meas_ctx.cholbar_b[chol_i][None],
+            meas_ctx,
+            trial_data,
+        )[0],
+        n_chunks=n_chunks,
+    )(chol_indices)
 
 
 def _configure_sampling(meas_ctx, sampling, scores):
@@ -438,11 +617,21 @@ def _configure_sampling(meas_ctx, sampling, scores):
     )
 
 
-def _reference_scores(ham_data, meas_ctx, trial_data):
+def _reference_scores(
+    ham_data,
+    meas_ctx,
+    trial_data,
+    *,
+    chol_batch_size,
+):
     walker = (trial_data.mo_t_a, trial_data.mo_coeff_b @ trial_data.mo_t_b)
     common = _energy_common(walker, ham_data, meas_ctx, trial_data)
-    terms = _chol_terms(
-        common, meas_ctx.cholbar_a, meas_ctx.cholbar_b, meas_ctx, trial_data
+    terms = _chol_index_terms(
+        common,
+        jnp.arange(meas_ctx.cholbar_a.shape[0], dtype=jnp.int32),
+        meas_ctx,
+        trial_data,
+        chol_batch_size=chol_batch_size,
     )
     projected = _project_energy_terms(common.theta_f, terms)
     return jnp.maximum(jnp.abs(jnp.real(projected)).astype(jnp.float64), 1.0e-300)
@@ -456,9 +645,12 @@ def build_lno_ptuccsd_mode_meas_ctx(
     weight_b,
     cfg,
     component_sampling=None,
+    mode_batch_size=64,
 ):
     if not isinstance(ham_data, HamCholUhf):
         raise ValueError("split LNO PT-UCCSD mode estimators require HamCholUhf.")
+    if mode_batch_size <= 0:
+        raise ValueError("mode_batch_size must be positive.")
     noa, nob = trial_data.nocc
     nva, nvb = trial_data.nvir
     weight_a, weight_b = jnp.asarray(weight_a), jnp.asarray(weight_b)
@@ -521,13 +713,19 @@ def build_lno_ptuccsd_mode_meas_ctx(
         chol_tail_prob=jnp.empty((0,), dtype=jnp.float64),
         cfg=cfg,
         component_sampling=None,
+        mode_batch_size=int(mode_batch_size),
     )
     if component_sampling is None:
         return result
     return _configure_sampling(
         result,
         component_sampling,
-        _reference_scores(ham_data, result, trial_data),
+        _reference_scores(
+            ham_data,
+            result,
+            trial_data,
+            chol_batch_size=component_sampling.guide_chol_batch_size,
+        ),
     )
 
 
@@ -557,14 +755,19 @@ def pair_sampled_lno_ptuccsd_mode_block_components(
     preliminary_safe = jnp.where(preliminary_weight == 0.0, 1.0, preliminary_weight)
     theta_reference = jnp.sum(preliminary_weights * common.theta_f) / preliminary_safe
     theta_reference = jnp.where(preliminary_weight == 0.0, 0.0, theta_reference)
-    head_terms = _chol_terms_for_walkers(
+    head_batch_size = sampling.head_chol_batch_size
+    if head_batch_size <= 0:
+        head_batch_size = sampling.guide_chol_batch_size
+    head_sum, head_projected_moment = _head_chol_moments_for_walkers(
         common,
         meas_ctx.chol_head_indices,
         meas_ctx,
         trial_data,
-        n_chunks=n_chunks,
+        n_walker_chunks=n_chunks,
+        chol_batch_size=head_batch_size,
+        theta_reference=theta_reference,
+        compute_projected_moment=sampling.walker_guide_policy == "head_rms",
     )
-    head_sum = jnp.sum(head_terms, axis=1)
     exact_components = jnp.stack(
         (
             common.theta_f,
@@ -590,14 +793,9 @@ def pair_sampled_lno_ptuccsd_mode_block_components(
         abs_probability,
     )
     if sampling.walker_guide_policy == "head_rms":
-        projected = _project_energy_terms(theta_reference, head_terms)
         weight_safe = jnp.where(weight == 0.0, 1.0, weight)
-        head_scores = jnp.sqrt(
-            jnp.sum(
-                jnp.abs((weights / weight_safe)[:, None] * projected) ** 2,
-                axis=1,
-                dtype=jnp.float64,
-            )
+        head_scores = jnp.abs(weights / weight_safe) * jnp.sqrt(
+            jnp.maximum(head_projected_moment, 0.0)
         )
         head_scores = jnp.where(valid & jnp.isfinite(head_scores), head_scores, 0.0)
         score_sum = jnp.sum(head_scores, dtype=jnp.float64)
@@ -691,6 +889,7 @@ def make_lno_ptuccsd_mode_estimator_ops(
     mixed_precision: bool = True,
     testing: bool = False,
     component_sampling: PtuccsdModePairSamplingCfg | None = None,
+    mode_batch_size: int = 64,
 ) -> EstimatorOps:
     if sys.walker_kind.lower() != "unrestricted":
         raise ValueError("split LNO PT-UCCSD mode estimators require UHF walkers.")
@@ -715,6 +914,7 @@ def make_lno_ptuccsd_mode_estimator_ops(
                 weight_b=weight_b,
                 cfg=cfg,
                 component_sampling=component_sampling,
+                mode_batch_size=mode_batch_size,
             )
         ),
         block_components=(

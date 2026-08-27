@@ -7,6 +7,8 @@ config.configure_once(use_gpu=False)
 import numpy as np
 
 from trot.core.system import System
+from trot.lno_pt import setup_lno_pt
+from trot.staging import HamInput, StagedInputs, TrialInput
 from trot.trial.ptuccsd_modes import (
     make_split_ptuccsd_thouless_mode_trial_data,
 )
@@ -132,3 +134,57 @@ def test_split_builder_truncates_by_discarded_norm() -> None:
     discarded_fraction = np.sqrt(full_norm**2 - retained_norm**2) / full_norm
     assert discarded_fraction <= 0.25
     assert np.sqrt(2.0**2 + 1.0**2) / full_norm > 0.25
+
+
+def test_lno_setup_uses_bounded_memory_defaults() -> None:
+    norb = 3
+    nocc = 1
+    nvir = norb - nocc
+    chol = np.stack((0.2 * np.eye(norb), 0.1 * np.eye(norb)))
+    t2aa = np.zeros((nocc, nvir, nocc, nvir))
+    t2ab = np.zeros_like(t2aa)
+    t2bb = np.zeros_like(t2aa)
+    t2ab[0, 0, 0, 0] = 0.04
+    staged = StagedInputs(
+        ham=HamInput(
+            h0=0.0,
+            h1=np.diag([-0.8, -0.2, 0.1]),
+            h1_b=np.diag([-0.7, -0.1, 0.2]),
+            chol=chol,
+            chol_b=chol,
+            nelec=(nocc, nocc),
+            norb=norb,
+            norb_spin=(norb, norb),
+            chol_cut=1.0e-5,
+            frozen=0,
+            source_kind="cc",
+            basis="unrestricted",
+        ),
+        trial=TrialInput(
+            kind="pt2uccsd",
+            data={
+                "t1a": np.zeros((nocc, nvir)),
+                "t1b": np.zeros((nocc, nvir)),
+                "t2aa": _pyscf_layout(t2aa),
+                "t2ab": _pyscf_layout(t2ab),
+                "t2bb": _pyscf_layout(t2bb),
+                "mo_coeff_b": np.eye(norb),
+                "weight_a": np.eye(nocc),
+                "weight_b": np.eye(nocc),
+            },
+            frozen=0,
+            source_kind="cc",
+        ),
+        meta={},
+    )
+
+    job = setup_lno_pt(staged, t2_discarded_norm=0.0)
+    assert job.guide_job.params.n_chunks == 16
+    assert job.guide_job.params.auto_n_chunks is True
+    context = job.estimator_ops.build_estimator_ctx(
+        job.guide_job.ham_data,
+        job.estimator_data,
+    )
+    assert context.mode_batch_size == 64
+    assert context.component_sampling.guide_chol_batch_size == 16
+    assert context.component_sampling.head_chol_batch_size == 16
