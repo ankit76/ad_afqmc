@@ -316,6 +316,11 @@ afqmc = Afqmc(
 afqmc.prepare_cisd_trial_cache()
 ```
 
+With `solver="auto"`, host preparation uses dense diagonalization only when
+both its estimated peak memory and the LAPACK workspace-index range are safe.
+For an inexact mode selection, a dense `MemoryError` is retried with the
+matrix-free Lanczos solver.
+
 The GPU job can then load only the selected derived representation:
 
 ```python

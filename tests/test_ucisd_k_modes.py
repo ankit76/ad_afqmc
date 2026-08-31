@@ -374,6 +374,38 @@ def test_auto_solver_respects_available_host_memory(monkeypatch):
     assert dense.solver == "dense"
 
 
+def test_auto_solver_retries_lanczos_after_dense_memory_error(monkeypatch):
+    _, _, blocks = _make_trials(seed=1869)
+    c2aa, c2ab, c2bb = blocks
+    dense_attempts = 0
+
+    monkeypatch.setattr(
+        ucisd_k_modes_module,
+        "format_dense_memory_selection",
+        lambda dimension: (True, f"mock sufficient memory for {dimension}"),
+    )
+
+    def fail_dense(*args, **kwargs):
+        nonlocal dense_attempts
+        dense_attempts += 1
+        raise MemoryError("mock dense allocation failure")
+
+    monkeypatch.setattr(ucisd_k_modes_module.np.linalg, "eigh", fail_dense)
+    factorization = factorize_ucisd_k_blocks(
+        c2aa,
+        c2ab,
+        c2bb,
+        threshold=None,
+        discarded_norm_target=0.5,
+        solver="auto",
+        lanczos_initial_rank=5,
+        lanczos_tol=1.0e-12,
+    )
+
+    assert dense_attempts == 1
+    assert factorization.solver == "lanczos"
+
+
 def test_minimum_rank_retains_extra_modes_without_changing_natural_rank():
     _, _, blocks = _make_trials(seed=1870)
     c2aa, c2ab, c2bb = blocks

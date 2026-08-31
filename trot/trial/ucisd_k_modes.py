@@ -116,7 +116,9 @@ def factorize_ucisd_k_blocks(
     blocks separate and adaptively requests the largest-magnitude eigenpairs
     through a matrix-free ARPACK solve. ``"auto"`` selects the dense solver
     whenever its estimated peak fits the currently available host/cgroup
-    memory, and uses Lanczos otherwise. ``dense_max_dim`` is accepted for
+    memory and LAPACK workspace-index limits, and uses Lanczos otherwise. If
+    the dense solve still raises :class:`MemoryError`, an inexact automatic
+    selection retries with Lanczos. ``dense_max_dim`` is accepted for
     compatibility but no longer limits the automatic dense path.
 
     Selection may be controlled by an absolute eigenvalue ``threshold``, a
@@ -161,22 +163,22 @@ def factorize_ucisd_k_blocks(
     full_norm = float(np.sqrt(full_norm_sq))
 
     selected_solver: Literal["dense", "lanczos"]
-    dense_memory_safe = True
+    dense_resource_safe = True
     dense_memory_message = ""
     if solver == "auto":
-        dense_memory_safe, dense_memory_message = format_dense_memory_selection(combined_dim)
+        dense_resource_safe, dense_memory_message = format_dense_memory_selection(combined_dim)
         exact_selection = threshold == 0.0 or discarded_norm_target == 0.0
-        if (exact_selection or minimum_rank == combined_dim) and not dense_memory_safe:
+        if (exact_selection or minimum_rank == combined_dim) and not dense_resource_safe:
             raise MemoryError(
-                "exact mode selection requires dense diagonalization, but its estimated "
-                f"memory exceeds the automatic budget: {dense_memory_message}. "
-                "Request more host memory or set solver='dense' to override."
+                "exact mode selection requires dense diagonalization, but it is not "
+                f"safe under the automatic resource checks: {dense_memory_message}. "
+                "Request more host memory or use an ILP64 LAPACK build."
             )
         selected_solver = (
             "dense"
             if exact_selection
             or minimum_rank == combined_dim
-            or dense_memory_safe
+            or dense_resource_safe
             else "lanczos"
         )
     else:
@@ -193,7 +195,7 @@ def factorize_ucisd_k_blocks(
         )
         if solver == "auto":
             print(
-                "[modes] dense auto-selection memory estimate: "
+                "[modes] dense auto-selection resource estimate: "
                 f"{dense_memory_message}"
             )
             if dense_max_dim is not None:
@@ -220,8 +222,25 @@ def factorize_ucisd_k_blocks(
         if verbose:
             gib = combined_dim * combined_dim * np.dtype(np.float64).itemsize / 1024**3
             print(f"[modes] constructing dense K ({gib:.3f} GiB) and diagonalizing...")
-        eigenvalues, eigenvectors = np.linalg.eigh(_dense_kernel(aa, ab, bb))
-    else:
+        try:
+            eigenvalues, eigenvectors = np.linalg.eigh(_dense_kernel(aa, ab, bb))
+        except MemoryError:
+            can_retry_lanczos = (
+                solver == "auto"
+                and combined_dim > 2
+                and threshold != 0.0
+                and discarded_norm_target != 0.0
+                and minimum_rank != combined_dim
+            )
+            if not can_retry_lanczos:
+                raise
+            selected_solver = "lanczos"
+            if verbose:
+                print(
+                    "[modes] dense diagonalization raised MemoryError; "
+                    "retrying with Lanczos"
+                )
+    if selected_solver == "lanczos":
         from scipy.sparse.linalg import LinearOperator, eigsh
 
         da, db = pair_dims

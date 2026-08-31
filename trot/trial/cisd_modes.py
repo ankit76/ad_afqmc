@@ -78,8 +78,10 @@ def factorize_cisd_k_modes(
     With ``solver="auto"``, dense diagonalization is used whenever the
     estimated eigensolver peak fits the currently available host/cgroup
     memory. Otherwise, an adaptive largest-magnitude Lanczos solve is used.
-    ``dense_max_dim`` is accepted for compatibility but no longer limits the
-    automatic dense path.
+    The automatic dense path also checks LAPACK workspace-index limits and
+    retries an inexact selection with Lanczos if the dense solve raises
+    :class:`MemoryError`. ``dense_max_dim`` is accepted for compatibility but
+    no longer limits automatic selection.
     """
 
     if threshold is None and discarded_norm_target is None:
@@ -119,21 +121,22 @@ def factorize_cisd_k_modes(
             f"relative error={relative_error:.3e}."
         )
 
-    dense_memory_safe = True
+    dense_resource_safe = True
     dense_memory_message = ""
     selected_solver: Literal["dense", "lanczos"]
     if solver == "auto":
-        dense_memory_safe, dense_memory_message = format_dense_memory_selection(pair_dim)
+        dense_resource_safe, dense_memory_message = format_dense_memory_selection(pair_dim)
         exact_selection = threshold == 0.0 or discarded_norm_target == 0.0
-        if (exact_selection or minimum_rank == pair_dim) and not dense_memory_safe:
+        if (exact_selection or minimum_rank == pair_dim) and not dense_resource_safe:
             raise MemoryError(
-                "exact restricted mode selection requires dense diagonalization, but its "
-                f"estimated memory exceeds the automatic budget: {dense_memory_message}. "
-                "Request more host memory or set solver='dense' to override."
+                "exact restricted mode selection requires dense diagonalization, but it "
+                "is not safe under the automatic resource checks: "
+                f"{dense_memory_message}. Request more host memory or use an ILP64 "
+                "LAPACK build."
             )
         selected_solver = (
             "dense"
-            if exact_selection or minimum_rank == pair_dim or dense_memory_safe
+            if exact_selection or minimum_rank == pair_dim or dense_resource_safe
             else "lanczos"
         )
     else:
@@ -153,7 +156,7 @@ def factorize_cisd_k_modes(
             f"minimum_rank={minimum_rank}"
         )
         if solver == "auto":
-            print(f"[modes] dense auto-selection memory estimate: {dense_memory_message}")
+            print(f"[modes] dense auto-selection resource estimate: {dense_memory_message}")
             if dense_max_dim is not None:
                 print("[modes] dense_max_dim is deprecated and ignored by solver='auto'.")
 
@@ -164,8 +167,25 @@ def factorize_cisd_k_modes(
     )
     if selected_solver == "dense" or pair_dim <= 2:
         selected_solver = "dense"
-        eigenvalues, eigenvectors = np.linalg.eigh(kernel)
-    else:
+        try:
+            eigenvalues, eigenvectors = np.linalg.eigh(kernel)
+        except MemoryError:
+            can_retry_lanczos = (
+                solver == "auto"
+                and pair_dim > 2
+                and threshold != 0.0
+                and discarded_norm_target != 0.0
+                and minimum_rank != pair_dim
+            )
+            if not can_retry_lanczos:
+                raise
+            selected_solver = "lanczos"
+            if verbose:
+                print(
+                    "[modes] dense diagonalization raised MemoryError; "
+                    "retrying with Lanczos"
+                )
+    if selected_solver == "lanczos":
         from scipy.sparse.linalg import LinearOperator, eigsh
 
         operator = LinearOperator(

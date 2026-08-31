@@ -214,6 +214,36 @@ def test_restricted_auto_solver_respects_available_host_memory(monkeypatch):
     assert dense.solver == "dense"
 
 
+def test_restricted_auto_solver_retries_lanczos_after_dense_memory_error(monkeypatch):
+    dense_trial, _, _, _ = _make_dense_and_mode_trials(seed=824)
+    amplitudes = np.asarray(dense_trial.ci2)
+    dense_attempts = 0
+
+    monkeypatch.setattr(
+        cisd_modes_module,
+        "format_dense_memory_selection",
+        lambda dimension: (True, f"mock sufficient memory for {dimension}"),
+    )
+
+    def fail_dense(*args, **kwargs):
+        nonlocal dense_attempts
+        dense_attempts += 1
+        raise MemoryError("mock dense allocation failure")
+
+    monkeypatch.setattr(cisd_modes_module.np.linalg, "eigh", fail_dense)
+    factorization = factorize_cisd_k_modes(
+        amplitudes,
+        threshold=None,
+        discarded_norm_target=0.5,
+        solver="auto",
+        lanczos_initial_rank=5,
+        lanczos_tol=1.0e-12,
+    )
+
+    assert dense_attempts == 1
+    assert factorization.solver == "lanczos"
+
+
 def test_mixed_trial_data_uses_lambda64_vectors32_and_dp_reductions():
     dense_trial, mode_dp, _, eigenvectors = _make_dense_and_mode_trials()
     sys = System(

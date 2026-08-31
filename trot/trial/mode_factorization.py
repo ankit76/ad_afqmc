@@ -10,6 +10,8 @@ import numpy as np
 
 DENSE_MEMORY_BUDGET_FRACTION = 0.8
 DENSE_WORKSPACE_MATRIX_FACTOR = 6
+LAPACK_DSYEVD_LINEAR_WORK_FACTOR = 6
+LAPACK_DSYEVD_QUADRATIC_WORK_FACTOR = 2
 
 
 def _read_memory_counter(path: Path) -> int | None:
@@ -130,6 +132,35 @@ def dense_factorization_memory_bytes(dimension: int) -> int:
     return DENSE_WORKSPACE_MATRIX_FACTOR * matrix_bytes
 
 
+def dense_eigh_lwork_elements(dimension: int) -> int:
+    """Minimum DSYEVD floating-point workspace when eigenvectors are requested."""
+
+    return (
+        1
+        + LAPACK_DSYEVD_LINEAR_WORK_FACTOR * dimension
+        + LAPACK_DSYEVD_QUADRATIC_WORK_FACTOR * dimension**2
+    )
+
+
+def numpy_linalg_uses_ilp64() -> bool:
+    """Return whether NumPy's LAPACK interface uses 64-bit Fortran integers."""
+
+    try:
+        from numpy.linalg import lapack_lite
+    except ImportError:
+        return False
+    return bool(getattr(lapack_lite, "_ilp64", False))
+
+
+def dense_eigh_workspace_index_safe(dimension: int) -> tuple[bool, int, str]:
+    """Check whether LAPACK can represent DSYEVD's workspace length."""
+
+    lwork = dense_eigh_lwork_elements(dimension)
+    integer_kind = "ILP64" if numpy_linalg_uses_ilp64() else "LP64"
+    limit = np.iinfo(np.int64 if integer_kind == "ILP64" else np.int32).max
+    return lwork <= limit, lwork, integer_kind
+
+
 def auto_dense_is_memory_safe(dimension: int) -> tuple[bool, int, int | None]:
     estimate = dense_factorization_memory_bytes(dimension)
     available = available_host_memory_bytes()
@@ -138,11 +169,14 @@ def auto_dense_is_memory_safe(dimension: int) -> tuple[bool, int, int | None]:
 
 
 def format_dense_memory_selection(dimension: int) -> tuple[bool, str]:
-    safe, estimate, available = auto_dense_is_memory_safe(dimension)
+    memory_safe, estimate, available = auto_dense_is_memory_safe(dimension)
+    workspace_safe, lwork, integer_kind = dense_eigh_workspace_index_safe(dimension)
     available_text = f"{available / 1024**3:.3f} GiB" if available is not None else "unknown"
     message = (
         f"peak_increment={estimate / 1024**3:.3f} GiB, "
         f"available={available_text}, "
-        f"budget_fraction={DENSE_MEMORY_BUDGET_FRACTION:.2f}"
+        f"budget_fraction={DENSE_MEMORY_BUDGET_FRACTION:.2f}, "
+        f"lapack_integer={integer_kind}, lwork={lwork}, "
+        f"workspace_index_safe={workspace_safe}"
     )
-    return safe, message
+    return memory_safe and workspace_safe, message
