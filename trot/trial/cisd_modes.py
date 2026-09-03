@@ -10,7 +10,11 @@ from jax import tree_util
 
 from ..core.ops import TrialOps
 from ..core.system import System
-from .mode_factorization import format_dense_memory_selection
+from .mode_factorization import (
+    DENSE_EIGH_DRIVER,
+    dense_symmetric_eigh,
+    format_dense_memory_selection,
+)
 
 
 ModeSolver = Literal["auto", "dense", "lanczos"]
@@ -27,6 +31,7 @@ class CisdModeFactorization:
     discarded_norm_target: float | None
     discarded_norm_fraction: float
     natural_rank: int
+    dense_driver: str | None = None
 
     @property
     def rank(self) -> int:
@@ -53,11 +58,14 @@ def _restricted_k_matrix(amplitudes: np.ndarray) -> tuple[np.ndarray, int, int]:
 
     # Form K_(ia,jb) = 2 A_(ia,jb) - A_(ib,ja) one occupied slab at a
     # time, avoiding a second full exchange-permuted amplitude tensor.
-    kernel_4 = np.empty_like(amplitudes)
+    pair_dim = nocc * nvir
+    kernel = np.empty((pair_dim, pair_dim), dtype=np.float64, order="F")
     for occupied in range(nocc):
         slab = amplitudes[occupied]
-        kernel_4[occupied] = 2.0 * slab - slab.transpose(2, 1, 0)
-    return kernel_4.reshape(nocc * nvir, nocc * nvir), nocc, nvir
+        kernel[occupied * nvir : (occupied + 1) * nvir] = (
+            2.0 * slab - slab.transpose(2, 1, 0)
+        ).reshape(nvir, pair_dim)
+    return kernel, nocc, nvir
 
 
 def factorize_cisd_k_modes(
@@ -75,7 +83,7 @@ def factorize_cisd_k_modes(
 ) -> CisdModeFactorization:
     """Factor a restricted CISD or raw-T2 spin-adapted kernel on the host.
 
-    With ``solver="auto"``, dense diagonalization is used whenever the
+    With ``solver="auto"``, LP64-safe dense ``DSYEVR`` diagonalization is used whenever the
     estimated eigensolver peak fits the currently available host/cgroup
     memory. Otherwise, an adaptive largest-magnitude Lanczos solve is used.
     The automatic dense path also checks LAPACK workspace-index limits and
@@ -131,8 +139,7 @@ def factorize_cisd_k_modes(
             raise MemoryError(
                 "exact restricted mode selection requires dense diagonalization, but it "
                 "is not safe under the automatic resource checks: "
-                f"{dense_memory_message}. Request more host memory or use an ILP64 "
-                "LAPACK build."
+                f"{dense_memory_message}. Request more host memory."
             )
         selected_solver = (
             "dense"
@@ -168,7 +175,12 @@ def factorize_cisd_k_modes(
     if selected_solver == "dense" or pair_dim <= 2:
         selected_solver = "dense"
         try:
-            eigenvalues, eigenvectors = np.linalg.eigh(kernel)
+            if verbose:
+                print(
+                    "[modes] dense symmetric diagonalization: "
+                    f"driver=DSY{DENSE_EIGH_DRIVER.upper()}"
+                )
+            eigenvalues, eigenvectors = dense_symmetric_eigh(kernel)
         except MemoryError:
             can_retry_lanczos = (
                 solver == "auto"
@@ -284,6 +296,7 @@ def factorize_cisd_k_modes(
         discarded_norm_target=discarded_norm_target,
         discarded_norm_fraction=discarded_norm_fraction,
         natural_rank=natural_rank,
+        dense_driver=DENSE_EIGH_DRIVER if selected_solver == "dense" else None,
     )
 
 

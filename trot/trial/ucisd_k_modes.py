@@ -10,7 +10,11 @@ from jax import tree_util
 
 from ..core.ops import TrialOps
 from ..core.system import System
-from .mode_factorization import format_dense_memory_selection
+from .mode_factorization import (
+    DENSE_EIGH_DRIVER,
+    dense_symmetric_eigh,
+    format_dense_memory_selection,
+)
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,7 @@ class UcisdKModeFactorization:
     discarded_norm_target: float | None
     discarded_norm_fraction: float
     natural_rank: int
+    dense_driver: str | None = None
 
     @property
     def rank(self) -> int:
@@ -86,7 +91,7 @@ def _dense_kernel(
     bb: np.ndarray,
 ) -> np.ndarray:
     da, db = ab.shape
-    kernel = np.empty((da + db, da + db), dtype=np.float64)
+    kernel = np.empty((da + db, da + db), dtype=np.float64, order="F")
     kernel[:da, :da] = aa
     kernel[:da, da:] = ab
     kernel[da:, :da] = ab.T
@@ -111,8 +116,8 @@ def factorize_ucisd_k_blocks(
 ) -> UcisdKModeFactorization:
     """Diagonalize and truncate the combined UCISD kernel on the host.
 
-    ``solver="dense"`` constructs the full combined matrix and uses
-    :func:`numpy.linalg.eigh`. ``solver="lanczos"`` keeps the staged spin
+    ``solver="dense"`` constructs the full combined matrix and uses LAPACK
+    ``DSYEVR`` through :func:`scipy.linalg.eigh`. ``solver="lanczos"`` keeps the staged spin
     blocks separate and adaptively requests the largest-magnitude eigenpairs
     through a matrix-free ARPACK solve. ``"auto"`` selects the dense solver
     whenever its estimated peak fits the currently available host/cgroup
@@ -172,7 +177,7 @@ def factorize_ucisd_k_blocks(
             raise MemoryError(
                 "exact mode selection requires dense diagonalization, but it is not "
                 f"safe under the automatic resource checks: {dense_memory_message}. "
-                "Request more host memory or use an ILP64 LAPACK build."
+                "Request more host memory."
             )
         selected_solver = (
             "dense"
@@ -221,9 +226,14 @@ def factorize_ucisd_k_blocks(
         selected_solver = "dense"
         if verbose:
             gib = combined_dim * combined_dim * np.dtype(np.float64).itemsize / 1024**3
-            print(f"[modes] constructing dense K ({gib:.3f} GiB) and diagonalizing...")
+            print(
+                f"[modes] constructing dense K ({gib:.3f} GiB) and "
+                f"diagonalizing with DSY{DENSE_EIGH_DRIVER.upper()}..."
+            )
         try:
-            eigenvalues, eigenvectors = np.linalg.eigh(_dense_kernel(aa, ab, bb))
+            eigenvalues, eigenvectors = dense_symmetric_eigh(
+                _dense_kernel(aa, ab, bb)
+            )
         except MemoryError:
             can_retry_lanczos = (
                 solver == "auto"
@@ -362,6 +372,7 @@ def factorize_ucisd_k_blocks(
         discarded_norm_target=discarded_norm_target,
         discarded_norm_fraction=discarded_norm_fraction,
         natural_rank=natural_rank,
+        dense_driver=DENSE_EIGH_DRIVER if selected_solver == "dense" else None,
     )
 
 

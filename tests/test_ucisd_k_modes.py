@@ -279,7 +279,10 @@ def test_dense_and_lanczos_factorizations_reconstruct_same_truncated_kernel():
 
     assert dense.rank == 4
     assert lanczos.rank == dense.rank
+    assert dense.solver == "dense"
+    assert dense.dense_driver == "evr"
     assert lanczos.solver == "lanczos"
+    assert lanczos.dense_driver is None
     np.testing.assert_allclose(lanczos_kernel, dense_kernel, rtol=2.0e-10, atol=2.0e-12)
     np.testing.assert_allclose(
         lanczos.discarded_norm_fraction,
@@ -287,6 +290,18 @@ def test_dense_and_lanczos_factorizations_reconstruct_same_truncated_kernel():
         rtol=2.0e-10,
         atol=2.0e-12,
     )
+
+
+def test_dense_ucisd_kernel_is_fortran_contiguous():
+    _, _, blocks = _make_trials(seed=1868)
+    aa, ab, bb, _ = ucisd_k_modes_module._validate_ucisd_blocks(*blocks)
+
+    kernel = ucisd_k_modes_module._dense_kernel(aa, ab, bb)
+
+    assert kernel.flags.f_contiguous
+    np.testing.assert_allclose(kernel[: aa.shape[0], : aa.shape[1]], aa)
+    np.testing.assert_allclose(kernel[: aa.shape[0], aa.shape[1] :], ab)
+    np.testing.assert_allclose(kernel[aa.shape[0] :, aa.shape[1] :], bb)
 
 
 def test_discarded_norm_target_selects_same_dense_and_lanczos_rank():
@@ -372,6 +387,8 @@ def test_auto_solver_respects_available_host_memory(monkeypatch):
 
     assert lanczos.solver == "lanczos"
     assert dense.solver == "dense"
+    assert lanczos.dense_driver is None
+    assert dense.dense_driver == "evr"
 
 
 def test_auto_solver_retries_lanczos_after_dense_memory_error(monkeypatch):
@@ -390,7 +407,7 @@ def test_auto_solver_retries_lanczos_after_dense_memory_error(monkeypatch):
         dense_attempts += 1
         raise MemoryError("mock dense allocation failure")
 
-    monkeypatch.setattr(ucisd_k_modes_module.np.linalg, "eigh", fail_dense)
+    monkeypatch.setattr(ucisd_k_modes_module, "dense_symmetric_eigh", fail_dense)
     factorization = factorize_ucisd_k_blocks(
         c2aa,
         c2ab,

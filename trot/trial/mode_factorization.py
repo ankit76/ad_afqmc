@@ -6,12 +6,14 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+from scipy import linalg as scipy_linalg
 
 
 DENSE_MEMORY_BUDGET_FRACTION = 0.8
 DENSE_WORKSPACE_MATRIX_FACTOR = 6
-LAPACK_DSYEVD_LINEAR_WORK_FACTOR = 6
-LAPACK_DSYEVD_QUADRATIC_WORK_FACTOR = 2
+DENSE_EIGH_DRIVER = "evr"
+LAPACK_DSYEVR_WORK_FACTOR = 26
+LAPACK_DSYEVR_IWORK_FACTOR = 10
 
 
 def _read_memory_counter(path: Path) -> int | None:
@@ -126,39 +128,52 @@ def available_host_memory_bytes() -> int | None:
 
 
 def dense_factorization_memory_bytes(dimension: int) -> int:
-    """Conservative incremental peak-memory estimate for ``numpy.linalg.eigh``."""
+    """Conservative incremental peak-memory estimate for dense ``DSYEVR``."""
 
     matrix_bytes = dimension * dimension * np.dtype(np.float64).itemsize
     return DENSE_WORKSPACE_MATRIX_FACTOR * matrix_bytes
 
 
-def dense_eigh_lwork_elements(dimension: int) -> int:
-    """Minimum DSYEVD floating-point workspace when eigenvectors are requested."""
+def dense_eigh_workspace_elements(dimension: int) -> tuple[int, int]:
+    """Minimum DSYEVR floating-point and integer workspaces for eigenvectors."""
 
     return (
-        1
-        + LAPACK_DSYEVD_LINEAR_WORK_FACTOR * dimension
-        + LAPACK_DSYEVD_QUADRATIC_WORK_FACTOR * dimension**2
+        max(1, LAPACK_DSYEVR_WORK_FACTOR * dimension),
+        max(1, LAPACK_DSYEVR_IWORK_FACTOR * dimension),
     )
 
 
-def numpy_linalg_uses_ilp64() -> bool:
-    """Return whether NumPy's LAPACK interface uses 64-bit Fortran integers."""
+def scipy_linalg_uses_ilp64() -> bool:
+    """Return whether SciPy's LAPACK interface uses 64-bit Fortran integers."""
 
     try:
-        from numpy.linalg import lapack_lite
+        from scipy.linalg import lapack
     except ImportError:
         return False
-    return bool(getattr(lapack_lite, "_ilp64", False))
+    return bool(getattr(lapack, "HAS_ILP64", False))
 
 
-def dense_eigh_workspace_index_safe(dimension: int) -> tuple[bool, int, str]:
-    """Check whether LAPACK can represent DSYEVD's workspace length."""
+def dense_eigh_workspace_index_safe(
+    dimension: int,
+) -> tuple[bool, int, int, str]:
+    """Check whether LAPACK can represent DSYEVR's workspace lengths."""
 
-    lwork = dense_eigh_lwork_elements(dimension)
-    integer_kind = "ILP64" if numpy_linalg_uses_ilp64() else "LP64"
+    lwork, liwork = dense_eigh_workspace_elements(dimension)
+    integer_kind = "ILP64" if scipy_linalg_uses_ilp64() else "LP64"
     limit = np.iinfo(np.int64 if integer_kind == "ILP64" else np.int32).max
-    return lwork <= limit, lwork, integer_kind
+    safe = dimension <= limit and lwork <= limit and liwork <= limit
+    return safe, lwork, liwork, integer_kind
+
+
+def dense_symmetric_eigh(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Diagonalize a real symmetric matrix with the LP64-safe DSYEVR driver."""
+
+    return scipy_linalg.eigh(
+        matrix,
+        driver=DENSE_EIGH_DRIVER,
+        overwrite_a=True,
+        check_finite=False,
+    )
 
 
 def auto_dense_is_memory_safe(dimension: int) -> tuple[bool, int, int | None]:
@@ -170,13 +185,16 @@ def auto_dense_is_memory_safe(dimension: int) -> tuple[bool, int, int | None]:
 
 def format_dense_memory_selection(dimension: int) -> tuple[bool, str]:
     memory_safe, estimate, available = auto_dense_is_memory_safe(dimension)
-    workspace_safe, lwork, integer_kind = dense_eigh_workspace_index_safe(dimension)
+    workspace_safe, lwork, liwork, integer_kind = dense_eigh_workspace_index_safe(
+        dimension
+    )
     available_text = f"{available / 1024**3:.3f} GiB" if available is not None else "unknown"
     message = (
         f"peak_increment={estimate / 1024**3:.3f} GiB, "
         f"available={available_text}, "
         f"budget_fraction={DENSE_MEMORY_BUDGET_FRACTION:.2f}, "
-        f"lapack_integer={integer_kind}, lwork={lwork}, "
+        f"lapack_driver=DSYEVR, lapack_integer={integer_kind}, "
+        f"lwork={lwork}, liwork={liwork}, "
         f"workspace_index_safe={workspace_safe}"
     )
     return memory_safe and workspace_safe, message

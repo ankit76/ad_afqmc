@@ -175,7 +175,21 @@ def test_restricted_dense_and_lanczos_factorizations_match():
     ) @ lanczos.modes.reshape(lanczos.rank, -1)
     assert dense.rank == 4
     assert lanczos.rank == dense.rank
+    assert dense.solver == "dense"
+    assert dense.dense_driver == "evr"
+    assert lanczos.dense_driver is None
     np.testing.assert_allclose(lanczos_kernel, dense_kernel, rtol=2.0e-10, atol=2.0e-12)
+
+
+def test_restricted_dense_kernel_is_fortran_contiguous():
+    dense_trial, _, expected, _ = _make_dense_and_mode_trials(seed=822)
+
+    kernel, _, _ = cisd_modes_module._restricted_k_matrix(
+        np.asarray(dense_trial.ci2)
+    )
+
+    assert kernel.flags.f_contiguous
+    np.testing.assert_allclose(kernel, expected, rtol=0.0, atol=0.0)
 
 
 def test_restricted_auto_solver_respects_available_host_memory(monkeypatch):
@@ -212,6 +226,8 @@ def test_restricted_auto_solver_respects_available_host_memory(monkeypatch):
 
     assert lanczos.solver == "lanczos"
     assert dense.solver == "dense"
+    assert lanczos.dense_driver is None
+    assert dense.dense_driver == "evr"
 
 
 def test_restricted_auto_solver_retries_lanczos_after_dense_memory_error(monkeypatch):
@@ -230,7 +246,7 @@ def test_restricted_auto_solver_retries_lanczos_after_dense_memory_error(monkeyp
         dense_attempts += 1
         raise MemoryError("mock dense allocation failure")
 
-    monkeypatch.setattr(cisd_modes_module.np.linalg, "eigh", fail_dense)
+    monkeypatch.setattr(cisd_modes_module, "dense_symmetric_eigh", fail_dense)
     factorization = factorize_cisd_k_modes(
         amplitudes,
         threshold=None,
