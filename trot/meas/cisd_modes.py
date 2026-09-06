@@ -814,6 +814,13 @@ def energy_kernel_rw_rh(
     return common.base + jnp.sum(chol_terms, dtype=jnp.complex128)
 
 
+@partial(
+    jax.jit,
+    static_argnames=("chol_batch_size",),
+    # Compile setup as a whole to discard the unused common.base work.
+    # Avoid profiling copies of large inputs only for this setup call.
+    compiler_options={"xla_gpu_autotune_level": 0},
+)
 def _build_reference_chol_scores(
     ham_data: HamChol,
     meas_ctx: CisdModeMeasCtx,

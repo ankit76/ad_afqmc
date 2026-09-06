@@ -726,6 +726,40 @@ def test_pair_sampling_config_validation_and_factory_opt_in():
         build_mode_meas_ctx(ham, trial, energy_sampling=invalid_sampling)
 
 
+@pytest.mark.parametrize("mixed_precision", [False, True])
+@pytest.mark.parametrize("nocc_t_core,nvir_t_outer", [(0, 0), (1, 2)])
+@pytest.mark.parametrize("chol_batch_size", [4, 16])
+def test_compiled_reference_scores_match_direct_cholesky_terms(
+    mixed_precision, nocc_t_core, nvir_t_outer, chol_batch_size
+):
+    from trot.meas.cisd_modes import _build_reference_chol_scores, _cisd_mode_chol_terms
+
+    _, trial, _, _ = _make_dense_and_mode_trials(
+        nocc=2,
+        nvir=3,
+        nocc_t_core=nocc_t_core,
+        nvir_t_outer=nvir_t_outer,
+        mode_dtype=jnp.float32 if mixed_precision else jnp.float64,
+    )
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(920), norb=trial.norb, n_chol=7, basis="restricted"
+    )
+    cfg = CisdMeasCfg(
+        memory_mode="high",
+        mixed_real_dtype=jnp.float32 if mixed_precision else jnp.float64,
+        mixed_complex_dtype=jnp.complex64 if mixed_precision else jnp.complex128,
+    )
+    ctx = build_mode_meas_ctx(ham, trial, cfg=cfg, n_mode_chunks=2)
+    reference_walker = jnp.eye(trial.norb, trial.nocc_full, dtype=jnp.complex128)
+    common = _cisd_mode_energy_common(reference_walker, ham, ctx, trial)
+    direct = _cisd_mode_chol_terms(common, ham.chol, ctx.rot_chol, ctx.lci1, ctx, trial)
+    expected = jnp.maximum(jnp.abs(direct).astype(jnp.float64), 1.0e-300)
+    actual = _build_reference_chol_scores(ham, ctx, trial, chol_batch_size=chol_batch_size)
+    tolerance = 2.0e-6 if mixed_precision else 2.0e-12
+    np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+    assert actual.dtype == jnp.float64
+
+
 def test_ranked_arbitrary_head_uses_indices_without_reordering_cholesky_storage():
     _, trial, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
     ham = testing.make_random_ham_chol(
