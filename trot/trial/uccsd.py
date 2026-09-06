@@ -164,6 +164,7 @@ def make_init_prop_state(trial_coeff: tuple[ArrayLike, ArrayLike], t1: ArrayLike
         trial_data: Any,
         meas_ops: MeasOps,
         params: QmcParamsBase,
+        meas_ctx: Any | None = None,
         initial_walkers: Any | None = None,
         initial_e_estimate: jax.Array | None = None,
         rdm1: jax.Array | None = None,
@@ -184,7 +185,8 @@ def make_init_prop_state(trial_coeff: tuple[ArrayLike, ArrayLike], t1: ArrayLike
             initial_walkers, trial_data
         )
 
-        meas_ctx = meas_ops.build_meas_ctx(ham_data, trial_data)
+        if meas_ctx is None:
+            meas_ctx = meas_ops.build_meas_ctx(ham_data, trial_data)
         e_kernel = meas_ops.require_kernel(k_energy)
         e_samples = jnp.real(
             wk.vmap_chunked(e_kernel, n_chunks=params.n_chunks, in_axes=(0, None, None, None))(

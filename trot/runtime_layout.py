@@ -324,6 +324,7 @@ def _init_state_from_prebuilt_ctx(
         trial_data=trial_data,
         meas_ops=job.meas_ops,
         params=job.params,
+        meas_ctx=meas_ctx,
         mesh=job.mesh,
         initial_walkers=initial_walkers,
         initial_e_estimate=jnp.mean(e_samples),
@@ -396,6 +397,7 @@ class DefaultRuntimeLayout:
                 trial_data=job.trial_data,
                 meas_ops=job.meas_ops,
                 params=job.params,
+                meas_ctx=meas_ctx,
                 mesh=job.mesh,
             )
             _setup_end(t_state, "propagation state ready")

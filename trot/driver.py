@@ -883,6 +883,7 @@ def run_qmc(
             trial_data=trial_data,
             meas_ops=meas_ops,
             params=params,
+            meas_ctx=meas_ctx,
             mesh=mesh,
         )
 
@@ -1305,6 +1306,7 @@ def run_mixed_estimator_qmc(
             trial_data=guide_data,
             meas_ops=guide_meas_ops,
             params=params,
+            meas_ctx=guide_meas_ctx,
             mesh=mesh,
         )
 
@@ -1804,6 +1806,7 @@ def run_mixed_qmc(
             trial_data=guide_data,
             meas_ops=guide_meas_ops,
             params=params,
+            meas_ctx=guide_meas_ctx,
             mesh=mesh,
         )
 
@@ -2192,6 +2195,7 @@ def run_qmc_fp(
             trial_data=trial_data,
             meas_ops=meas_ops,
             params=params,
+            meas_ctx=meas_ctx,
         )
 
     block_fn_sr = block_fn
@@ -2228,6 +2232,7 @@ def run_qmc_fp(
                 trial_data=trial_data,
                 meas_ops=meas_ops,
                 params=params,
+                meas_ctx=meas_ctx,
             )
 
         block_e_all = block_e_all.at[i, 0].set(jnp.array(state.e_estimate))

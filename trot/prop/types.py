@@ -94,6 +94,7 @@ class InitPropState(Protocol):
         trial_data: Any,
         meas_ops: MeasOps,
         params: Any,
+        meas_ctx: Any | None = None,
         initial_walkers: Any | None = None,
         initial_e_estimate: jax.Array | None = None,
         rdm1: jax.Array | None = None,

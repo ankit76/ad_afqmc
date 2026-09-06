@@ -123,6 +123,13 @@ selects the appropriate `trial_ops` / `meas_ops` /
 **QMC execution** (`driver.py`) runs the equilibration and sampling loops,
 calling the JIT compiled `block` function with `jax.lax.scan`.
 
+The runtime and direct drivers pass the already built measurement context
+to `PropOps.init_prop_state` through its optional `meas_ctx` keyword. State
+initialization reuses this context for the initial energy instead of building
+a second copy. Standalone initialization can omit `meas_ctx` and build it as
+needed. Custom initializers should accept this keyword as part of the
+`InitPropState` protocol.
+
 ---
 
 ## Key objects

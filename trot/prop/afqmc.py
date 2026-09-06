@@ -24,13 +24,14 @@ def init_prop_state(
     trial_data: Any,
     meas_ops: MeasOps,
     params: QmcParamsBase,
+    meas_ctx: Any | None = None,
     initial_walkers: Any | None = None,
     initial_e_estimate: jax.Array | None = None,
     rdm1: jax.Array | None = None,
     mesh: Mesh | None = None,
 ) -> PropState:
     """
-    Initialize AFQMC propagation state.
+    Initialize AFQMC propagation state, reusing a supplied measurement context.
     """
     n_walkers = params.n_walkers
     seed = params.seed
@@ -50,13 +51,18 @@ def init_prop_state(
     if initial_e_estimate is not None:
         e_est = jnp.asarray(initial_e_estimate)
     else:
-        meas_ctx = meas_ops.build_meas_ctx(ham_data, trial_data)
+        if meas_ctx is None:
+            meas_ctx = meas_ops.build_meas_ctx(ham_data, trial_data)
         e_kernel = meas_ops.require_kernel(k_energy)
         walker_0 = wk.take_walkers(initial_walkers, jnp.array([0]))
+        # Initial energy is a one-time setup calculation. Compile it together
+        # without profiling copies of large Hamiltonian/trial operands.
+        initial_energy = jax.jit(
+            wk.vmap_chunked(e_kernel, n_chunks=1, in_axes=(0, None, None, None)),
+            compiler_options={"xla_gpu_autotune_level": 0},
+        )
         e_samples = jnp.real(
-            wk.vmap_chunked(e_kernel, n_chunks=1, in_axes=(0, None, None, None))(
-                walker_0, ham_data, meas_ctx, trial_data
-            )
+            initial_energy(walker_0, ham_data, meas_ctx, trial_data)
         )
         e_est = jnp.mean(e_samples)
 

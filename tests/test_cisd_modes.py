@@ -536,6 +536,118 @@ def test_full_rank_double_mode_force_bias_and_energy_match_dense(
     np.testing.assert_allclose(mode_energy, dense_energy, rtol=2.0e-12, atol=2.0e-12)
 
 
+@pytest.mark.parametrize("mixed_precision", [False, True])
+@pytest.mark.parametrize("nocc_t_core,nvir_t_outer", [(0, 0), (1, 2)])
+def test_initial_energy_matches_first_walker_deterministic_cisd_energy(
+    mixed_precision, nocc_t_core, nvir_t_outer
+):
+    from trot.prop.afqmc import init_prop_state
+    from trot.prop.types import QmcParams
+
+    _, trial, _, _ = _make_dense_and_mode_trials(
+        nocc=2,
+        nvir=3,
+        nocc_t_core=nocc_t_core,
+        nvir_t_outer=nvir_t_outer,
+        mode_dtype=jnp.float32 if mixed_precision else jnp.float64,
+    )
+    sys = System(
+        norb=trial.norb,
+        nelec=(trial.nocc_full, trial.nocc_full),
+        walker_kind="restricted",
+    )
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(877), norb=trial.norb, n_chol=7, basis="restricted"
+    )
+    meas_ops = make_cisd_mode_meas_ops(
+        sys,
+        mixed_precision=mixed_precision,
+        n_mode_chunks=2,
+        energy_sampling=CisdModePairSamplingCfg(
+            chol_head_size=2, pair_sample_size=16, guide_chol_batch_size=2
+        ),
+    )
+    walkers = jnp.stack(
+        [
+            testing.make_restricted_walker_near_ref(
+                jax.random.PRNGKey(seed), trial.norb, trial.nocc_full, mix=0.2
+            )
+            for seed in (878, 879)
+        ]
+    )
+    ctx = meas_ops.build_meas_ctx(ham, trial)
+    expected = jnp.real(mode_energy_kernel(walkers[0], ham, ctx, trial))
+    state = init_prop_state(
+        sys=sys,
+        ham_data=ham,
+        trial_ops=make_cisd_mode_trial_ops(sys),
+        trial_data=trial,
+        meas_ops=meas_ops,
+        params=QmcParams(n_walkers=2, n_chunks=2, seed=880),
+        initial_walkers=walkers,
+    )
+    tolerance = 2.0e-6 if mixed_precision else 2.0e-12
+    np.testing.assert_allclose(state.e_estimate, expected, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(
+        state.pop_control_ene_shift, expected, rtol=tolerance, atol=tolerance
+    )
+    np.testing.assert_array_equal(state.walkers, walkers)
+
+
+@pytest.mark.parametrize("mixed_precision", [False, True])
+def test_runtime_initialization_builds_cisd_measurement_context_once(mixed_precision):
+    from types import SimpleNamespace
+
+    from trot.prop.afqmc import make_prop_ops
+    from trot.prop.types import QmcParams
+    from trot.runtime_layout import DefaultRuntimeLayout
+
+    _, trial, _, _ = _make_dense_and_mode_trials(
+        nocc=2, nvir=3, nocc_t_core=1, nvir_t_outer=2,
+        mode_dtype=jnp.float32 if mixed_precision else jnp.float64,
+    )
+    sys = System(
+        norb=trial.norb, nelec=(trial.nocc_full, trial.nocc_full), walker_kind="restricted"
+    )
+    ham = testing.make_random_ham_chol(
+        jax.random.PRNGKey(881), norb=trial.norb, n_chol=7, basis="restricted"
+    )
+    meas_ops = make_cisd_mode_meas_ops(
+        sys, mixed_precision=mixed_precision, n_mode_chunks=2,
+        energy_sampling=CisdModePairSamplingCfg(
+            chol_head_size=2, pair_sample_size=16, guide_chol_batch_size=2
+        ),
+    )
+    built_contexts = []
+
+    def build_context(ham_data, trial_data):
+        assert not built_contexts, "Runtime initialization rebuilt the measurement context."
+        ctx = meas_ops.build_meas_ctx(ham_data, trial_data)
+        built_contexts.append(ctx)
+        return ctx
+
+    job = SimpleNamespace(
+        sys=sys, ham_data=ham, trial_data=trial,
+        trial_ops=make_cisd_mode_trial_ops(sys),
+        meas_ops=replace(meas_ops, build_meas_ctx=build_context),
+        prop_ops=make_prop_ops("restricted", "restricted"),
+        params=QmcParams(n_walkers=2, n_chunks=2, seed=882),
+        params_cls=QmcParams, mesh=None,
+    )
+    layout = DefaultRuntimeLayout()
+    prepared = layout.prepare(job)
+    assert len(built_contexts) == 1
+    assert prepared.meas_ctx is built_contexts[0]
+    expected = jnp.real(mode_energy_kernel(prepared.state.walkers[0], ham, prepared.meas_ctx, trial))
+    tolerance = 2.0e-6 if mixed_precision else 2.0e-12
+    np.testing.assert_allclose(prepared.state.e_estimate, expected, rtol=tolerance, atol=tolerance)
+
+    reused = layout.prepare(job, meas_ctx=prepared.meas_ctx, prop_ctx=prepared.prop_ctx)
+    assert len(built_contexts) == 1
+    assert reused.meas_ctx is prepared.meas_ctx
+    np.testing.assert_allclose(reused.state.e_estimate, expected, rtol=tolerance, atol=tolerance)
+
+
 def test_mode_measurement_mixed_precision_policy_and_accuracy():
     dense_trial, mode_double, _, _ = _make_dense_and_mode_trials(nocc=2, nvir=3)
     mode_mixed = CisdModeTrial(
