@@ -7,8 +7,10 @@ from typing import Any, Callable, NamedTuple, Tuple
 import jax
 import jax.numpy as jnp
 from jax import lax, tree_util
+from jax.sharding import Mesh, PartitionSpec as P
 
 from ..ham.chol import HamChol
+from ..sharding import cholesky_model_mesh
 from .utils import taylor_expm_action
 
 # contains low level details of AFQMC chol propagation
@@ -137,14 +139,17 @@ def _make_vhs_split_flat(
 
 @partial(
     jax.jit,
-    static_argnames=("batch_size",),
+    static_argnames=("batch_size", "mesh"),
     # A slice/transpose fusion still takes the full chol tensor as input.
     # Profiling it duplicates that input even when its output is one batch.
     # Scope this option to the top-level, one-time setup compilation only.
     compiler_options={"xla_gpu_autotune_level": 0},
 )
 def _sum_chol_squares(
-    chol: jax.Array, *, batch_size: int = _CHOLESKY_SQUARE_BATCH_SIZE
+    chol: jax.Array,
+    *,
+    batch_size: int = _CHOLESKY_SQUARE_BATCH_SIZE,
+    mesh: Mesh | None = None,
 ) -> jax.Array:
     """Sum L_g @ L_g with batch-sized transpose/GEMM intermediates.
 
@@ -152,11 +157,26 @@ def _sum_chol_squares(
     avoids transposing all Cholesky vectors into a second full-sized tensor.
     Slice inside the loop so an uneven last batch does not copy the prefix
     of the full input. The contraction is bilinear, including for complex L.
+    With a model mesh, slice within each shard and reduce only the final matrix.
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be positive.")
+    if chol.shape[0] == 0:
+        return jnp.zeros(chol.shape[1:], dtype=chol.dtype)
+    if mesh is not None:
+        def local_sum(block):
+            return lax.psum(_sum_chol_squares_local(block, batch_size), "model")
+
+        return jax.shard_map(
+            local_sum, mesh=mesh, in_specs=P("model"), out_specs=P()
+        )(chol)
+    return _sum_chol_squares_local(chol, batch_size)
+
+
+def _sum_chol_squares_local(chol: jax.Array, batch_size: int) -> jax.Array:
     n_chol = chol.shape[0]
-    total = jnp.zeros(chol.shape[1:], dtype=chol.dtype)
+    # Preserve manual-axis variance when this loop runs inside shard_map.
+    total = jnp.zeros_like(chol, shape=chol.shape[1:])
     if n_chol == 0:
         return total
     if n_chol <= batch_size:
@@ -178,7 +198,9 @@ def _sum_chol_squares(
 def _get_h1_eff(ham_data: HamChol, mf: jax.Array) -> jax.Array:
     match ham_data.basis:
         case "restricted" | "generalized":
-            v0m = 0.5 * _sum_chol_squares(ham_data.chol)
+            v0m = 0.5 * _sum_chol_squares(
+                ham_data.chol, mesh=cholesky_model_mesh(ham_data.chol)
+            )
             mf_r = (1.0j * mf).real
             v1m = jnp.einsum("g,gik->ik", mf_r, ham_data.chol, optimize="optimal")
             h1_eff = ham_data.h1 - v0m - v1m

@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax, tree_util
+from jax.sharding import Mesh, PartitionSpec as P
 
 from .. import walkers as wk
 from ..core.ops import (
@@ -23,16 +24,19 @@ from ..core.ops import (
     d_energy_walker_guide_ess,
     d_energy_walker_guide_max_correction,
     k_energy,
+    k_energy_init,
     k_force_bias,
 )
 from ..core.system import System
 from ..ham.chol import HamChol
+from ..sharding import cholesky_model_mesh
 from ..trial.cisd_modes import CisdModeTrial, mode_apply, mode_quadratic
 from ..trial.cisd_modes import overlap_r as cisd_mode_overlap_r
 from .cisd import CisdMeasCfg, _energy_gl_batched_realimag, _force_bias_chol_contract_high_realimag
 
 _CISD_MODE_MEAS_CFG_ATTR = "_cisd_mode_meas_cfg"
 _CISD_SETUP_CHOL_BATCH_SIZE = 256
+_CISD_INITIAL_ENERGY_CHOL_BATCH_SIZE = 256
 
 
 def _greens_restricted(walker: jax.Array, nocc: int) -> jax.Array:
@@ -67,6 +71,8 @@ class CisdModeMeasCtx:
     cfg: CisdMeasCfg
     n_mode_chunks: int
     energy_sampling: CisdModePairSamplingCfg | None
+    # Static layout for setup kernels; ordinary measurements use array sharding.
+    setup_mesh: Mesh | None = None
 
     def tree_flatten(self):
         children = (
@@ -77,12 +83,12 @@ class CisdModeMeasCtx:
             self.chol_tail_indices,
             self.chol_tail_prob,
         )
-        aux = (self.cfg, self.n_mode_chunks, self.energy_sampling)
+        aux = (self.cfg, self.n_mode_chunks, self.energy_sampling, self.setup_mesh)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        cfg, n_mode_chunks, energy_sampling = aux
+        cfg, n_mode_chunks, energy_sampling, setup_mesh = aux
         (
             rot_chol,
             lci1,
@@ -101,6 +107,7 @@ class CisdModeMeasCtx:
             cfg=cfg,
             n_mode_chunks=n_mode_chunks,
             energy_sampling=energy_sampling,
+            setup_mesh=setup_mesh,
         )
 
 
@@ -308,7 +315,7 @@ def get_cisd_mode_meas_cfg(meas_ops: MeasOps) -> CisdMeasCfg | None:
 
 @partial(
     jax.jit,
-    static_argnames=("vir_start", "vir_stop", "batch_size"),
+    static_argnames=("vir_start", "vir_stop", "batch_size", "mesh"),
     # Setup slice fusions take the full Cholesky tensor as input. Avoid
     # autotuner copies of that input, scoped to this one-time compilation.
     compiler_options={"xla_gpu_autotune_level": 0},
@@ -320,11 +327,29 @@ def _build_lci1(
     vir_start: int,
     vir_stop: int,
     batch_size: int = _CISD_SETUP_CHOL_BATCH_SIZE,
+    mesh: Mesh | None = None,
 ) -> jax.Array:
-    """Contract singles in Cholesky batches without a full virtual slice."""
+    """Contract singles in batches, locally within model shards when mesh is set."""
     if batch_size <= 0:
         raise ValueError("batch_size must be positive.")
+    local_contract = partial(
+        _build_lci1_local, vir_start=vir_start, vir_stop=vir_stop, batch_size=batch_size
+    )
+    if mesh is not None:
+        return jax.shard_map(
+            local_contract, mesh=mesh, in_specs=(P("model"), P()), out_specs=P("model")
+        )(chol, ci1)
+    return local_contract(chol, ci1)
 
+
+def _build_lci1_local(
+    chol: jax.Array,
+    ci1: jax.Array,
+    *,
+    vir_start: int,
+    vir_stop: int,
+    batch_size: int,
+) -> jax.Array:
     def contract(block):
         return jnp.einsum(
             "git,pt->gip", block[:, :, vir_start:vir_stop], ci1, optimize="optimal"
@@ -370,6 +395,7 @@ def build_meas_ctx(
         raise ValueError("CISD mode MeasOps requires HamChol.basis == 'restricted'.")
 
     chol = ham_data.chol
+    setup_mesh = cholesky_model_mesh(chol)
     n_chol = int(chol.shape[0])
     if energy_sampling is not None and energy_sampling.chol_head_size > n_chol:
         raise ValueError(
@@ -381,6 +407,7 @@ def build_meas_ctx(
         trial_data.ci1,
         vir_start=trial_data.vir_act_slice.start,
         vir_stop=trial_data.vir_act_slice.stop,
+        mesh=setup_mesh,
     )
     meas_ctx = CisdModeMeasCtx(
         rot_chol=rot_chol,
@@ -392,6 +419,7 @@ def build_meas_ctx(
         cfg=cfg,
         n_mode_chunks=min(int(n_mode_chunks), trial_data.mode_rank),
         energy_sampling=energy_sampling,
+        setup_mesh=setup_mesh,
     )
     if energy_sampling is not None:
         guide_scores = _build_reference_chol_scores(
@@ -500,7 +528,8 @@ def mode_quadratic_matrices(
     result_dtype = (
         jnp.complex128 if jnp.issubdtype(matrices.dtype, jnp.complexfloating) else jnp.float64
     )
-    zero = jnp.zeros((matrices_flat.shape[0],), dtype=result_dtype)
+    # Each device can carry a different partial sum under shard_map.
+    zero = jnp.zeros_like(matrices_flat, shape=(matrices_flat.shape[0],), dtype=result_dtype)
 
     def scan_body(total, chunk_index):
         is_larger = chunk_index < n_larger_chunks
@@ -814,6 +843,72 @@ def energy_kernel_rw_rh(
     return common.base + jnp.sum(chol_terms, dtype=jnp.complex128)
 
 
+def initial_energy_kernel_rw_rh(
+    walker: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: CisdModeMeasCtx,
+    trial_data: CisdModeTrial,
+) -> jax.Array:
+    """Same deterministic energy with bounded Cholesky workspace for initialization."""
+    common = _cisd_mode_energy_common(walker, ham_data, meas_ctx, trial_data)
+    if ham_data.chol.shape[0] == 0:
+        return common.base
+    if meas_ctx.setup_mesh is not None:
+        def local_sum(common, chol, rot_chol, lci1, trial):
+            total = _initial_energy_chol_sum(common, chol, rot_chol, lci1, meas_ctx, trial)
+            return lax.psum(total, "model")
+
+        total = jax.shard_map(
+            local_sum,
+            mesh=meas_ctx.setup_mesh,
+            in_specs=(P(), P("model"), P("model"), P("model"), P()),
+            out_specs=P(),
+        )(common, ham_data.chol, meas_ctx.rot_chol, meas_ctx.lci1, trial_data)
+    else:
+        total = _initial_energy_chol_sum(
+            common, ham_data.chol, meas_ctx.rot_chol, meas_ctx.lci1, meas_ctx, trial_data
+        )
+    # common.base already contains the global one-body and direct terms.
+    # Reduce only residual Cholesky contributions, then add that base once.
+    return common.base + total
+
+
+def _initial_energy_chol_sum(
+    common: CisdModeEnergyCommon,
+    chol: jax.Array,
+    rot_chol: jax.Array,
+    lci1: jax.Array,
+    meas_ctx: CisdModeMeasCtx,
+    trial_data: CisdModeTrial,
+) -> jax.Array:
+    def sum_terms(chol, rot_chol, lci1):
+        terms = _cisd_mode_chol_terms(common, chol, rot_chol, lci1, meas_ctx, trial_data)
+        return jnp.sum(terms, dtype=jnp.complex128)
+
+    n_chol = chol.shape[0]
+    batch_size = _CISD_INITIAL_ENERGY_CHOL_BATCH_SIZE
+    if n_chol <= batch_size:
+        return sum_terms(chol, rot_chol, lci1)
+
+    def accumulate(index, total):
+        start = index * batch_size
+        return total + sum_terms(
+            lax.dynamic_slice_in_dim(chol, start, batch_size, axis=0),
+            lax.dynamic_slice_in_dim(rot_chol, start, batch_size, axis=0),
+            lax.dynamic_slice_in_dim(lci1, start, batch_size, axis=0),
+        )
+
+    # Reduce each batch to a scalar; never collect full-Cholesky energy tensors.
+    n_batches, remainder = divmod(n_chol, batch_size)
+    total = lax.fori_loop(
+        0, n_batches, accumulate, jnp.zeros_like(chol, shape=(), dtype=jnp.complex128)
+    )
+    if remainder:
+        start = n_batches * batch_size
+        total = total + sum_terms(chol[start:], rot_chol[start:], lci1[start:])
+    return total
+
+
 @partial(
     jax.jit,
     static_argnames=("chol_batch_size",),
@@ -830,6 +925,8 @@ def _build_reference_chol_scores(
 ) -> jax.Array:
     """Build bounded-memory HF-reference scores for every Cholesky vector."""
     n_chol = int(ham_data.chol.shape[0])
+    if n_chol == 0:
+        return jnp.empty((0,), dtype=jnp.float64)
     reference_walker = jnp.eye(
         trial_data.norb,
         trial_data.nocc_full,
@@ -841,6 +938,27 @@ def _build_reference_chol_scores(
         meas_ctx,
         trial_data,
     )
+    if meas_ctx.setup_mesh is not None:
+        def local_scores(common, chol, rot_chol, lci1, trial):
+            n_local = chol.shape[0]
+
+            def term(index):
+                return _cisd_mode_chol_terms(
+                    common, chol[index][None], rot_chol[index][None], lci1[index][None],
+                    meas_ctx, trial,
+                )[0]
+
+            terms = wk.vmap_chunked(
+                term, n_chunks=max(1, math.ceil(n_local / chol_batch_size)), in_axes=0
+            )(jnp.arange(n_local, dtype=jnp.int32))
+            return jnp.maximum(jnp.abs(terms).astype(jnp.float64), 1.0e-300)
+
+        return jax.shard_map(
+            local_scores,
+            mesh=meas_ctx.setup_mesh,
+            in_specs=(P(), P("model"), P("model"), P("model"), P()),
+            out_specs=P("model"),
+        )(common, ham_data.chol, meas_ctx.rot_chol, meas_ctx.lci1, trial_data)
     indices = jnp.arange(n_chol, dtype=jnp.int32)
     n_chunks = max(1, math.ceil(n_chol / chol_batch_size))
     terms = _cisd_mode_chol_index_terms(
@@ -1709,7 +1827,8 @@ def make_cisd_mode_meas_ops(
 ) -> MeasOps:
     """Build retained-mode CISD measurements.
 
-    The deterministic default batches every Cholesky vector. Passing
+    The deterministic default evaluates all Cholesky vectors together; AFQMC
+    initialization uses a separate batched kernel for the same energy. Passing
     ``energy_sampling`` instead evaluates its Cholesky head exactly and uses
     unbiased weighted walker--Cholesky sampling for the tail. When
     ``energy_tuning`` is also supplied, that estimator is used during
@@ -1752,7 +1871,11 @@ def make_cisd_mode_meas_ops(
             n_mode_chunks=n_mode_chunks,
             energy_sampling=energy_sampling,
         ),
-        kernels={k_force_bias: force_bias_kernel_rw_rh, k_energy: energy_kernel_rw_rh},
+        kernels={
+            k_force_bias: force_bias_kernel_rw_rh,
+            k_energy: energy_kernel_rw_rh,
+            k_energy_init: initial_energy_kernel_rw_rh,
+        },
         observables={},
         block_energy=pair_sampled_block_energy if energy_sampling is not None else None,
         retune_block_energy=retune_block_energy,

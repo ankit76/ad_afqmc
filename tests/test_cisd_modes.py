@@ -18,6 +18,7 @@ from trot.core.ops import (
     d_energy_walker_guide_ess,
     d_energy_walker_guide_max_correction,
     k_energy,
+    k_energy_init,
     k_force_bias,
 )
 from trot.core.system import System
@@ -43,6 +44,7 @@ from trot.meas.cisd_modes import (
     energy_kernel_rw_rh as mode_energy_kernel,
     force_bias_kernel_rw_rh as mode_force_bias_kernel,
     get_cisd_mode_meas_cfg,
+    initial_energy_kernel_rw_rh as mode_initial_energy_kernel,
     make_cisd_mode_meas_ops,
     pair_sampled_block_energy,
     retune_cisd_mode_pair_sampling,
@@ -537,6 +539,40 @@ def test_full_rank_double_mode_force_bias_and_energy_match_dense(
 
 
 @pytest.mark.parametrize("mixed_precision", [False, True])
+@pytest.mark.parametrize("n_chol", [0, 1, 256, 257, 513])
+@pytest.mark.parametrize("nocc_t_core,nvir_t_outer", [(0, 0), (1, 2)])
+def test_initial_energy_cholesky_batches_match_dense(
+    mixed_precision, n_chol, nocc_t_core, nvir_t_outer
+):
+    dense_trial, mode_trial, _, _ = _make_dense_and_mode_trials(
+        nocc=2, nvir=3, nocc_t_core=nocc_t_core, nvir_t_outer=nvir_t_outer,
+        mode_dtype=jnp.float32 if mixed_precision else jnp.float64,
+    )
+    rng = np.random.default_rng(875)
+    chol = 0.03 * rng.normal(size=(n_chol, mode_trial.norb, mode_trial.norb))
+    ham = HamChol(
+        h0=jnp.asarray(0.25), h1=jnp.eye(mode_trial.norb),
+        chol=jnp.asarray(chol), basis="restricted",
+    )
+    cfg = CisdMeasCfg(
+        memory_mode="high",
+        mixed_real_dtype=jnp.float32 if mixed_precision else jnp.float64,
+        mixed_complex_dtype=jnp.complex64 if mixed_precision else jnp.complex128,
+        mixed_real_dtype_testing=jnp.float32 if mixed_precision else jnp.float64,
+        mixed_complex_dtype_testing=jnp.complex64 if mixed_precision else jnp.complex128,
+    )
+    dense_ctx = build_dense_meas_ctx(ham, dense_trial, cfg=cfg)
+    mode_ctx = build_mode_meas_ctx(ham, mode_trial, cfg=cfg, n_mode_chunks=2)
+    walker = testing.make_restricted_walker_near_ref(
+        jax.random.PRNGKey(876), mode_trial.norb, mode_trial.nocc_full, mix=0.2
+    )
+    expected = jax.jit(dense_energy_kernel)(walker, ham, dense_ctx, dense_trial)
+    actual = jax.jit(mode_initial_energy_kernel)(walker, ham, mode_ctx, mode_trial)
+    tolerance = 2.0e-6 if mixed_precision else 2.0e-12
+    np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+
+
+@pytest.mark.parametrize("mixed_precision", [False, True])
 @pytest.mark.parametrize("nocc_t_core,nvir_t_outer", [(0, 0), (1, 2)])
 def test_initial_energy_matches_first_walker_deterministic_cisd_energy(
     mixed_precision, nocc_t_core, nvir_t_outer
@@ -557,7 +593,7 @@ def test_initial_energy_matches_first_walker_deterministic_cisd_energy(
         walker_kind="restricted",
     )
     ham = testing.make_random_ham_chol(
-        jax.random.PRNGKey(877), norb=trial.norb, n_chol=7, basis="restricted"
+        jax.random.PRNGKey(877), norb=trial.norb, n_chol=257, basis="restricted"
     )
     meas_ops = make_cisd_mode_meas_ops(
         sys,
@@ -576,6 +612,8 @@ def test_initial_energy_matches_first_walker_deterministic_cisd_energy(
         ]
     )
     ctx = meas_ops.build_meas_ctx(ham, trial)
+    assert meas_ops.require_kernel(k_energy) is mode_energy_kernel
+    assert meas_ops.require_kernel(k_energy_init) is mode_initial_energy_kernel
     expected = jnp.real(mode_energy_kernel(walkers[0], ham, ctx, trial))
     state = init_prop_state(
         sys=sys,

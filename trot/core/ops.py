@@ -263,6 +263,8 @@ class BlockEnergyRetuneFn(Protocol):
 
 # usual kernel names
 k_energy = "energy"
+# Optional equivalent energy implementation used only by AFQMC initialization.
+k_energy_init = "energy_init"
 k_force_bias = "force_bias"
 d_energy_sampling_noise = "energy_sampling_noise"
 d_energy_head_guard_count = "energy_head_guard_count"

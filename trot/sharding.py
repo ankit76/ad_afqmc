@@ -54,6 +54,21 @@ def has_model_axis(mesh: Mesh | None) -> bool:
     return mesh is not None and "model" in mesh.axis_names
 
 
+def cholesky_model_mesh(chol: ArrayLike) -> Mesh | None:
+    """Inspect a concrete setup input for first-axis-only model sharding.
+
+    Call before JIT tracing; Auto-axis tracers do not retain input placement.
+    Pass the returned mesh explicitly to compiled setup helpers.
+    """
+    sharding = getattr(chol, "sharding", None)
+    if not isinstance(sharding, NamedSharding) or not has_model_axis(sharding.mesh):
+        return None
+    spec = tuple(sharding.spec)
+    if not spec or spec[0] != "model" or any(axis is not None for axis in spec[1:]):
+        return None
+    return sharding.mesh if _mesh_axis_size(sharding.mesh, "model") > 1 else None
+
+
 def _mesh_axis_size(mesh: Mesh, axis_name: str) -> int:
     return dict(zip(mesh.axis_names, mesh.devices.shape, strict=True))[axis_name]
 

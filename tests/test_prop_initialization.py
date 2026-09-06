@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from trot.core.ops import MeasOps, TrialOps, k_energy
+from trot.core.ops import MeasOps, TrialOps, k_energy, k_energy_init
 from trot.core.system import System
 from trot.prop.afqmc import init_prop_state as init_afqmc
 from trot.prop.cpmc import init_prop_state as init_cpmc
@@ -69,6 +69,40 @@ def test_initializers_reuse_supplied_context_and_preserve_standalone_fallback(ki
     changed = initialize(**kwargs, meas_ctx={"offset": context["offset"] + 2.0})
     assert len(builds) == 1
     np.testing.assert_allclose(changed.e_estimate, standalone.e_estimate + 2.0, atol=1.0e-12)
+
+
+def test_afqmc_uses_optional_initial_energy_kernel_without_replacing_regular_energy():
+    calls = []
+
+    def overlap(walker, trial):
+        return jnp.asarray(1.0 + 0.0j)
+
+    def energy(walker, ham, ctx, trial):
+        calls.append("regular")
+        return ham + jnp.sum(jnp.abs(walker) ** 2)
+
+    def initial_energy(walker, ham, ctx, trial):
+        calls.append("initial")
+        return ham + jnp.sum(jnp.abs(walker) ** 2)
+
+    meas_ops = MeasOps(
+        overlap=overlap, kernels={k_energy: energy, k_energy_init: initial_energy}
+    )
+    walkers = jnp.stack([jnp.eye(2, 1), 2.0 * jnp.eye(2, 1)])
+    ham = jnp.asarray(0.25)
+    state = init_afqmc(
+        sys=System(norb=2, nelec=(1, 1), walker_kind="restricted"),
+        ham_data=ham, trial_data=None,
+        trial_ops=TrialOps(overlap=overlap, get_rdm1=lambda trial: trial),
+        meas_ops=meas_ops, params=QmcParams(n_walkers=2, seed=905),
+        initial_walkers=walkers,
+    )
+    assert calls == ["initial"]
+    assert float(state.e_estimate) == 1.25
+    assert meas_ops.require_kernel(k_energy) is energy
+    np.testing.assert_allclose(
+        state.e_estimate, meas_ops.require_kernel(k_energy)(walkers[0], ham, None, None)
+    )
 
 
 @pytest.mark.parametrize("initialize", [init_afqmc, init_cpmc])

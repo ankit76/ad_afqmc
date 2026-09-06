@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax.sharding import Mesh
 
 from .. import walkers as wk
-from ..core.ops import MeasOps, TrialOps, k_energy, k_force_bias
+from ..core.ops import MeasOps, TrialOps, k_energy, k_energy_init, k_force_bias
 from ..core.system import System
 from ..ham.chol import HamBasis, HamChol
 from ..sharding import shard_prop_state
@@ -53,7 +53,8 @@ def init_prop_state(
     else:
         if meas_ctx is None:
             meas_ctx = meas_ops.build_meas_ctx(ham_data, trial_data)
-        e_kernel = meas_ops.require_kernel(k_energy)
+        energy_name = k_energy_init if meas_ops.has_kernel(k_energy_init) else k_energy
+        e_kernel = meas_ops.require_kernel(energy_name)
         walker_0 = wk.take_walkers(initial_walkers, jnp.array([0]))
         # Initial energy is a one-time setup calculation. Compile it together
         # without profiling copies of large Hamiltonian/trial operands.
@@ -66,6 +67,9 @@ def init_prop_state(
         )
         e_est = jnp.mean(e_samples)
 
+    # Surface asynchronous energy failures during initialization, before the
+    # runtime announces readiness or compiles propagation blocks.
+    e_est = jax.block_until_ready(e_est)
     pop_shift = e_est
 
     node_encounters = jnp.asarray(0)

@@ -130,6 +130,22 @@ a second copy. Standalone initialization can omit `meas_ctx` and build it as
 needed. Custom initializers should accept this keyword as part of the
 `InitPropState` protocol.
 
+The standard AFQMC initializer uses an optional `MeasOps.kernels["energy_init"]`
+implementation when provided, falling back to `"energy"`. This must compute
+the same deterministic local energy; it can trade speed for lower workspace
+in this one-time calculation. CISD modes use Cholesky batching here, while
+their regular `"energy"` kernel retains the full-Cholesky contractions.
+
+For a Hamiltonian sharded along the first Cholesky axis (`P("model")`),
+the setup builders detect the concrete input mesh before JIT tracing. The
+Cholesky-square sum and CISD-mode setup use `jax.shard_map` so their batches
+index each device's local vectors. The square sum reduces an orbital matrix;
+`lci1` and reference scores remain distributed; the initial energy reduces
+residual scalar contributions and adds the global base once. The CISD-mode
+context stores this setup mesh as static metadata. Direct calls to compiled
+`_sum_chol_squares` and `_build_lci1` must supply `mesh` explicitly to select
+this path. Single-device setup retains the original 256-vector batching.
+
 ---
 
 ## Key objects
