@@ -21,6 +21,7 @@ from trot.core.ops import (
     k_force_bias,
 )
 from trot.core.system import System
+from trot.ham.chol import HamChol
 from trot.meas.cisd import (
     CisdMeasCfg,
     build_meas_ctx as build_dense_meas_ctx,
@@ -448,6 +449,44 @@ def test_truncated_overlap_force_bias_and_energy_match_zero_padded_modes():
     np.testing.assert_allclose(truncated_overlap, padded_overlap, rtol=2.0e-12, atol=2.0e-12)
     np.testing.assert_allclose(truncated_fb, padded_fb, rtol=2.0e-12, atol=2.0e-12)
     np.testing.assert_allclose(truncated_energy, padded_energy, rtol=2.0e-12, atol=2.0e-12)
+
+
+@pytest.mark.parametrize("nocc_t_core,nvir_t_outer", [(0, 0), (1, 2)])
+@pytest.mark.parametrize("n_chol", [0, 1, 256, 257, 513])
+def test_measurement_context_singles_across_cholesky_batches(
+    nocc_t_core, nvir_t_outer, n_chol
+):
+    _, trial, _, _ = _make_dense_and_mode_trials(
+        nocc_t_core=nocc_t_core, nvir_t_outer=nvir_t_outer
+    )
+    rng = np.random.default_rng(872)
+    chol = 0.03 * rng.normal(size=(n_chol, trial.norb, trial.norb))
+    ham = HamChol(
+        h0=jnp.asarray(0.0), h1=jnp.eye(trial.norb), chol=jnp.asarray(chol), basis="restricted"
+    )
+    ctx = build_mode_meas_ctx(ham, trial)
+    expected = chol[:, :, trial.vir_act_slice] @ np.asarray(trial.ci1).T
+    np.testing.assert_allclose(ctx.lci1, expected, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_array_equal(ctx.rot_chol, chol[:, : trial.nocc_full, :])
+    assert ctx.lci1.dtype == expected.dtype
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.complex64, np.complex128])
+def test_batched_singles_preserves_dtype_and_bilinear_contraction(dtype):
+    from trot.meas.cisd_modes import _build_lci1
+
+    rng = np.random.default_rng(874)
+    chol = rng.normal(size=(257, 5, 5))
+    ci1 = rng.normal(size=(2, 2))
+    if np.issubdtype(dtype, np.complexfloating):
+        chol = chol + 1.0j * rng.normal(size=chol.shape)
+        ci1 = ci1 + 1.0j * rng.normal(size=ci1.shape)
+    chol, ci1 = chol.astype(dtype), ci1.astype(dtype)
+    expected = chol[:, :, 2:4] @ ci1.T
+    actual = _build_lci1(jnp.asarray(chol), jnp.asarray(ci1), vir_start=2, vir_stop=4)
+    tolerance = 2.0e-6 if dtype in (np.float32, np.complex64) else 1.0e-12
+    np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+    assert actual.dtype == expected.dtype
 
 
 @pytest.mark.parametrize("nocc_t_core,nvir_t_outer", [(0, 0), (1, 2)])

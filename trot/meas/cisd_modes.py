@@ -32,6 +32,7 @@ from ..trial.cisd_modes import overlap_r as cisd_mode_overlap_r
 from .cisd import CisdMeasCfg, _energy_gl_batched_realimag, _force_bias_chol_contract_high_realimag
 
 _CISD_MODE_MEAS_CFG_ATTR = "_cisd_mode_meas_cfg"
+_CISD_SETUP_CHOL_BATCH_SIZE = 256
 
 
 def _greens_restricted(walker: jax.Array, nocc: int) -> jax.Array:
@@ -305,6 +306,47 @@ def get_cisd_mode_meas_cfg(meas_ops: MeasOps) -> CisdMeasCfg | None:
     return cfg if isinstance(cfg, CisdMeasCfg) else None
 
 
+@partial(
+    jax.jit,
+    static_argnames=("vir_start", "vir_stop", "batch_size"),
+    # Setup slice fusions take the full Cholesky tensor as input. Avoid
+    # autotuner copies of that input, scoped to this one-time compilation.
+    compiler_options={"xla_gpu_autotune_level": 0},
+)
+def _build_lci1(
+    chol: jax.Array,
+    ci1: jax.Array,
+    *,
+    vir_start: int,
+    vir_stop: int,
+    batch_size: int = _CISD_SETUP_CHOL_BATCH_SIZE,
+) -> jax.Array:
+    """Contract singles in Cholesky batches without a full virtual slice."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+
+    def contract(block):
+        return jnp.einsum(
+            "git,pt->gip", block[:, :, vir_start:vir_stop], ci1, optimize="optimal"
+        )
+
+    n_chol = chol.shape[0]
+    if n_chol <= batch_size:
+        return contract(chol)
+    n_batches, remainder = divmod(n_chol, batch_size)
+
+    def body(index):
+        block = lax.dynamic_slice_in_dim(chol, index * batch_size, batch_size, axis=0)
+        return contract(block)
+
+    # Map small indices, not a reshaped/sliced prefix of the full input.
+    blocks = lax.map(body, jnp.arange(n_batches, dtype=jnp.int32))
+    result = blocks.reshape(n_batches * batch_size, chol.shape[1], ci1.shape[0])
+    if remainder:
+        result = jnp.concatenate((result, contract(chol[n_batches * batch_size :])), axis=0)
+    return result
+
+
 def build_meas_ctx(
     ham_data: HamChol,
     trial_data: CisdModeTrial,
@@ -334,11 +376,11 @@ def build_meas_ctx(
             f"chol_head_size must not exceed the number of Cholesky vectors ({n_chol})."
         )
     rot_chol = chol[:, : trial_data.nocc_full, :]
-    lci1 = jnp.einsum(
-        "git,pt->gip",
-        chol[:, :, trial_data.vir_act_slice],
+    lci1 = _build_lci1(
+        chol,
         trial_data.ci1,
-        optimize="optimal",
+        vir_start=trial_data.vir_act_slice.start,
+        vir_stop=trial_data.vir_act_slice.stop,
     )
     meas_ctx = CisdModeMeasCtx(
         rot_chol=rot_chol,
