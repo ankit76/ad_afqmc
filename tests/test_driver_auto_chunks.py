@@ -109,7 +109,7 @@ def test_auto_chunks_reuses_first_candidate_when_it_fits(monkeypatch):
         n_eql_blocks=50,
         n_blocks=100,
     )
-    selected, run_blocks, built = _select(monkeypatch, params, {1: 700})
+    selected, run_blocks, built = _select(monkeypatch, params, {1: 950})
 
     assert selected.n_chunks == 1
     assert run_blocks is built[0]
@@ -180,4 +180,4 @@ def test_auto_chunks_keeps_compiled_candidate_without_memory_analysis(monkeypatc
 def test_auto_chunks_raises_when_one_walker_exceeds_budget(monkeypatch):
     params = QmcParams(n_walkers=2, n_chunks=1, auto_n_chunks=True)
     with pytest.raises(MemoryError, match="one-walker chunk"):
-        _select(monkeypatch, params, {1: 1200, 2: 900})
+        _select(monkeypatch, params, {1: 1200, 2: 960})

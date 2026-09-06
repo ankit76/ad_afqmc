@@ -45,7 +45,7 @@ from .walkers import stochastic_reconfiguration
 
 print = partial(print, flush=True)
 
-_AUTO_CHUNK_MEMORY_FRACTION = 0.8
+_AUTO_CHUNK_MEMORY_FRACTION = 0.95
 _COMPILER_MEMORY_ERROR_MARKERS = (
     "resource_exhausted",
     "resource exhausted",
