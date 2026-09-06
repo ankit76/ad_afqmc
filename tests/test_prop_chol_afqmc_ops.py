@@ -10,6 +10,7 @@ from trot.prop.chol_afqmc_ops import (
     _build_prop_ctx,
     _make_vhs_split_flat,
     _packed_upper_size,
+    _sum_chol_squares,
     make_trotter_ops,
 )
 
@@ -40,6 +41,45 @@ def test_build_prop_ctx_shapes_and_nfields():
     assert ctx.dt.shape == ()
     assert ctx.sqrt_dt.shape == ()
     assert ctx.h0_prop.shape == ()
+
+
+@pytest.mark.parametrize("n_fields", [0, 1, 256, 257, 513])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.complex64, np.complex128])
+def test_chol_squares_matches_matrix_products_across_batch_boundaries(n_fields, dtype):
+    rng = np.random.default_rng(117)
+    chol = rng.normal(size=(n_fields, 5, 5))
+    if np.issubdtype(dtype, np.complexfloating):
+        chol = chol + 1.0j * rng.normal(size=chol.shape)
+    chol = chol.astype(dtype)
+    # Deliberately nonsymmetric/complex: no transpose or conjugation is
+    # allowed in the mathematical product L_g @ L_g.
+    reference_dtype = np.complex128 if np.iscomplexobj(chol) else np.float64
+    expected = np.zeros((5, 5), dtype=reference_dtype)
+    for matrix in chol.astype(reference_dtype):
+        expected += matrix @ matrix
+    actual = _sum_chol_squares(jnp.asarray(chol))
+    # Compare against a double-precision reference with a normwise bound:
+    # cancellation makes elementwise relative error misleading in float32.
+    tolerance = 1.0e-5 if dtype in (np.float32, np.complex64) else 1.0e-12
+    scale = max(1.0, float(np.max(np.abs(expected))))
+    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=tolerance * scale)
+    assert actual.dtype == chol.dtype
+
+
+def test_build_prop_ctx_with_multiple_cholesky_batches_matches_direct_exponential():
+    from scipy.linalg import expm
+
+    ham = _make_small_ham(norb=5, n_fields=513, h0=1.25, seed=18)
+    dm = jnp.diag(jnp.asarray([2.0, 2.0, 0.0, 0.0, 0.0]))
+    chol = np.asarray(ham.chol)
+    shifts = 1.0j * np.einsum("gij,ji->g", chol, np.asarray(dm))
+    v0 = 0.5 * sum((matrix @ matrix for matrix in chol), np.zeros((5, 5)))
+    v1 = np.einsum("g,gij->ij", (1.0j * shifts).real, chol)
+    expected = expm(-0.005 / 2 * (np.asarray(ham.h1) - v0 - v1))
+    ctx = _build_prop_ctx(ham, dm, 0.005, packed_cholesky=True)
+    np.testing.assert_allclose(ctx.exp_h1_half, expected, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(ctx.mf_shifts, shifts, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(ctx.h0_prop, -ham.h0 - 0.5 * np.sum(shifts**2))
 
 
 @pytest.mark.parametrize(

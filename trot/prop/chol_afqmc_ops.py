@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Callable, NamedTuple, Tuple
 
 import jax
@@ -11,6 +12,8 @@ from ..ham.chol import HamChol
 from .utils import taylor_expm_action
 
 # contains low level details of AFQMC chol propagation
+
+_CHOLESKY_SQUARE_BATCH_SIZE = 256
 
 
 @tree_util.register_pytree_node_class
@@ -132,10 +135,43 @@ def _make_vhs_split_flat(
     return vhs.reshape(n, n)
 
 
+@partial(jax.jit, static_argnames=("batch_size",))
+def _sum_chol_squares(
+    chol: jax.Array, *, batch_size: int = _CHOLESKY_SQUARE_BATCH_SIZE
+) -> jax.Array:
+    """Sum L_g @ L_g with batch-sized transpose/GEMM intermediates.
+
+    This one-time propagator setup contraction keeps the full input, but
+    avoids transposing all Cholesky vectors into a second full-sized tensor.
+    Slice inside the loop so an uneven last batch does not copy the prefix
+    of the full input. The contraction is bilinear, including for complex L.
+    """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+    n_chol = chol.shape[0]
+    total = jnp.zeros(chol.shape[1:], dtype=chol.dtype)
+    if n_chol == 0:
+        return total
+    if n_chol <= batch_size:
+        return jnp.einsum("gik,gkj->ij", chol, chol, optimize="optimal")
+
+    n_batches, remainder = divmod(n_chol, batch_size)
+
+    def accumulate(index, value):
+        block = lax.dynamic_slice_in_dim(chol, index * batch_size, batch_size, axis=0)
+        return value + jnp.einsum("gik,gkj->ij", block, block, optimize="optimal")
+
+    total = lax.fori_loop(0, n_batches, accumulate, total)
+    if remainder:
+        tail = chol[n_batches * batch_size :]
+        total = total + jnp.einsum("gik,gkj->ij", tail, tail, optimize="optimal")
+    return total
+
+
 def _get_h1_eff(ham_data: HamChol, mf: jax.Array) -> jax.Array:
     match ham_data.basis:
         case "restricted" | "generalized":
-            v0m = 0.5 * jnp.einsum("gik,gkj->ij", ham_data.chol, ham_data.chol, optimize="optimal")
+            v0m = 0.5 * _sum_chol_squares(ham_data.chol)
             mf_r = (1.0j * mf).real
             v1m = jnp.einsum("g,gik->ik", mf_r, ham_data.chol, optimize="optimal")
             h1_eff = ham_data.h1 - v0m - v1m
