@@ -135,7 +135,14 @@ def _make_vhs_split_flat(
     return vhs.reshape(n, n)
 
 
-@partial(jax.jit, static_argnames=("batch_size",))
+@partial(
+    jax.jit,
+    static_argnames=("batch_size",),
+    # A slice/transpose fusion still takes the full chol tensor as input.
+    # Profiling it duplicates that input even when its output is one batch.
+    # Scope this option to the top-level, one-time setup compilation only.
+    compiler_options={"xla_gpu_autotune_level": 0},
+)
 def _sum_chol_squares(
     chol: jax.Array, *, batch_size: int = _CHOLESKY_SQUARE_BATCH_SIZE
 ) -> jax.Array:
