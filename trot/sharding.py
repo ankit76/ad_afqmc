@@ -131,7 +131,8 @@ def shard_model_axis(
                 head = index[0]
                 assert isinstance(head, slice)
                 start = 0 if head.start is None else int(head.start)
-                stop = int(head.stop)
+                # A size-one model axis is replicated; JAX can request slice(None).
+                stop = padded_n_chol if head.stop is None else int(head.stop)
                 if stop <= n_chol and target_dtype is None:
                     return x[index]
 

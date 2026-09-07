@@ -276,6 +276,29 @@ def test_shard_model_axis_pads_numpy_chol_without_mutating_source(capsys):
     np.testing.assert_allclose(np.asarray(jax.device_get(chol_s[n_chol])), 0.0, atol=0.0)
 
 
+@pytest.mark.parametrize("n_model", [1, 2])
+@pytest.mark.parametrize("trailing_shape", [(12,), (3, 4)])
+def test_shard_model_axis_casts_host_chol_with_replication_and_padding(n_model, trailing_shape):
+    mesh = make_data_model_mesh(4 // n_model, n_model)
+    shape = (5, *trailing_shape)
+    chol = np.arange(np.prod(shape), dtype=np.float64).reshape(shape) / 7
+    original = chol.copy()
+
+    chol_s = shard_model_axis(chol, mesh, dtype=np.float32)
+    expected = np.pad(chol, [(0, (-shape[0]) % n_model), *[(0, 0)] * len(trailing_shape)])
+    expected = expected.astype(np.float32)
+
+    assert chol_s.dtype == np.float32
+    _assert_named_sharding_spec(chol_s, P("model"))
+    np.testing.assert_array_equal(np.asarray(chol_s), expected)
+    np.testing.assert_array_equal(chol, original)
+    assert len(chol_s.addressable_shards) == 4
+    if n_model == 1:
+        assert chol_s.is_fully_replicated
+        for shard in chol_s.addressable_shards:
+            np.testing.assert_array_equal(np.asarray(shard.data), expected)
+
+
 @pytest.mark.parametrize("memory_mode", ["high", "low"])
 def test_job_prepare_runtime_compacts_hf_chol_and_reuses_cached_ctx(
     tmp_path, memory_mode: RhfMeasMemoryMode
