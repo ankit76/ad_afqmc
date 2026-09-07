@@ -117,9 +117,12 @@ def test_plain_data_mesh_supports_eager_chunking():
 
 @pytest.mark.parametrize("n_data", [4, 2])
 @pytest.mark.parametrize("mixed_precision", [False, True])
-def test_chunked_rhf_blocks_match_single_device(n_data, mixed_precision):
+@pytest.mark.parametrize("memory_mode", ["high", "low"])
+def test_chunked_rhf_blocks_match_single_device(n_data, mixed_precision, memory_mode):
     """Functional regression, including global population control and RNG."""
     from trot.driver import make_run_blocks
+    from trot.core.system import System
+    from trot.meas.rhf import make_rhf_meas_ops
     from trot.prop.blocks import block
     from trot.prop.types import QmcParams
     from trot.setup import setup
@@ -153,8 +156,15 @@ def test_chunked_rhf_blocks_match_single_device(n_data, mixed_precision):
             walker_kind="restricted",
             mixed_precision=mixed_precision,
             params=replace(params, n_chunks=1) if devices is None else params,
+            meas_ops=make_rhf_meas_ops(
+                System(norb=8, nelec=(4, 4), walker_kind="restricted"),
+                memory_mode="high" if devices is None else memory_mode,
+                chol_batch_size=3,
+            ),
         )
         state, meas_ctx, prop_ctx = job._prepare_runtime()
+        assert meas_ctx.cfg.chol_batch_size == 3
+        assert meas_ctx.cfg.memory_mode == ("high" if devices is None else memory_mode)
         assert wk.n_local_walkers(state.walkers) == (40 if devices is None else 40 // n_data)
         sr = (
             wk.stochastic_reconfiguration

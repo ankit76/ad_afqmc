@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from numbers import Integral
+from typing import Any, Callable, Literal
 
 import jax
 import jax.numpy as jnp
 from jax import lax, tree_util
+from jax.sharding import AxisType, NamedSharding, PartitionSpec as P
 
 from ..prop.types import QmcParamsLno
 from ..core.ops import MeasOps, k_energy, k_force_bias, o_density_corr, o_rdm1, o_orb_corr
@@ -38,56 +40,20 @@ def _exchange_sum_materialized(f: jax.Array) -> jax.Array:
     return jnp.sum(jax.vmap(_exchange_term)(f))
 
 
-def _two_body_energy_restricted(g_half: jax.Array, meas_ctx: RhfMeasCtx) -> jax.Array:
-    memory_mode = meas_ctx.cfg.memory_mode
-    if memory_mode == "low":
-        zero = jnp.array(0.0, dtype=jnp.result_type(meas_ctx.rot_chol, g_half))
-
-        def scan_over_chol(
-            acc: tuple[jax.Array, jax.Array], rot_chol_g: jax.Array
-        ) -> tuple[tuple[jax.Array, jax.Array], None]:
-            c2_acc, exc_acc = acc
-            f_g = rot_chol_g @ g_half.T
-            c_g = _trace_last2(f_g)
-            return (c2_acc + c_g * c_g, exc_acc + _exchange_term(f_g)), None
-
-        (c2, exc), _ = lax.scan(scan_over_chol, (zero, zero), meas_ctx.rot_chol)
-        return 2.0 * c2 - exc
-
-    f = jnp.einsum("gij,jk->gik", meas_ctx.rot_chol, g_half.T, optimize="optimal")
+def _restricted_chol_energy(rot_chol: jax.Array, g_half: jax.Array) -> jax.Array:
+    f = jnp.einsum("gij,jk->gik", rot_chol, g_half.T, optimize="optimal")
     c = _trace_last2(f)
     exc = _exchange_sum_materialized(f)
     return 2.0 * jnp.sum(c * c) - exc
 
 
-def _two_body_energy_unrestricted(
+def _unrestricted_chol_energy(
+    rot_chol: jax.Array,
     gu: jax.Array,
     gd: jax.Array,
-    meas_ctx: RhfMeasCtx,
 ) -> jax.Array:
-    memory_mode = meas_ctx.cfg.memory_mode
-    if memory_mode == "low":
-        zero = jnp.array(0.0, dtype=jnp.result_type(meas_ctx.rot_chol, gu, gd))
-
-        def scan_over_chol(acc: jax.Array, rot_chol_g: jax.Array) -> tuple[jax.Array, None]:
-            f_up_g = rot_chol_g @ gu.T
-            f_dn_g = rot_chol_g @ gd.T
-            c_up = _trace_last2(f_up_g)
-            c_dn = _trace_last2(f_dn_g)
-            e2_g = (
-                c_up * c_up
-                + c_dn * c_dn
-                + 2.0 * c_up * c_dn
-                - _exchange_term(f_up_g)
-                - _exchange_term(f_dn_g)
-            ) / 2.0
-            return acc + e2_g, None
-
-        e2, _ = lax.scan(scan_over_chol, zero, meas_ctx.rot_chol)
-        return e2
-
-    f_up = jnp.einsum("gij,jk->gik", meas_ctx.rot_chol, gu.T, optimize="optimal")
-    f_dn = jnp.einsum("gij,jk->gik", meas_ctx.rot_chol, gd.T, optimize="optimal")
+    f_up = jnp.einsum("gij,jk->gik", rot_chol, gu.T, optimize="optimal")
+    f_dn = jnp.einsum("gij,jk->gik", rot_chol, gd.T, optimize="optimal")
     c_up = _trace_last2(f_up)
     c_dn = _trace_last2(f_dn)
     exc_up = _exchange_sum_materialized(f_up)
@@ -96,6 +62,85 @@ def _two_body_energy_unrestricted(
     return (
         jnp.sum(c_up * c_up) + jnp.sum(c_dn * c_dn) + 2.0 * jnp.sum(c_up * c_dn) - exc_up - exc_dn
     ) / 2.0
+
+
+def _sum_chol_energy_batches(
+    rot_chol: jax.Array,
+    greens: tuple[jax.Array, ...],
+    contract: Callable[..., jax.Array],
+    batch_size: int,
+) -> jax.Array:
+    """Sum bounded Cholesky batches, locally on each model shard."""
+
+    def local_sum(chol, local_greens):
+        n_chol = chol.shape[0]
+        dtype = jnp.result_type(chol, *local_greens)
+        # Preserve any enclosing manual data/model-axis variance in the carry.
+        zero = jnp.sum(chol[:0], dtype=dtype)
+        for g in local_greens:
+            zero = zero + jnp.sum(g[:0], dtype=dtype)
+        if n_chol == 0:
+            return zero
+        if n_chol <= batch_size:
+            return contract(chol, *local_greens)
+
+        n_full, remainder = divmod(n_chol, batch_size)
+
+        def accumulate(index, energy):
+            tile = lax.dynamic_slice_in_dim(chol, index * batch_size, batch_size, axis=0)
+            return energy + contract(tile, *local_greens)
+
+        energy = lax.fori_loop(0, n_full, accumulate, zero)
+        if remainder:
+            # Pad only the final tile, avoiding a full-array copy and a tiny
+            # remainder GEMM with a separate GPU autotuning problem.
+            tail = jnp.pad(
+                chol[n_full * batch_size :],
+                ((0, batch_size - remainder), (0, 0), (0, 0)),
+            )
+            energy = energy + contract(tail, *local_greens)
+        return energy
+
+    # Auto-axis tracers retain their mesh, even when their partition spec is
+    # unavailable. RHF contexts shard the first Cholesky axis over "model".
+    sharding = getattr(jax.typeof(rot_chol), "sharding", None)
+    if isinstance(sharding, NamedSharding):
+        mesh = sharding.mesh
+        # Captured Hamiltonian tracers can still carry the outer Auto mesh
+        # while walker chunking has made the ambient data axis manual.
+        context_mesh = jax.sharding.get_abstract_mesh()
+        if context_mesh.shape == mesh.shape:
+            mesh = context_mesh
+        if (
+            "model" in mesh.axis_names
+            and mesh.shape["model"] > 1
+            and mesh.axis_types[mesh.axis_names.index("model")] != AxisType.Manual
+            and rot_chol.shape[0] % mesh.shape["model"] == 0
+        ):
+            return jax.shard_map(
+                lambda chol, gs: lax.psum(local_sum(chol, gs), "model"),
+                mesh=mesh,
+                axis_names={"model"},
+                in_specs=(P("model"), P()),
+                out_specs=P(),
+            )(rot_chol, greens)
+    return local_sum(rot_chol, greens)
+
+
+def _two_body_energy_restricted(g_half: jax.Array, meas_ctx: RhfMeasCtx) -> jax.Array:
+    if meas_ctx.cfg.memory_mode == "low":
+        return _sum_chol_energy_batches(
+            meas_ctx.rot_chol, (g_half,), _restricted_chol_energy, meas_ctx.cfg.chol_batch_size
+        )
+    return _restricted_chol_energy(meas_ctx.rot_chol, g_half)
+
+
+def _two_body_energy_unrestricted(gu: jax.Array, gd: jax.Array, meas_ctx: RhfMeasCtx) -> jax.Array:
+    if meas_ctx.cfg.memory_mode == "low":
+        return _sum_chol_energy_batches(
+            meas_ctx.rot_chol, (gu, gd), _unrestricted_chol_energy, meas_ctx.cfg.chol_batch_size
+        )
+    return _unrestricted_chol_energy(meas_ctx.rot_chol, gu, gd)
 
 
 def _validate_memory_mode(memory_mode: str) -> RhfMeasMemoryMode:
@@ -107,6 +152,12 @@ def _validate_memory_mode(memory_mode: str) -> RhfMeasMemoryMode:
 @dataclass(frozen=True)
 class RhfMeasCfg:
     memory_mode: RhfMeasMemoryMode = "high"
+    # Cholesky vectors per device per contraction in the low-memory path.
+    chol_batch_size: int = 256
+
+    def __post_init__(self):
+        if not isinstance(self.chol_batch_size, Integral) or self.chol_batch_size < 1:
+            raise ValueError("chol_batch_size must be a positive integer.")
 
 
 def get_rhf_meas_cfg(meas_ops: MeasOps) -> RhfMeasCfg | None:
@@ -319,8 +370,13 @@ def build_meas_ctx(
     return RhfMeasCtx(rot_h1=rot_h1, rot_chol=rot_chol, rot_chol_flat=rot_chol_flat, cfg=cfg)
 
 
-def make_rhf_meas_ops(sys: System, memory_mode: str = "high") -> MeasOps:
-    cfg = RhfMeasCfg(memory_mode=_validate_memory_mode(memory_mode))
+def make_rhf_meas_ops(
+    sys: System, memory_mode: str = "high", *, chol_batch_size: int = 256
+) -> MeasOps:
+    """RHF measurements; ``low`` sums exact Cholesky batches of this size."""
+    cfg = RhfMeasCfg(
+        memory_mode=_validate_memory_mode(memory_mode), chol_batch_size=chol_batch_size
+    )
     wk = sys.walker_kind.lower()
     if wk == "restricted":
         overlap_fn = overlap_r

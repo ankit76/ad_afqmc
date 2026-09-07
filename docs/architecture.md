@@ -212,6 +212,21 @@ manual data map already supplies local walkers and does not need another
 data map; small reference populations not divisible by the data mesh also
 retain generic chunking.
 
+RHF local energy with `memory_mode="low"` sums Cholesky vectors in batches
+of `chol_batch_size` (default 256), configured through `RhfMeasCfg` or
+`make_rhf_meas_ops`. It uses the same deterministic contractions as the
+`"high"` path, accumulating each batch immediately. Only the final partial
+batch is zero-padded to the batch size; it does not pad/copy the whole
+Hamiltonian. Setting the batch size to one retains one-vector processing.
+The host RHF setup honors this measurement configuration without an extra
+setup option. The default measurement memory mode remains `"high"`.
+
+With model sharding, the low-memory energy sums each device's local vectors
+and reduces only the resulting two-body energy over the model axis. This
+can nest inside device-local walker chunking. Green functions are explicit
+arguments of the inner model map so their mesh types reflect both manual
+axes; using captured outer tracers can give a mesh mismatch in JAX.
+
 The `WalkerKind` literal (`"restricted"`, `"unrestricted"`, `"generalized"`)
 determines how walker Slater determinants are stored. All walker arrays are complex
 in _ab_initio_ AFQMC.
