@@ -5,7 +5,7 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jax.sharding import NamedSharding
+from jax.sharding import AbstractMesh, AxisType, Mesh, NamedSharding, PartitionSpec as P
 
 from .core.system import System
 from .core.typing import walkers
@@ -91,14 +91,49 @@ def n_walkers(w: walkers) -> int:
     return _batch_size0(w)
 
 
+def _walker_data_mesh(w: Any) -> Mesh | AbstractMesh | None:
+    """Find the data axis, including on Auto-axis tracers inside a JIT.
+
+    Auto tracers retain the mesh in their abstract type but not the concrete
+    array's partition spec. Walker-mapped arguments use axis zero for data.
+    A surrounding manual data map already supplies device-local walkers.
+    """
+    leaf = jax.tree_util.tree_leaves(w)[0]
+    sharding = getattr(jax.typeof(leaf), "sharding", None)
+    if not isinstance(sharding, NamedSharding):
+        return None
+    mesh = sharding.mesh
+    if "data" not in mesh.axis_names or mesh.shape["data"] <= 1:
+        return None
+    if mesh.axis_types[mesh.axis_names.index("data")] == AxisType.Manual:
+        return None
+    # Small reference/calibration populations may not span every data device.
+    if int(leaf.shape[0]) % mesh.shape["data"]:
+        return None
+    return mesh
+
+
+def n_local_walkers(w: walkers) -> int:
+    """Population size used by each device's walker-chunk loop."""
+    mesh = _walker_data_mesh(w)
+    return n_walkers(w) if mesh is None else n_walkers(w) // mesh.shape["data"]
+
+
 def vmap_chunked(
     fn: Callable[..., Any],
     n_chunks: int,
     *,
     in_axes: int | tuple[int | None, ...] = 0,
+    shard_walkers: bool = True,
 ):
     """
-    Memory friendly vmap: map over axis-0 in micro-batches using lax.map.
+    Map walkers in micro-batches, with ``n_chunks`` per data shard.
+
+    On a data mesh, chunk inside each device's walker slice. Only the data
+    axis is manual; model-axis contractions retain automatic sharding.
+    Without a data axis this is ordinary axis-zero ``lax.map`` chunking.
+    Set ``shard_walkers=False`` when mapping non-walker axes, such as a
+    shared list of Cholesky indices or sampled walker--Cholesky pairs.
 
     Usage like vmap:
         out = vmap_chunked(fn, n_chunks, in_axes=...)(*args, **kwargs)
@@ -118,9 +153,6 @@ def vmap_chunked(
         if not mapped_pos:
             return g(*args)
 
-        nw = _batch_size0(args[mapped_pos[0]])
-        batch_size = (nw + n_chunks - 1) // n_chunks
-
         mapped_args = tuple(args[i] for i in mapped_pos)
 
         def f(xi):
@@ -129,7 +161,24 @@ def vmap_chunked(
                 full[i] = xi[j]
             return g(*full)
 
-        return lax.map(f, mapped_args, batch_size=batch_size)
+        def map_local(local_args):
+            nw = _batch_size0(local_args)
+            batch_size = (nw + n_chunks - 1) // n_chunks
+            return lax.map(f, local_args, batch_size=batch_size)
+
+        mesh = _walker_data_mesh(mapped_args) if shard_walkers else None
+        if mesh is not None:
+            # Capture unmapped arguments so Python options (e.g. a Taylor
+            # series length) remain static. Model-sharded array captures keep
+            # their Auto axis; no full Hamiltonian replication is requested.
+            return jax.shard_map(
+                map_local,
+                mesh=mesh,
+                axis_names={"data"},
+                in_specs=(P("data"),),
+                out_specs=P("data"),
+            )(mapped_args)
+        return map_local(mapped_args)
 
     return wrapped
 

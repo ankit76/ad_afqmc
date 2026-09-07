@@ -689,6 +689,7 @@ def _cisd_mode_chol_index_terms(
             trial_data,
         )[0],
         n_chunks=n_chunks,
+        shard_walkers=False,
     )(chol_indices)
 
 
@@ -821,6 +822,7 @@ def _cisd_mode_chol_pair_terms(
         )[0],
         n_chunks=n_chunks,
         in_axes=(0, 0),
+        shard_walkers=False,
     )(sample_walker, sample_chol)
 
 
@@ -949,7 +951,10 @@ def _build_reference_chol_scores(
                 )[0]
 
             terms = wk.vmap_chunked(
-                term, n_chunks=max(1, math.ceil(n_local / chol_batch_size)), in_axes=0
+                term,
+                n_chunks=max(1, math.ceil(n_local / chol_batch_size)),
+                in_axes=0,
+                shard_walkers=False,
             )(jnp.arange(n_local, dtype=jnp.int32))
             return jnp.maximum(jnp.abs(terms).astype(jnp.float64), 1.0e-300)
 

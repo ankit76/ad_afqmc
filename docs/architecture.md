@@ -195,6 +195,23 @@ closures as they can lead to excessive compilation time and memory usage.
 
 ## Walker and Hamiltonian representations
 
+`walkers.vmap_chunked` interprets `n_chunks` per data shard. With 400 walkers
+on a `(data, model)=(4,1)` mesh, four chunks process 25 walkers at a time on
+each device. For `n_chunks > 1`, a `shard_map` makes only the data axis
+manual, placing the chunk loop inside the local walker population while
+leaving model-axis contractions to automatic partitioning. The unchunked
+`vmap` path is unchanged. The automatic memory selector caps its search at
+the local population size and reports `walkers_per_data_shard`.
+
+The helper reads the mesh from the mapped argument's abstract type, which
+retains Auto mesh axes inside JIT tracing even when the concrete partition
+spec is unavailable. Walker mappings use axis zero for data. Calls that map
+shared Cholesky indices or sampled pair indices explicitly set
+`shard_walkers=False` to retain their original generic chunking. A surrounding
+manual data map already supplies local walkers and does not need another
+data map; small reference populations not divisible by the data mesh also
+retain generic chunking.
+
 The `WalkerKind` literal (`"restricted"`, `"unrestricted"`, `"generalized"`)
 determines how walker Slater determinants are stored. All walker arrays are complex
 in _ab_initio_ AFQMC.

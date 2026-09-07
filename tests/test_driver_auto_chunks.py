@@ -56,6 +56,7 @@ def _select(
     params: QmcParams,
     estimates: dict[int, int | None],
     compile_errors: dict[int, Exception] | None = None,
+    state=None,
 ):
     built: list[_FakeRunBlocks] = []
     compile_errors = {} if compile_errors is None else compile_errors
@@ -79,7 +80,7 @@ def _select(
         trial_ops=None,  # type: ignore[arg-type]
         meas_ops=None,  # type: ignore[arg-type]
         prop_ops=None,  # type: ignore[arg-type]
-        state=None,  # type: ignore[arg-type]
+        state=state,
         ham_data=None,
         trial_data=None,
         meas_ctx=None,
@@ -181,3 +182,14 @@ def test_auto_chunks_raises_when_one_walker_exceeds_budget(monkeypatch):
     params = QmcParams(n_walkers=2, n_chunks=1, auto_n_chunks=True)
     with pytest.raises(MemoryError, match="one-walker chunk"):
         _select(monkeypatch, params, {1: 1200, 2: 960})
+
+
+def test_auto_chunks_stops_at_local_one_walker_limit(monkeypatch):
+    from types import SimpleNamespace
+
+    # Eight global walkers split four ways: two is already one walker/chunk.
+    state = SimpleNamespace(walkers=object())
+    monkeypatch.setattr(driver.wk, "n_local_walkers", lambda walkers: 2)
+    params = QmcParams(n_walkers=8, n_chunks=1, auto_n_chunks=True)
+    with pytest.raises(MemoryError, match="one-walker chunk"):
+        _select(monkeypatch, params, {1: 1200, 2: 960}, state=state)

@@ -30,6 +30,7 @@ class PropState(NamedTuple):
 @dataclass(frozen=True)
 class QmcParamsBase:
     dt: float = 0.005
+    # Walker micro-batches per data shard (global population on one device).
     n_chunks: int = 1
     n_exp_terms: int = 6
     n_prop_steps: int = 50

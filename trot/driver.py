@@ -548,13 +548,16 @@ def _make_run_blocks_with_auto_chunks(
     if budget <= 0:
         raise RuntimeError("Automatic chunk memory budget is not positive.")
 
-    n_walkers = max(1, int(params.n_walkers))
+    n_walkers = max(
+        1, wk.n_local_walkers(state.walkers) if state is not None else int(params.n_walkers)
+    )
     candidate = min(int(params.n_chunks), n_walkers)
     probe_n_blocks = _auto_chunk_probe_n_blocks(params)
     print(
         "[chunks] selecting n_chunks automatically: "
         f"allocator_limit={_format_mib(memory_limit)}, "
-        f"budget={_format_mib(budget)}, probe_blocks={probe_n_blocks}."
+        f"budget={_format_mib(budget)}, probe_blocks={probe_n_blocks}, "
+        f"walkers_per_data_shard={n_walkers}."
     )
 
     while True:
@@ -771,13 +774,16 @@ def _make_run_mixed_estimator_blocks_with_auto_chunks(
     if budget <= 0:
         raise RuntimeError("Automatic chunk memory budget is not positive.")
 
-    n_walkers = max(1, int(params.n_walkers))
+    n_walkers = max(
+        1, wk.n_local_walkers(state.walkers) if state is not None else int(params.n_walkers)
+    )
     candidate = min(int(params.n_chunks), n_walkers)
     probe_n_blocks = _auto_chunk_probe_n_blocks(params)
     print(
         "[chunks] selecting n_chunks automatically for mixed estimation: "
         f"allocator_limit={_format_mib(memory_limit)}, "
-        f"budget={_format_mib(budget)}, probe_blocks={probe_n_blocks}."
+        f"budget={_format_mib(budget)}, probe_blocks={probe_n_blocks}, "
+        f"walkers_per_data_shard={n_walkers}."
     )
 
     while True:

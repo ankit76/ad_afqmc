@@ -463,6 +463,7 @@ def _ucisd_k_mode_chol_index_terms(
             chol_i[None],
         )[0],
         n_chunks=n_chunks,
+        shard_walkers=False,
     )(chol_indices)
 
 
@@ -593,6 +594,7 @@ def _ucisd_k_mode_chol_pair_terms(
         )[0],
         n_chunks=n_chunks,
         in_axes=(0, 0),
+        shard_walkers=False,
     )(sample_walker, sample_chol)
 
 
