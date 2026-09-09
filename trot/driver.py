@@ -432,8 +432,8 @@ def run_mixed_qmc(
     equilibration blocks then sampling blocks.
     Guide != Trial
     The importance sampling is governed by the Guide
-    and the energy measurement is projected against the Trial. 
-    Though we also measure the energy against the Guide to update the 
+    and the energy measurement is projected against the Trial.
+    Though we also measure the energy against the Guide to update the
     e_estimate and use as a reference to remove extreme outliers.
 
     AFQMC energy against the Trial is only measured during the sampling
