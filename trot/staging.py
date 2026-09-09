@@ -1273,6 +1273,20 @@ def _stage_gcisd_input(obj: StagedMfOrCc) -> TrialInput:
     )
 
 
+def stage_pt2ccsd_trial(cc: Any, *, frozen: int | ArrayLike | None = None) -> TrialInput:
+    """
+    Stage a pt2CCSD trial from a pyscf CC object.
+
+    A CCSD object is ambiguous: it can serve as a CISD trial (what stage() builds) or as
+    a pt2CCSD trial. Type dispatch cannot tell those apart, so this is a separate entry
+    point rather than another case in _stage_trial_input.
+
+    Returns a TrialInput with data {"mo_t", "t2"}: mo_t is the Thouless-transformed
+    reference exp(T1)|HF> in the MO basis, t2 the doubles amplitudes as (i, a, j, b).
+    """
+    return _stage_pt2ccsd_input(StagedMfOrCc(cc, frozen))
+
+
 def _stage_pt2ccsd_input(obj):
     # TODO obj.kind is frozen... figure out how to assign more flexible trial
     # if obj.kind != "pt2ccsd":

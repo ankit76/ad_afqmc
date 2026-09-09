@@ -26,10 +26,12 @@ from .setup import Job
 from .setup import setup as setup_job
 from .setup_fp import JobFp
 from .setup_fp import setup_fp as setup_job_fp
+from .mixed import MixedRecipe, get_mixed_recipe
+from .setup_mixed import JobMixed, setup_mixed
 
 # from .setup_lno import setup_lno as setup_job_lno
 # from . import setup_lno
-from .staging import StagedInputs, _is_cc_like
+from .staging import StagedInputs, TrialInput, _is_cc_like
 from .staging import dump as dump_staged
 from .staging import load as load_staged
 from .staging import stage as stage_inputs
@@ -884,3 +886,175 @@ class AfqmcUh(Afqmc):
         self._cache_key = key
         self._job = None
         return staged
+
+
+class AfqmcMixed(Afqmc):
+    """
+    Mixed guide/trial AFQMC.
+
+    The walkers propagate under a guide wavefunction while the energy is measured against
+    a different trial. Which combination to run is chosen with ``trial``; everything that
+    follows from it -- staging, measurement ops, block function and blocking analysis --
+    comes from that recipe, so a trial can never be paired with the wrong estimator.
+
+        mf = scf.RHF(mol); mf.kernel()
+        mycc = cc.CCSD(mf); mycc.kernel()
+
+        af = AfqmcMixed(mycc)          # RHF guide, pt2CCSD trial
+        mean, err = af.kernel()        # returns the TRIAL (pt2CCSD) energy
+
+    kernel() returns the trial energy; the guide result is kept alongside:
+
+        af.e_tot,       af.e_err        # trial  (pt2CCSD)
+        af.guide_e_tot, af.guide_e_err  # guide  (AFQMC/RHF)
+        af.qmc_result                   # the full MixedQmcResult
+
+    Parameters
+    ----------
+    cc : Any
+        pyscf CC object. The guide is taken from ``cc._scf`` and the trial amplitudes
+        from ``cc`` itself, so no second argument is needed.
+    trial : str, optional
+        Which mixed recipe to run, by default "pt2ccsd". See
+        ``trot.mixed.available_mixed_recipes()``.
+    memory_mode : str, optional
+        Passed to the trial measurement ops, by default "low".
+    """
+
+    params_cls = QmcParams
+    job_cls = JobMixed
+    setup_fn = staticmethod(setup_mixed)
+
+    def __init__(
+        self,
+        cc: Any,
+        *,
+        trial: str = "pt2ccsd",
+        memory_mode: str = "low",
+        norb_frozen_core: int | None = None,
+        norb_frozen: int | None = None,
+        chol_cut: float = 1e-5,
+        cache: Union[str, Path] | None = None,
+        n_eql_blocks: int | None = None,
+        n_blocks: int | None = None,
+        seed: int | None = None,
+        dt: float | None = None,
+        n_prop_steps: int | None = None,
+        n_walkers: int | None = None,
+        n_chunks: int | None = None,
+    ):
+        super().__init__(
+            cc,
+            norb_frozen_core=norb_frozen_core,
+            norb_frozen=norb_frozen,
+            chol_cut=chol_cut,
+            cache=cache,
+            n_eql_blocks=n_eql_blocks,
+            n_blocks=n_blocks,
+            seed=seed,
+            dt=dt,
+            n_walkers=n_walkers,
+            n_chunks=n_chunks,
+        )
+
+        defaults = self.params_cls()
+        self.n_prop_steps = defaults.n_prop_steps if n_prop_steps is None else n_prop_steps
+
+        self.recipe: MixedRecipe = get_mixed_recipe(trial)
+
+        if self._cc is None:
+            raise ValueError(
+                f"AfqmcMixed({trial!r}) needs a pyscf CC object: the trial is built from "
+                "its amplitudes. Got a mean-field object, which supplies only the guide."
+            )
+
+        self.walker_kind = cast(WalkerKind, self.recipe.walker_kind)
+        # the pt2 correction is a small difference of larger numbers
+        self.mixed_precision = False
+        self.memory_mode = memory_mode
+
+        self._trial_input: TrialInput | None = None
+        self.guide_e_tot: Any = None
+        self.guide_e_err: Any = None
+
+    @property
+    def trial_input(self) -> TrialInput | None:
+        return self._trial_input
+
+    def stage(self, *, force: bool = False) -> StagedInputs:
+        """
+        Stage the guide and the measurement trial.
+
+        The guide comes from the SCF object underneath the CC one, which is what makes
+        this a mixed calculation: the hamiltonian and propagator stay at the mean-field
+        level while the trial carries the correlation.
+        """
+        key = self._key()
+        if self._staged is not None and self._cache_key == key and not force:
+            return self._staged
+
+        staged = stage_inputs(
+            self._scf,
+            norb_frozen_core=(
+                int(self.norb_frozen_core) if self.norb_frozen_core is not None else None
+            ),
+            chol_cut=self.chol_cut,
+            cache=self.cache,
+            overwrite=self.overwrite_cache if self.cache is not None else False,
+            verbose=self.verbose,
+        )
+        self._trial_input = self.recipe.stage_trial(self._cc, frozen=self.norb_frozen_core)
+
+        self._staged = staged
+        self._cache_key = key
+        self._job = None
+        return staged
+
+    def build_job(
+        self, *, force: bool = False, mesh: Mesh | None = None, **kwargs: Any
+    ) -> JobMixed:
+        if self._job is not None and not force and (mesh is None or self._job.mesh is mesh):
+            return cast(JobMixed, self._job)
+
+        staged = self.stage()
+        qmc_params = self._make_params()
+        self.params = qmc_params
+
+        job = cast(
+            JobMixed,
+            self.setup_fn(
+                staged,
+                recipe=self.recipe,
+                trial_input=self._trial_input,
+                trial_kwargs={"memory_mode": self.memory_mode},
+                walker_kind=self.walker_kind,
+                mesh=mesh,
+                mixed_precision=self.mixed_precision,
+                params=cast(Any, qmc_params),
+                **kwargs,
+            ),
+        )
+        self._job = job
+        return job
+
+    def kernel(self, **driver_kwargs: Any) -> tuple[Any, Any]:
+        """
+        Run mixed AFQMC. Returns the trial (e_tot, e_err) and stores the guide result.
+        """
+        print(banner_afqmc())
+        print_runtime_provenance()
+        mesh = driver_kwargs.get("mesh")
+        job = self.build_job(mesh=mesh)
+        self.dump_flags(job)
+        print(f" mixed recipe    = {self.recipe.name}")
+        print(f" guide           = {self.recipe.guide_kind}\n")
+
+        qmc_result = job.kernel(**driver_kwargs)
+
+        self.qmc_result = qmc_result
+        self.guide_e_tot = float(qmc_result.guide_mean_energy.real)
+        self.guide_e_err = float(qmc_result.guide_stderr_energy.real)
+        self.e_tot = float(qmc_result.trial_mean_energy.real)
+        self.e_err = float(qmc_result.trial_stderr_energy.real)
+
+        return self.e_tot, self.e_err
