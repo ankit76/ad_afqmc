@@ -769,3 +769,116 @@ def run_afqmc_lno_helper(
 # Backward-compatible aliases
 AFQMC = Afqmc
 AFQMCFp = AfqmcFp
+
+
+class AfqmcUh(Afqmc):
+    """
+    AFQMC with an unrestricted (uchol) hamiltonian.
+
+    Alpha and beta each keep their own orbital basis, so h1 and the cholesky vectors are
+    carried per spin and norb_a may differ from norb_b. The auxiliary field index stays
+    shared between the spins.
+
+    Contrast with ``Afqmc(mf); af.walker_kind = "unrestricted"``, which uses unrestricted
+    *walkers* against a hamiltonian built in the alpha MO basis alone.
+
+        af = AfqmcUh(mf)
+        mean, err = af.kernel()
+
+    Pass two independently chosen active spaces explicitly (what unrestricted LNO does,
+    and where norb_a != norb_b comes from):
+
+        af = AfqmcUh(mf, basis_a=c_a, basis_b=c_b)
+
+    The cholesky vectors come from the density fitting tensor when ``mf`` carries one,
+    otherwise from the modified cholesky decomposition of the AO ERIs, and are then
+    projected into each spin's basis.
+
+    Parameters
+    ----------
+    basis_a, basis_b : NDArray, optional
+        Orbital bases for the two spins. Default to the UHF alpha and beta coefficients.
+    chol_cut : float, optional
+        Cholesky decomposition cutoff, by default 1e-8.
+    """
+
+    params_cls = QmcParams
+    job_cls = Job
+    setup_fn = staticmethod(setup_job)
+
+    def __init__(
+        self,
+        mf_or_cc: Any,
+        *,
+        basis_a: NDArray | None = None,
+        basis_b: NDArray | None = None,
+        norb_frozen_core: int | None = None,
+        norb_frozen: int | None = None,
+        chol_cut: float = 1e-5,
+        cache: Union[str, Path] | None = None,
+        n_eql_blocks: int | None = None,
+        n_blocks: int | None = None,
+        seed: int | None = None,
+        dt: float | None = None,
+        n_walkers: int | None = None,
+        n_chunks: int | None = None,
+    ):
+        super().__init__(
+            mf_or_cc,
+            norb_frozen_core=norb_frozen_core,
+            norb_frozen=norb_frozen,
+            chol_cut=chol_cut,
+            cache=cache,
+            n_eql_blocks=n_eql_blocks,
+            n_blocks=n_blocks,
+            seed=seed,
+            dt=dt,
+            n_walkers=n_walkers,
+            n_chunks=n_chunks,
+        )
+
+        self.basis_a = basis_a
+        self.basis_b = basis_b
+        # alpha and beta live in different orbital spaces, so no other kind applies
+        self.walker_kind = "unrestricted"
+
+    def stage(self, *, force: bool = False) -> StagedInputs:
+        """
+        Build the unrestricted hamiltonian and attach it to the staged inputs.
+
+        Follows AfqmcLnoFrag: staging.stage() accepts a prebuilt ham, so the default
+        single basis _stage_ham_input is bypassed rather than modified.
+        """
+        key = self._key()
+        if self._staged is not None and self._cache_key == key and not force:
+            return self._staged
+
+        norb_frozen = self.norb_frozen_core
+        if isinstance(norb_frozen, (list, tuple, np.ndarray)):
+            raise NotImplementedError(
+                "AfqmcUh supports an integer frozen core only; list-valued frozen "
+                "orbitals are not implemented for the unrestricted hamiltonian yet."
+            )
+
+        ham = staging.build_ham_uchol(
+            self._obj,
+            chol_cut=self.chol_cut,
+            basis_a=self.basis_a,
+            basis_b=self.basis_b,
+            norb_frozen_core=int(norb_frozen or 0),
+            verbose=self.verbose,
+        )
+
+        staged = stage_inputs(
+            self._obj,
+            norb_frozen_core=int(norb_frozen or 0),
+            chol_cut=self.chol_cut,
+            cache=self.cache,
+            overwrite=self.overwrite_cache if self.cache is not None else False,
+            verbose=self.verbose,
+            ham=ham,
+        )
+        self._staged = staged
+        self._cache_key = key
+        self._job = None
+        return staged

@@ -103,3 +103,41 @@ def make_uhf_trial_data(data: dict, sys: System) -> UhfTrial:
     mo_b = mo_b[:, : sys.ndn]
 
     return UhfTrial(mo_a, mo_b)
+
+
+# unrestricted hamiltonian path
+
+
+def get_rdm1_uh(trial_data: UhfTrial) -> tuple[jax.Array, jax.Array]:
+    """
+    Trial rdm1 as a pair of spin blocks.
+
+    get_rdm1 stacks them into (2, norb, norb), which cannot hold norb_a != norb_b, so the
+    unrestricted path needs the pair form.
+    """
+    c_a = trial_data.mo_coeff_a
+    c_b = trial_data.mo_coeff_b
+    return (c_a @ c_a.conj().T, c_b @ c_b.conj().T)
+
+
+def make_uhf_trial_ops_uh(sys) -> TrialOps:
+    if sys.walker_kind.lower() != "unrestricted":
+        raise ValueError(
+            f"the unrestricted hamiltonian path requires walker_kind='unrestricted', "
+            f"got {sys.walker_kind!r}"
+        )
+    return TrialOps(overlap=overlap_u, get_rdm1=get_rdm1_uh)
+
+
+def make_uhf_trial_data_uh(sys) -> UhfTrial:
+    """
+    Trial in each spin's own orbital basis.
+
+    build_ham_uchol expresses each spin in a basis whose leading columns are that spin's
+    occupied orbitals, so the determinant is the leading nocc columns of the identity.
+    """
+    norb_a, norb_b = sys.norb if isinstance(sys.norb, tuple) else (sys.norb, sys.norb)
+    return UhfTrial(
+        jnp.eye(norb_a)[:, : sys.nup],
+        jnp.eye(norb_b)[:, : sys.ndn],
+    )
