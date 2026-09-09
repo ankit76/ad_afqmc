@@ -60,7 +60,7 @@ class RuntimeJob(Protocol):
 
 
 class RuntimeLayout(Protocol):
-    def make_initial_ham_data(self, ham: HamInput | HamChol, mesh: Mesh | None) -> HamChol: ...
+    def make_initial_ham_data(self, ham: Any, mesh: Mesh | None) -> HamChol | HamCholU: ...
 
     def prepare(
         self,
@@ -385,7 +385,7 @@ def _compact_ham_data_for_runtime(ham_data: Any, meas_ctx: Any) -> Any:
 
 @dataclass(frozen=True)
 class DefaultRuntimeLayout:
-    def make_initial_ham_data(self, ham: HamInput | HamChol, mesh: Mesh | None) -> HamChol:
+    def make_initial_ham_data(self, ham: Any, mesh: Mesh | None) -> HamChol | HamCholU:
         if isinstance(ham, HamCholU) or getattr(ham, "basis", None) == "uchol":
             return _make_ham_data_uh(ham, mesh)
         return _make_ham_data(ham, mesh, compact_chol=False)

@@ -290,9 +290,7 @@ def energy_kernel_gw_rh(
 DEFAULT_NCHOL_CHUNK: int | None = None
 
 
-def _u_half_green(
-    bra: tuple, ket: tuple
-) -> tuple[jax.Array, jax.Array]:
+def _u_half_green(bra: tuple, ket: tuple) -> tuple[jax.Array, jax.Array]:
     """Half green's function per spin, (nocc_sigma, norb_sigma)."""
     ga = _half_green_from_overlap_matrix(ket[0], bra[0].conj().T @ ket[0])
     gb = _half_green_from_overlap_matrix(ket[1], bra[1].conj().T @ ket[1])
@@ -348,13 +346,9 @@ def u_rot_energy(
         trlg_a_c = jnp.einsum("gpp->g", lg_a_c, optimize="optimal")
         trlg_b_c = jnp.einsum("gpp->g", lg_b_c, optimize="optimal")
 
-        e2aa_c = jnp.sum(trlg_a_c**2) - jnp.einsum(
-            "gpq,gqp->", lg_a_c, lg_a_c, optimize="optimal"
-        )
+        e2aa_c = jnp.sum(trlg_a_c**2) - jnp.einsum("gpq,gqp->", lg_a_c, lg_a_c, optimize="optimal")
         e2ab_c = jnp.sum(trlg_a_c * trlg_b_c) * 2
-        e2bb_c = jnp.sum(trlg_b_c**2) - jnp.einsum(
-            "gpq,gqp->", lg_b_c, lg_b_c, optimize="optimal"
-        )
+        e2bb_c = jnp.sum(trlg_b_c**2) - jnp.einsum("gpq,gqp->", lg_b_c, lg_b_c, optimize="optimal")
 
         carry += (e2aa_c + e2ab_c + e2bb_c) / 2
         return carry, None
@@ -472,7 +466,7 @@ def build_meas_ctx(ham_data: HamChol, trial_data: UhfTrial) -> UhfMeasCtx:
 
 def build_meas_ctx_uh(ham_data: HamCholU, trial_data: UhfTrial) -> UhfMeasCtx:
     """
-    Build half rotated h1 and chol for unrestricted hamiltonian, 
+    Build half rotated h1 and chol for unrestricted hamiltonian,
     where alpha and beta may live in different orbital spaces.
 
     Same UhfMeasCtx as build_meas_ctx, which already keeps the two spins separate. The

@@ -876,7 +876,9 @@ class AfqmcUh(Afqmc):
             cache=self.cache,
             overwrite=self.overwrite_cache if self.cache is not None else False,
             verbose=self.verbose,
-            ham=ham,
+            # StagedInputs.ham is typed as the restricted HamInput; the unrestricted
+            # path carries a HamInputU through the same slot
+            ham=cast(Any, ham),
         )
         self._staged = staged
         self._cache_key = key

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -9,19 +9,24 @@ from jax.sharding import Mesh
 from .. import walkers as wk
 from ..core.ops import MeasOps, TrialOps, k_energy, k_force_bias
 from ..core.system import System, System_uh
-from ..ham.chol import HamBasis, HamChol
-from ..ham.chol_u import HamBasisU, HamCholU
+from ..ham.chol import HamBasis
+from ..ham.chol_u import HamBasisU
 from ..sharding import shard_prop_state
 from ..walkers import init_walkers, init_walkers_uh
 from .chol_afqmc_ops import CholAfqmcCtx, TrotterOps, _build_prop_ctx, make_trotter_ops
-from .chol_afqmc_ops_u import CholAfqmcCtxU, _build_prop_ctx_u, make_trotter_ops_u
+from .chol_afqmc_ops_u import (
+    CholAfqmcCtxU,
+    TrotterOpsU,
+    _build_prop_ctx_u,
+    make_trotter_ops_u,
+)
 from .types import PropOps, PropState, QmcParamsBase
 
 
 def init_prop_state(
     *,
-    sys: System,
-    ham_data: HamChol,
+    sys: System | System_uh,
+    ham_data: Any,
     trial_ops: TrialOps,
     trial_data: Any,
     meas_ops: MeasOps,
@@ -42,7 +47,7 @@ def init_prop_state(
     if initial_walkers is None:
         if rdm1 is None:
             rdm1 = trial_ops.get_rdm1(trial_data)
-        initial_walkers = init_walkers(sys=sys, rdm1=rdm1, n_walkers=n_walkers)
+        initial_walkers = init_walkers(sys=cast(System, sys), rdm1=rdm1, n_walkers=n_walkers)
 
     overlaps = wk.vmap_chunked(meas_ops.overlap, n_chunks=params.n_chunks, in_axes=(0, None))(
         initial_walkers, trial_data
@@ -80,8 +85,8 @@ def init_prop_state(
 
 def init_prop_state_uh(
     *,
-    sys: System_uh,
-    ham_data: HamCholU,
+    sys: System | System_uh,
+    ham_data: Any,
     trial_ops: TrialOps,
     trial_data: Any,
     meas_ops: MeasOps,
@@ -121,11 +126,11 @@ def afqmc_step(
     state: PropState,
     *,
     params: QmcParamsBase,
-    ham_data: HamChol,
+    ham_data: Any,
     trial_data: Any,
     meas_ops: MeasOps,
-    trotter_ops: TrotterOps,
-    prop_ctx: CholAfqmcCtx,
+    trotter_ops: TrotterOps | TrotterOpsU,
+    prop_ctx: CholAfqmcCtx | CholAfqmcCtxU,
     meas_ctx: Any,
 ) -> PropState:
 
@@ -222,7 +227,7 @@ def make_prop_ops(ham_basis: HamBasis, walker_kind: str, mixed_precision=False) 
 
 
 def make_prop_ops_u(ham_basis: HamBasisU, walker_kind: str, mixed_precision=False) -> PropOps:
-    '''differ from make_prop_ops by return _build_prop_ctx_u which builds unrestricted hamiltonian'''
+    """differ from make_prop_ops by return _build_prop_ctx_u which builds unrestricted hamiltonian"""
     trotter_ops = make_trotter_ops_u(ham_basis, walker_kind, mixed_precision=mixed_precision)
 
     def step(
@@ -255,6 +260,4 @@ def make_prop_ops_u(ham_basis: HamBasisU, walker_kind: str, mixed_precision=Fals
             chol_flat_precision=jnp.float32 if mixed_precision else jnp.float64,
         )
 
-    return PropOps(
-        init_prop_state=init_prop_state_uh, build_prop_ctx=build_prop_ctx, step=step
-    )
+    return PropOps(init_prop_state=init_prop_state_uh, build_prop_ctx=build_prop_ctx, step=step)

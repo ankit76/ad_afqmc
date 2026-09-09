@@ -199,7 +199,9 @@ def _apply_trotter_u(
     make_vhs_b: Callable[[jax.Array, CholAfqmcCtxU], jax.Array],
 ) -> Tuple[jax.Array, jax.Array]:
     w1 = _apply_one_body_half_u(w_ud, prop_ctx)
-    w2 = _apply_two_body_u(w1, field, prop_ctx, n_terms, make_vhs_a=make_vhs_a, make_vhs_b=make_vhs_b)
+    w2 = _apply_two_body_u(
+        w1, field, prop_ctx, n_terms, make_vhs_a=make_vhs_a, make_vhs_b=make_vhs_b
+    )
     return _apply_one_body_half_u(w2, prop_ctx)
 
 
@@ -244,10 +246,8 @@ def make_trotter_ops_u(
             n=ctx.norb_b,
         )
 
-    apply_trotter = (
-        lambda w, f, ctx, n_terms, mva=make_vhs_a, mvb=make_vhs_b: _apply_trotter_u(
-            w, f, ctx, n_terms, make_vhs_a=mva, make_vhs_b=mvb
-        )
+    apply_trotter = lambda w, f, ctx, n_terms, mva=make_vhs_a, mvb=make_vhs_b: _apply_trotter_u(
+        w, f, ctx, n_terms, make_vhs_a=mva, make_vhs_b=mvb
     )
 
     return TrotterOpsU(apply_trotter)

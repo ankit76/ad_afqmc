@@ -397,15 +397,16 @@ def _assemble_job(
     ham = staged.ham
 
     resolved_walker_kind = walker_kind_resolver(ham, walker_kind)
+    sys: System | System_uh
     if getattr(ham, "basis", None) == "uchol":
-        sys = System_uh(norb=ham.norb, nelec=ham.nelec)
+        sys = System_uh(norb=cast(tuple, ham.norb), nelec=ham.nelec)
     else:
         sys = System(norb=int(ham.norb), nelec=ham.nelec, walker_kind=resolved_walker_kind)
 
     qmc_params = params_builder(params=params, **(params_kwargs or {}))
 
     if trial_data is None or trial_ops is None or meas_ops is None:
-        td, to, mo = _make_trial_bundle(sys, staged, mixed_precision)
+        td, to, mo = _make_trial_bundle(cast(System, sys), staged, mixed_precision)
         trial_data = td if trial_data is None else trial_data
         trial_ops = to if trial_ops is None else trial_ops
         meas_ops = mo if meas_ops is None else meas_ops
@@ -437,9 +438,9 @@ def _assemble_job(
 
     return job_cls(
         staged=staged,
-        sys=sys,
+        sys=cast(System, sys),
         params=qmc_params,
-        ham_data=ham_data,
+        ham_data=cast(HamChol, ham_data),
         trial_data=trial_data,
         trial_ops=trial_ops,
         meas_ops=meas_ops,

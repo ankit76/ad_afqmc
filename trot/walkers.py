@@ -118,9 +118,7 @@ def init_walkers_uh(sys: System | System_uh, rdm1: Any, n_walkers: int) -> walke
     for name, dm, nocc in (("a", dm_a, nup), ("b", dm_b, ndn)):
         norb_s = int(jnp.shape(dm)[0])
         if nocc > norb_s:
-            raise ValueError(
-                f"spin {name} has {nocc} electrons but only {norb_s} orbitals in rdm1"
-            )
+            raise ValueError(f"spin {name} has {nocc} electrons but only {norb_s} orbitals in rdm1")
 
     natorbs_up = _natorbs(dm_a, nup) + 0.0j  # (norb_a, nup)
     natorbs_dn = _natorbs(dm_b, ndn) + 0.0j  # (norb_b, ndn)

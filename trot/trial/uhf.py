@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import jax
 import jax.numpy as jnp
 from jax import tree_util
 
-from ..core.ops import TrialOps
+from ..core.ops import Rdm1Fn, TrialOps
 from ..core.system import System
 
 
@@ -126,7 +127,9 @@ def make_uhf_trial_ops_uh(sys) -> TrialOps:
             f"the unrestricted hamiltonian path requires walker_kind='unrestricted', "
             f"got {sys.walker_kind!r}"
         )
-    return TrialOps(overlap=overlap_u, get_rdm1=get_rdm1_uh)
+    # Rdm1Fn is typed as returning a single array; the unrestricted path returns the
+    # two spin blocks as a pair, which cannot be stacked when norb_a != norb_b
+    return TrialOps(overlap=overlap_u, get_rdm1=cast(Rdm1Fn, get_rdm1_uh))
 
 
 def make_uhf_trial_data_uh(sys) -> UhfTrial:
