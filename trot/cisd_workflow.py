@@ -84,7 +84,7 @@ class CisdPairSamplingConfig:
     safety_factor: float = 1.0
     cross_validation_quantile: float = 1.0
     guide_chol_batch_size: int = 16
-    head_chol_batch_size: int = 64
+    head_chol_batch_size: int = 16
     tuning_n_chunks: int = 10
     tuning_chol_batch_size: int = 16
     tuning_population_count: int = 5
