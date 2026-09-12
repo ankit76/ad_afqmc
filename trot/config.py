@@ -74,12 +74,16 @@ class AfqmcConfig:
       - None  : auto (prefer GPU if available, else CPU)
       - True  : force GPU (error if unavailable)
       - False : force CPU
+    matmul_precision:
+      JAX matrix-product precision, independent of array storage dtypes.
+      Defaults to "highest"; "default" selects JAX's faster platform default.
     """
 
     use_gpu: bool | None = None
     single_precision: bool = False
     disable_tf32: bool = False  # Disable TF32 on gpu if true
     quiet: bool = True  # suppress prints
+    matmul_precision: str = "highest"
 
 
 afqmc_config = AfqmcConfig()
@@ -93,10 +97,18 @@ def configure_once(
     single_precision: bool | None = None,
     disable_tf32: bool | None = None,
     quiet: bool | None = None,
+    matmul_precision: str | None = None,
 ) -> None:
     """
     Configure JAX once, subsequent calls do nothing.
     Use GPU if available by default.
+
+    Matrix products use "highest" precision by default. Pass
+    ``matmul_precision="default"`` for the faster platform default, or another
+    JAX-supported precision setting. An explicit argument takes precedence
+    over ``JAX_DEFAULT_MATMUL_PRECISION``, which otherwise overrides the
+    ``afqmc_config`` default. This does not change array storage dtypes.
+    Call before importing ``trot.afqmc`` or tracing any JAX computations.
     """
     global _configured_once
     if _configured_once:
@@ -111,6 +123,9 @@ def configure_once(
     assert (
         isinstance(quiet, bool) or quiet is None
     ), f"Expect a bool | None for 'quiet', but got '{type(quiet)}'."
+    assert (
+        isinstance(matmul_precision, str) or matmul_precision is None
+    ), f"Expect a str | None for 'matmul_precision', but got '{type(matmul_precision)}'."
 
     if use_gpu is not None:
         afqmc_config.use_gpu = use_gpu
@@ -120,12 +135,18 @@ def configure_once(
         afqmc_config.disable_tf32 = disable_tf32
     if quiet is not None:
         afqmc_config.quiet = quiet
+    afqmc_config.matmul_precision = (
+        matmul_precision
+        if matmul_precision is not None
+        else os.environ.get("JAX_DEFAULT_MATMUL_PRECISION", afqmc_config.matmul_precision)
+    )
 
     setup_jax(
         use_gpu=afqmc_config.use_gpu,
         single_precision=afqmc_config.single_precision,
         disable_tf32=afqmc_config.disable_tf32,
         quiet=afqmc_config.quiet,
+        matmul_precision=afqmc_config.matmul_precision,
     )
     _configured_once = True
 
@@ -143,7 +164,12 @@ def _detect_gpu() -> bool:
 
 
 def setup_jax(
-    *, use_gpu: bool | None, single_precision: bool, disable_tf32: bool, quiet: bool
+    *,
+    use_gpu: bool | None,
+    single_precision: bool,
+    disable_tf32: bool,
+    quiet: bool,
+    matmul_precision: str = "highest",
 ) -> None:
     """
     Configure JAX runtime.
@@ -177,10 +203,11 @@ def setup_jax(
 
     from jax import config as jax_config
 
-    # these two work even after import
+    # These settings work even after import, before computations are traced.
     jax_config.update("jax_threefry_partitionable", False)
     if not single_precision:
         jax_config.update("jax_enable_x64", True)
+    jax_config.update("jax_default_matmul_precision", matmul_precision)
 
     # platform_name only works before backend init
     if not jax_already_imported:
