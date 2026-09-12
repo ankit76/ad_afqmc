@@ -33,6 +33,7 @@ from ..sharding import cholesky_model_mesh
 from ..trial.cisd_modes import CisdModeTrial, mode_apply, mode_quadratic
 from ..trial.cisd_modes import overlap_r as cisd_mode_overlap_r
 from .cisd import CisdMeasCfg, _energy_gl_batched_realimag, _force_bias_chol_contract_high_realimag
+from .pair_sampling import local_common_and_head, local_pair_mesh, local_pair_tail
 
 _CISD_MODE_MEAS_CFG_ATTR = "_cisd_mode_meas_cfg"
 _CISD_SETUP_CHOL_BATCH_SIZE = 256
@@ -125,7 +126,11 @@ class CisdModePairSamplingCfg:
     ``walker_guide_policy='head_rms'`` additionally proposes accepted walkers
     using the noncancelling RMS magnitude of their exact head terms. The
     ``walker_guide_weight_mix`` fraction retains ordinary weight-proportional
-    sampling as a defensive component.
+    sampling as a defensive component. ``sample_local_walkers`` opts into
+    stratified sampling on each data shard with a replicated Hamiltonian.
+    The total pair budget is divided across shards; global weighting and the
+    guard center are retained. This option currently requires frozen sampling
+    settings (no automatic retuning). Single-device sampling is unchanged.
     """
 
     chol_head_size: int
@@ -138,6 +143,7 @@ class CisdModePairSamplingCfg:
     guard_head_deviations: bool = False
     walker_guide_policy: Literal["weight", "head_rms"] = "weight"
     walker_guide_weight_mix: float = 0.1
+    sample_local_walkers: bool = False
 
     def __post_init__(self) -> None:
         if self.chol_head_size < 0:
@@ -1045,18 +1051,29 @@ def pair_sampled_block_energy(
     if sampling is None:
         raise ValueError("pair_sampled_block_energy requires an energy sampling config.")
 
-    common = wk.vmap_chunked(
-        _cisd_mode_energy_common,
-        n_chunks=n_chunks,
-        in_axes=(0, None, None, None),
-    )(walkers, ham_data, meas_ctx, trial_data)
+    local_mesh = local_pair_mesh(walkers, sampling.sample_local_walkers)
+    if local_mesh is not None:
+        common, local_head, local_squared = local_common_and_head(
+            local_mesh, walkers, ham_data, meas_ctx, trial_data,
+            common_fn=_cisd_mode_energy_common,
+            moments_fn=_cisd_mode_chol_index_moments_for_walkers, n_chunks=n_chunks,
+        )
+    else:
+        common = wk.vmap_chunked(
+            _cisd_mode_energy_common,
+            n_chunks=n_chunks,
+            in_axes=(0, None, None, None),
+        )(walkers, ham_data, meas_ctx, trial_data)
 
     weights_real = jnp.real(weights).astype(jnp.float64)
     weight_sum = jnp.sum(weights_real, dtype=jnp.float64)
     weight_sum_safe = jnp.where(weight_sum == 0.0, 1.0, weight_sum)
     norm_weights = weights_real / weight_sum_safe
 
-    if sampling.chol_head_size > 0 and sampling.walker_guide_policy == "head_rms":
+    if local_mesh is not None:
+        head_energy = jnp.real(common.base + local_head)
+        head_squared_norm = local_squared
+    elif sampling.chol_head_size > 0 and sampling.walker_guide_policy == "head_rms":
         head_sum, head_squared_norm = _cisd_mode_chol_index_moments_for_walkers(
             common,
             meas_ctx.chol_head_indices,
@@ -1161,6 +1178,16 @@ def pair_sampled_block_energy(
         if diagnostics:
             return BlockEnergyEstimate(energy=block_head, diagnostics=diagnostics)
         return block_head
+
+    if local_mesh is not None:
+        tail_estimate, sampling_noise = local_pair_tail(
+            local_mesh, common, accepted_weights, walker_probabilities, rng_key,
+            ham_data, meas_ctx, trial_data, pair_fn=_cisd_mode_chol_pair_terms, n_chunks=n_chunks,
+        )
+        if sampling.track_half_sample_diagnostic:
+            diagnostics[d_energy_sampling_noise] = sampling_noise
+        energy = block_head + tail_estimate
+        return BlockEnergyEstimate(energy=energy, diagnostics=diagnostics) if diagnostics else energy
 
     key_walker, key_chol = jax.random.split(rng_key)
     sample_walker = jax.random.choice(
@@ -1679,6 +1706,8 @@ def retune_cisd_mode_pair_sampling(
 ) -> BlockEnergyRetuneResult:
     """Tune and install the requested production guide after equilibration."""
 
+    if meas_ctx.energy_sampling is not None and meas_ctx.energy_sampling.sample_local_walkers:
+        raise ValueError("Local walker sampling currently requires frozen settings (no retuning).")
     del equilibration_weights
     population_stats = []
     additional_equilibration_energies = []
@@ -1852,6 +1881,8 @@ def make_cisd_mode_meas_ops(
         )
     if n_mode_chunks <= 0:
         raise ValueError("n_mode_chunks must be positive.")
+    if energy_tuning is not None and energy_sampling is not None and energy_sampling.sample_local_walkers:
+        raise ValueError("Local walker sampling currently requires frozen settings (energy_tuning=None).")
     if energy_tuning is not None and energy_sampling is None:
         raise ValueError("energy_tuning requires an equilibration energy_sampling config.")
 

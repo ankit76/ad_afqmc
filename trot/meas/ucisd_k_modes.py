@@ -46,6 +46,7 @@ from .cisd_modes import (
     average_cisd_mode_population_statistics,
     select_cisd_mode_pair_sampling,
 )
+from .pair_sampling import local_common_and_head, local_pair_mesh, local_pair_tail
 
 _UCISD_K_MODE_MEAS_CFG_ATTR = "_ucisd_k_mode_meas_cfg"
 
@@ -63,6 +64,10 @@ class UcisdKModePairSamplingCfg:
     for every restricted walker. ``pair_sample_size`` weighted walker--tail
     pairs estimate the remainder while every retained combined-K mode remains
     deterministic within an evaluated pair.
+
+    ``sample_local_walkers`` opts into the same data-shard stratification as
+    CISD modes. It requires a replicated Hamiltonian and frozen sampling
+    settings, and preserves the existing path on a single device.
     """
 
     chol_head_size: int
@@ -75,6 +80,7 @@ class UcisdKModePairSamplingCfg:
     guard_head_deviations: bool = False
     walker_guide_policy: Literal["weight", "head_rms"] = "weight"
     walker_guide_weight_mix: float = 0.1
+    sample_local_walkers: bool = False
 
     def __post_init__(self) -> None:
         if self.chol_head_size < 0:
@@ -363,7 +369,8 @@ def _k_mode_quadratic_batched_realimag(
     n_larger_chunks = rank % chunks
     chunk_size = base_chunk_size + int(n_larger_chunks > 0)
     chunk_offsets = jnp.arange(chunk_size, dtype=jnp.int32)
-    zero = jnp.zeros((vectors.shape[0],), dtype=result_dtype)
+    # Keep the data-axis variation when called inside a local walker map.
+    zero = jnp.zeros_like(vectors, shape=(vectors.shape[0],), dtype=result_dtype)
 
     def scan_body(total, chunk_index):
         is_larger = chunk_index < n_larger_chunks
@@ -690,23 +697,34 @@ def pair_sampled_block_energy(
     if sampling is None:
         raise ValueError("pair_sampled_block_energy requires an energy sampling config.")
 
-    common = wk.vmap_chunked(
-        lambda walker: _ucisd_k_energy_common(
-            walker,
-            ham_data,
-            meas_ctx,
-            trial_data,
-            _k_mode_apply_realimag,
-        ),
-        n_chunks=n_chunks,
-    )(walkers)
+    local_mesh = local_pair_mesh(walkers, sampling.sample_local_walkers)
+    if local_mesh is not None:
+        common, local_head, local_squared = local_common_and_head(
+            local_mesh, walkers, ham_data, meas_ctx, trial_data,
+            common_fn=lambda w, h, c, t: _ucisd_k_energy_common(w, h, c, t, _k_mode_apply_realimag),
+            moments_fn=_ucisd_k_mode_chol_index_moments_for_walkers, n_chunks=n_chunks,
+        )
+    else:
+        common = wk.vmap_chunked(
+            lambda walker: _ucisd_k_energy_common(
+                walker,
+                ham_data,
+                meas_ctx,
+                trial_data,
+                _k_mode_apply_realimag,
+            ),
+            n_chunks=n_chunks,
+        )(walkers)
 
     weights_real = jnp.real(weights).astype(jnp.float64)
     weight_sum = jnp.sum(weights_real, dtype=jnp.float64)
     weight_sum_safe = jnp.where(weight_sum == 0.0, 1.0, weight_sum)
     norm_weights = weights_real / weight_sum_safe
 
-    if sampling.chol_head_size > 0 and sampling.walker_guide_policy == "head_rms":
+    if local_mesh is not None:
+        head_energy = jnp.real(common.base + local_head)
+        head_squared_norm = local_squared
+    elif sampling.chol_head_size > 0 and sampling.walker_guide_policy == "head_rms":
         head_sum, head_squared_norm = _ucisd_k_mode_chol_index_moments_for_walkers(
             common,
             meas_ctx.chol_head_indices,
@@ -811,6 +829,16 @@ def pair_sampled_block_energy(
         if diagnostics:
             return BlockEnergyEstimate(energy=block_head, diagnostics=diagnostics)
         return block_head
+
+    if local_mesh is not None:
+        tail_estimate, sampling_noise = local_pair_tail(
+            local_mesh, common, accepted_weights, walker_probabilities, rng_key,
+            ham_data, meas_ctx, trial_data, pair_fn=_ucisd_k_mode_chol_pair_terms, n_chunks=n_chunks,
+        )
+        if sampling.track_half_sample_diagnostic:
+            diagnostics[d_energy_sampling_noise] = sampling_noise
+        energy = block_head + tail_estimate
+        return BlockEnergyEstimate(energy=energy, diagnostics=diagnostics) if diagnostics else energy
 
     key_walker, key_chol = jax.random.split(rng_key)
     sample_walker = jax.random.choice(
@@ -1023,6 +1051,7 @@ def _as_ucisd_k_mode_sampling(
         guard_head_deviations=sampling.guard_head_deviations,
         walker_guide_policy=sampling.walker_guide_policy,
         walker_guide_weight_mix=sampling.walker_guide_weight_mix,
+        sample_local_walkers=sampling.sample_local_walkers,
     )
 
 
@@ -1079,6 +1108,8 @@ def retune_ucisd_k_mode_pair_sampling(
     target_error: float | None = None,
 ) -> BlockEnergyRetuneResult:
     """Tune and install the production UCISD pair estimator after equilibration."""
+    if meas_ctx.energy_sampling is not None and meas_ctx.energy_sampling.sample_local_walkers:
+        raise ValueError("Local walker sampling currently requires frozen settings (no retuning).")
     del equilibration_weights
     population_stats = []
     additional_equilibration_energies = []
@@ -1243,6 +1274,8 @@ def make_ucisd_k_mode_meas_ops(
         raise ValueError("UCISD K-mode measurements currently require memory_mode='high'.")
     if n_mode_chunks <= 0:
         raise ValueError("n_mode_chunks must be positive.")
+    if energy_tuning is not None and energy_sampling is not None and energy_sampling.sample_local_walkers:
+        raise ValueError("Local walker sampling currently requires frozen settings (energy_tuning=None).")
     if energy_tuning is not None and energy_sampling is None:
         raise ValueError("energy_tuning requires an equilibration energy_sampling config.")
     cfg = UcisdMeasCfg(

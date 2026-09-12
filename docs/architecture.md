@@ -391,6 +391,10 @@ If no matching cached representation exists, `setup()` can still construct it
 from the raw amplitudes, but doing so during the GPU job is usually less
 convenient.
 
+For the experimental low-level option that samples pairs within each GPU's
+walker population, see [local pair sampling](local_pair_sampling.md). It
+requires frozen sampling settings and a replicated Hamiltonian.
+
 ### 2. `setup()` function (mid-level)
 
 Defined in `setup.py`. Builds a `Job` from a PySCF object, `StagedInputs`, or
