@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax, tree_util
+from jax.sharding import PartitionSpec as P
 
 from .. import walkers as wk
 from ..core.ops import (
@@ -49,6 +50,7 @@ from .ptccsd_modes import (
     select_ptccsd_mode_pair_sampling as _select_ptccsd_mode_pair_sampling,
 )
 from .pt2ccsd import combine_first_order_energy, project_first_order_energy_terms
+from .pair_sampling import ModelPairSamplingData, local_cholesky_component_head, local_cholesky_tail
 from .ucisd_modes import _spin_sum_chol_contract as _ucisd_spin_sum_chol_contract
 
 PtuccsdModeMeasCfg = PtuccsdThoulessMeasCfg
@@ -122,6 +124,7 @@ class PtuccsdModeMeasCtx:
     chol_tail_prob: jax.Array
     n_mode_chunks: int
     component_sampling: PtuccsdModePairSamplingCfg | None
+    model_sampling: ModelPairSamplingData | None = None
 
     @property
     def h1_b(self) -> jax.Array:
@@ -150,6 +153,7 @@ class PtuccsdModeMeasCtx:
             self.chol_head_indices,
             self.chol_tail_indices,
             self.chol_tail_prob,
+            self.model_sampling,
         )
         return children, (self.n_mode_chunks, self.component_sampling)
 
@@ -162,6 +166,7 @@ class PtuccsdModeMeasCtx:
             chol_head_indices,
             chol_tail_indices,
             chol_tail_prob,
+            model_sampling,
         ) = children
         return cls(
             base=base,
@@ -171,6 +176,7 @@ class PtuccsdModeMeasCtx:
             chol_tail_prob=chol_tail_prob,
             n_mode_chunks=n_mode_chunks,
             component_sampling=component_sampling,
+            model_sampling=model_sampling,
         )
 
 
@@ -368,7 +374,9 @@ def _mode_quadratic_batched_realimag(
     n_larger_chunks = rank % chunks
     chunk_size = base_chunk_size + int(n_larger_chunks > 0)
     chunk_offsets = jnp.arange(chunk_size, dtype=jnp.int32)
-    zero = jnp.zeros((vectors_a.shape[0],), dtype=result_dtype)
+    # Local Cholesky tiles vary over the manual model axis; preserve that
+    # variation in the mode-scan carry even though its initial value is zero.
+    zero = jnp.zeros_like(vectors_a, shape=(vectors_a.shape[0],), dtype=result_dtype)
 
     def scan_body(total, chunk_index):
         is_larger = chunk_index < n_larger_chunks
@@ -1235,6 +1243,8 @@ def configure_ptuccsd_mode_pair_sampling(
 ) -> PtuccsdModeMeasCtx:
     """Attach an exact UCC head and strictly positive fixed tail proposal."""
 
+    if meas_ctx.model_sampling is not None:
+        raise ValueError("Local Cholesky sampling requires a frozen guide; rebuild the context to reconfigure.")
     scores = jnp.asarray(guide_scores, dtype=jnp.float64)
     n_chol = int(meas_ctx.rot_chol_a.shape[0])
     if scores.shape != (n_chol,):
@@ -1266,6 +1276,19 @@ def configure_ptuccsd_mode_pair_sampling(
         chol_tail_indices=tail_indices,
         chol_tail_prob=tail_prob,
         component_sampling=sampling,
+    )
+
+
+def _local_cholesky_context_specs(ctx):
+    specs = jax.tree.map(lambda _: P(), ctx)
+    return replace(specs, base=replace(specs.base, chol_b=P("model"),
+                                      rot_chol_a=P("model"), rot_chol_b=P("model")))
+
+
+def _local_cholesky_head_terms(common, indices, h, ctx, trial, *, n_chunks):
+    return _ptuccsd_mode_chol_terms_for_walkers(
+        common, h.chol[indices], ctx.rot_chol_a[indices], ctx.chol_b[indices],
+        ctx.rot_chol_b[indices], ctx, trial, n_chunks=n_chunks,
     )
 
 
@@ -1314,7 +1337,13 @@ def pair_sampled_ptuccsd_block_components(
     theta_reference /= preliminary_weight_safe
     theta_reference = jnp.where(preliminary_weight == 0.0, 0.0, theta_reference)
 
-    if sampling.walker_guide_policy == "head_rms":
+    if meas_ctx.model_sampling is not None:
+        head_sum, head_real_sq, head_imag_sq, head_real_imag = local_cholesky_component_head(
+            common, theta_reference, ham_data, meas_ctx, trial_data,
+            terms_fn=_local_cholesky_head_terms, project_fn=project_first_order_energy_terms,
+            context_specs_fn=_local_cholesky_context_specs, n_chunks=n_chunks,
+        )
+    elif sampling.walker_guide_policy == "head_rms":
         head_sum, head_real_sq, head_imag_sq, head_real_imag = (
             _ptuccsd_mode_chol_index_moments_for_walkers(
                 common,
@@ -1475,12 +1504,16 @@ def pair_sampled_ptuccsd_block_components(
         return tail_numerator, scale * (first_mean - second_mean)
 
     zero_tail = jnp.zeros((2,), dtype=numerator.dtype)
-    tail_numerator, half_difference = lax.cond(
-        abs_weight_sum > 0.0,
-        sample_tail,
-        lambda key: (zero_tail, zero_tail),
-        rng_key,
-    )
+    if meas_ctx.model_sampling is not None:
+        tail_numerator, half_difference = local_cholesky_tail(
+            common, estimator_weights, walker_prob, rng_key, ham_data, meas_ctx, trial_data,
+            pair_fn=_ptuccsd_mode_chol_pair_terms,
+            context_specs_fn=_local_cholesky_context_specs, n_chunks=n_chunks, components=True,
+        )
+    else:
+        tail_numerator, half_difference = lax.cond(
+            abs_weight_sum > 0.0, sample_tail, lambda key: (zero_tail, zero_tail), rng_key,
+        )
     numerator = numerator.at[1:].add(tail_numerator)
     if sampling.track_half_sample_diagnostic:
         estimator_weight_safe = jnp.where(
@@ -1826,6 +1859,8 @@ def retune_ptuccsd_mode_pair_sampling(
 ) -> BlockComponentRetuneResult:
     """Tune real projected UCC residual variance and install the production sampler."""
 
+    if estimator_ctx.model_sampling is not None:
+        raise ValueError("Local Cholesky sampling requires frozen settings (no automatic retuning).")
     del guide_meas_ctx
     population_stats = []
     for population_index in range(tuning_cfg.tuning_population_count):

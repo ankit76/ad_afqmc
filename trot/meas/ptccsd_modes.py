@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import tree_util
+from jax.sharding import PartitionSpec as P
 
 from .. import walkers as wk
 from ..core.ops import (
@@ -46,6 +47,7 @@ from .cisd_modes import (
 )
 from .ptccsd import o_pt_components
 from .pt2ccsd import combine_first_order_energy, project_first_order_energy_terms
+from .pair_sampling import ModelPairSamplingData, local_cholesky_component_head, local_cholesky_tail
 
 @dataclass(frozen=True)
 class PtccsdModeMeasCfg:
@@ -226,6 +228,7 @@ class PtccsdThoulessModeMeasCtx:
     n_mode_chunks: int
     cfg: PtccsdModeMeasCfg
     component_sampling: PtccsdModePairSamplingCfg | None
+    model_sampling: ModelPairSamplingData | None = None
 
     @property
     def memory_mode(self) -> Literal["low", "high"]:
@@ -238,6 +241,7 @@ class PtccsdThoulessModeMeasCtx:
             self.chol_head_indices,
             self.chol_tail_indices,
             self.chol_tail_prob,
+            self.model_sampling,
         )
         return children, (self.n_mode_chunks, self.cfg, self.component_sampling)
 
@@ -250,6 +254,7 @@ class PtccsdThoulessModeMeasCtx:
             chol_head_indices,
             chol_tail_indices,
             chol_tail_prob,
+            model_sampling,
         ) = children
         return cls(
             rot_chol=rot_chol,
@@ -260,6 +265,7 @@ class PtccsdThoulessModeMeasCtx:
             n_mode_chunks=n_mode_chunks,
             cfg=cfg,
             component_sampling=component_sampling,
+            model_sampling=model_sampling,
         )
 
 
@@ -1076,6 +1082,8 @@ def configure_ptccsd_mode_pair_sampling(
 ) -> PtccsdThoulessModeMeasCtx:
     """Attach an exact head and strictly positive fixed tail proposal."""
 
+    if meas_ctx.model_sampling is not None:
+        raise ValueError("Local Cholesky sampling requires a frozen guide; rebuild the context to reconfigure.")
     scores = jnp.asarray(guide_scores, dtype=jnp.float64)
     n_chol = int(meas_ctx.rot_chol.shape[0])
     if scores.shape != (n_chol,):
@@ -1107,6 +1115,16 @@ def configure_ptccsd_mode_pair_sampling(
         chol_tail_indices=tail_indices,
         chol_tail_prob=tail_prob,
         component_sampling=sampling,
+    )
+
+
+def _local_cholesky_context_specs(ctx):
+    return replace(jax.tree.map(lambda _: P(), ctx), rot_chol=P("model"))
+
+
+def _local_cholesky_head_terms(common, indices, h, ctx, trial, *, n_chunks):
+    return _ptccsd_thouless_mode_chol_terms_for_walkers(
+        common, h.chol[indices], ctx.rot_chol[indices], ctx, trial, n_chunks=n_chunks,
     )
 
 
@@ -1160,7 +1178,13 @@ def pair_sampled_ptccsd_block_components(
     theta_reference /= preliminary_weight_safe
     theta_reference = jnp.where(preliminary_weight == 0.0, 0.0, theta_reference)
 
-    if sampling.walker_guide_policy == "head_rms":
+    if meas_ctx.model_sampling is not None:
+        head_sum, head_real_sq, head_imag_sq, head_real_imag = local_cholesky_component_head(
+            common, theta_reference, ham_data, meas_ctx, trial_data,
+            terms_fn=_local_cholesky_head_terms, project_fn=project_first_order_energy_terms,
+            context_specs_fn=_local_cholesky_context_specs, n_chunks=n_chunks,
+        )
+    elif sampling.walker_guide_policy == "head_rms":
         head_sum, head_real_sq, head_imag_sq, head_real_imag = (
             _ptccsd_thouless_mode_chol_index_moments_for_walkers(
                 common,
@@ -1319,12 +1343,16 @@ def pair_sampled_ptccsd_block_components(
         return tail_numerator, scale * (first_mean - second_mean)
 
     zero_tail = jnp.zeros((2,), dtype=numerator.dtype)
-    tail_numerator, half_difference = jax.lax.cond(
-        abs_weight_sum > 0.0,
-        sample_tail,
-        lambda key: (zero_tail, zero_tail),
-        rng_key,
-    )
+    if meas_ctx.model_sampling is not None:
+        tail_numerator, half_difference = local_cholesky_tail(
+            common, estimator_weights, walker_prob, rng_key, ham_data, meas_ctx, trial_data,
+            pair_fn=_ptccsd_thouless_mode_chol_pair_terms,
+            context_specs_fn=_local_cholesky_context_specs, n_chunks=n_chunks, components=True,
+        )
+    else:
+        tail_numerator, half_difference = jax.lax.cond(
+            abs_weight_sum > 0.0, sample_tail, lambda key: (zero_tail, zero_tail), rng_key,
+        )
     numerator = numerator.at[1:].add(tail_numerator)
     if sampling.track_half_sample_diagnostic:
         estimator_weight_safe = jnp.where(
@@ -1661,6 +1689,8 @@ def retune_ptccsd_mode_pair_sampling(
 ) -> BlockComponentRetuneResult:
     """Tune the real projected residual variance and install a production sampler."""
 
+    if estimator_ctx.model_sampling is not None:
+        raise ValueError("Local Cholesky sampling requires frozen settings (no automatic retuning).")
     del guide_meas_ctx
     population_stats = []
     for population_index in range(tuning_cfg.tuning_population_count):

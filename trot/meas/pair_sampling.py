@@ -38,8 +38,9 @@ def with_local_cholesky_sampling(meas_ctx, layout: CholeskyLayout, mesh: Mesh):
     if ("model" not in mesh.axis_names or mesh.shape["model"] != layout.n_model
             or mesh.shape.get("data", 1) != 1):
         raise ValueError("Local Cholesky sampling requires matching model shards and replicated walkers.")
-    sampling = meas_ctx.energy_sampling
-    if sampling is None or sampling.sample_local_walkers:
+    sampling = (meas_ctx.component_sampling if hasattr(meas_ctx, "component_sampling")
+                else meas_ctx.energy_sampling)
+    if sampling is None or getattr(sampling, "sample_local_walkers", False):
         raise ValueError("Use pair sampling with sample_local_walkers=False for a Cholesky layout.")
     if sampling.chol_head_size != layout.head_indices.size:
         raise ValueError("Sampler head size does not match the frozen Cholesky layout.")
@@ -107,24 +108,85 @@ def local_cholesky_head(common, ham_data, meas_ctx, trial_data, *, terms_fn, con
     )(common, (ham_data.h0, ham_data.h1, ham_data.chol), meas_ctx, trial_data)
 
 
+def local_cholesky_component_head(common, theta_reference, ham_data, meas_ctx, trial_data,
+                                  *, terms_fn, project_fn, context_specs_fn, n_chunks):
+    """Reduce exact PT head components and their complex projection moments.
+
+    Project each Cholesky term using the global theta reference before summing
+    squared real/imaginary parts and the cross moment. These determine the
+    common walker proposal even when estimator weights have complex phases.
+    """
+    data = meas_ctx.model_sampling
+    if data is None:
+        raise ValueError("Missing local Cholesky sampler metadata.")
+    shape = (common.theta.shape[0], 2)
+    zero = jnp.zeros(shape, dtype=jnp.complex128)
+    if data.head_indices.shape[1] == 0:
+        return zero, zero[:, 0].real, zero[:, 0].real, zero[:, 0].real
+    sampling = meas_ctx.component_sampling
+    width = data.head_indices.shape[1]
+    limit = sampling.head_chol_batch_size
+    batch = min(limit, width) if limit > 0 else width
+
+    def local(common, theta, arrays, ctx, trial):
+        h = HamChol(*arrays, basis=ham_data.basis)
+        indices, valid = ctx.model_sampling.head_indices[0], ctx.model_sampling.head_valid[0]
+        pad = (-width) % batch
+        indices = jnp.pad(indices, (0, pad)).reshape(-1, batch)
+        valid = jnp.pad(valid, (0, pad)).reshape(-1, batch)
+        # The scan carry must retain the manual model-axis variation.
+        total = jnp.zeros_like(indices, shape=shape, dtype=jnp.complex128)
+        moment = total[:, 0].real
+
+        def step(carry, xs):
+            idx, keep = xs
+            terms = terms_fn(common, idx, h, ctx, trial, n_chunks=n_chunks)
+            terms = jnp.where(keep[None, :, None], terms, 0.0)
+            total, rr, ii, ri = carry
+            total = total + jnp.sum(terms, axis=1, dtype=jnp.complex128)
+            if sampling.walker_guide_policy == "head_rms":
+                projected = project_fn(theta, terms)
+                real, imag = projected.real.astype(jnp.float64), projected.imag.astype(jnp.float64)
+                rr = rr + jnp.sum(real**2, axis=1)
+                ii = ii + jnp.sum(imag**2, axis=1)
+                ri = ri + jnp.sum(real * imag, axis=1)
+            return (total, rr, ii, ri), None
+
+        sums, _ = lax.scan(step, (total, moment, moment, moment), (indices, valid))
+        return jax.tree.map(lambda a: lax.psum(a, "model"), sums)
+
+    return jax.shard_map(
+        local, mesh=data.mesh, axis_names={"model"},
+        in_specs=(P(), P(), (P(), P(), P("model")), _model_context_specs(meas_ctx, context_specs_fn), P()),
+        out_specs=(P(), P(), P(), P()),
+    )(common, theta_reference, (ham_data.h0, ham_data.h1, ham_data.chol), meas_ctx, trial_data)
+
+
 def local_cholesky_tail(common, pi, q, rng_key, ham_data, meas_ctx, trial_data,
-                        *, pair_fn, context_specs_fn, n_chunks):
+                        *, pair_fn, context_specs_fn, n_chunks, components=False):
     """Unbiased local-tail strata with replicated walkers and a fixed total budget.
 
     Draw w~q globally and gamma~p/P_d locally. Average pi[w]*Re(term)/(q[w]*p_d)
     within each device, then sum device estimates (not their average).
     pi retains its original normalized population weight and is zero for guards.
+
+    With components=True, pi contains unnormalized complex PT weights and
+    terms has two complex components. Sample them jointly, retain their phases,
+    and return component sums and half-sample differences. The caller keeps
+    the exact denominator and projects the diagnostic globally.
     """
     data = meas_ctx.model_sampling
     if data is None:
         raise ValueError("Missing local Cholesky sampler metadata.")
-    sampling = meas_ctx.energy_sampling
+    sampling = meas_ctx.component_sampling if components else meas_ctx.energy_sampling
     n_model = data.mesh.shape["model"]
     minimum = 2 if sampling.track_half_sample_diagnostic else 1
     if sampling.pair_sample_size < minimum * n_model:
         raise ValueError(f"Local Cholesky sampling requires at least {minimum} pairs per model shard.")
     base_count, rem = divmod(sampling.pair_sample_size, n_model)
     capacity = base_count + bool(rem)
+    dtype = jnp.complex128 if components else jnp.float64
+    result_shape = (2, 2) if components else (2,)
 
     def local(common, pi, q, key, arrays, ctx, trial):
         d = lax.axis_index("model")
@@ -141,20 +203,25 @@ def local_cholesky_tail(common, pi, q, rng_key, ham_data, meas_ctx, trial_data,
             walker_batch = math.ceil(pi.size / n_chunks)
             terms = pair_fn(common, iw, ig, h, ctx, trial,
                             n_chunks=math.ceil(capacity / walker_batch))
-            values = pi[iw] * terms.real / (q[iw] * pd[ig])
+            values = (pi[iw, None] * terms / (q[iw, None] * pd[ig, None]) if components
+                      else pi[iw] * terms.real / (q[iw] * pd[ig]))
             indices = jnp.arange(capacity)
+            if components:
+                indices = indices[:, None]
             valid = indices < count
-            estimate = jnp.sum(jnp.where(valid, values, 0.0), dtype=jnp.float64) / count
-            noise = jnp.zeros_like(mass)
+            estimate = jnp.sum(jnp.where(valid, values, 0.0), axis=0, dtype=dtype) / count
+            noise = jnp.zeros_like(estimate)
             if sampling.track_half_sample_diagnostic:
                 first, second = count // 2, count - count // 2
-                a = jnp.sum(jnp.where(indices < first, values, 0.0), dtype=jnp.float64) / first
-                b = jnp.sum(jnp.where(valid & (indices >= first), values, 0.0), dtype=jnp.float64) / second
+                a = jnp.sum(jnp.where(indices < first, values, 0.0), axis=0, dtype=dtype) / first
+                b = jnp.sum(jnp.where(valid & (indices >= first), values, 0.0), axis=0, dtype=dtype) / second
                 noise = jnp.sqrt(first.astype(jnp.float64) * second) / count * (a - b)
             return jnp.stack((estimate, noise))
 
-        result = lax.cond((mass > 0) & (jnp.sum(pi) > 0), evaluate,
-            lambda _: jnp.zeros_like(p, shape=(2,), dtype=jnp.float64), operand=None)
+        # Complex weights may cancel exactly while the numerator is nonzero.
+        active_weight = jnp.sum(jnp.abs(pi)) if components else jnp.sum(pi)
+        result = lax.cond((mass > 0) & (active_weight > 0), evaluate,
+            lambda _: jnp.zeros_like(p, shape=result_shape, dtype=dtype), operand=None)
         return lax.psum(result, "model")
 
     result = jax.shard_map(
