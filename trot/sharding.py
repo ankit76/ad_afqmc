@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import TypeVar, cast
 
 from numpy.typing import DTypeLike, NDArray
@@ -16,6 +17,118 @@ from .prop.types import PropState
 
 THam = TypeVar("THam")
 ArrayLike = jax.Array | NDArray[np.generic]
+
+
+@dataclass(frozen=True)
+class CholeskyLayout:
+    """Host-side layout in original Cholesky identities; -1 denotes padding.
+
+    Apply ``permutation`` to the Hamiltonian before constructing derived
+    contexts. Head/tail indices below address the resulting global array.
+    The local arrays describe equal-sized contiguous model shards.
+    """
+
+    permutation: NDArray[np.int64]
+    inverse_permutation: NDArray[np.int64]
+    head_indices: NDArray[np.int32]
+    tail_indices: NDArray[np.int32]
+    tail_prob: NDArray[np.float64]
+    local_head_indices: NDArray[np.int32]
+    local_head_valid: NDArray[np.bool_]
+    local_tail_prob: NDArray[np.float64]
+
+    @property
+    def n_model(self) -> int:
+        return int(self.local_tail_prob.shape[0])
+
+    @property
+    def n_chol(self) -> int:
+        return int(self.inverse_permutation.size)
+
+
+def plan_cholesky_layout(
+    n_chol: int,
+    n_model: int,
+    head_indices: ArrayLike,
+    tail_indices: ArrayLike,
+    tail_prob: ArrayLike,
+) -> CholeskyLayout:
+    """Balance exact-head counts and tail probability mass on the host.
+
+    Head membership and the proposal are supplied by the caller. Greedily
+    assign descending tail probabilities to the least-loaded shard with space.
+    Every real vector has one owner; padding receives no sampling probability.
+    This deterministic planner does not select a guide or change the head.
+    """
+    if not isinstance(n_chol, (int, np.integer)) or n_chol <= 0:
+        raise ValueError("n_chol must be a positive integer.")
+    if not isinstance(n_model, (int, np.integer)) or n_model <= 0:
+        raise ValueError("n_model must be a positive integer.")
+    head, tail = np.asarray(head_indices), np.asarray(tail_indices)
+    if any(a.ndim != 1 or (a.size and a.dtype.kind not in "iu") for a in (head, tail)):
+        raise ValueError("Head and tail indices must be one-dimensional integer arrays.")
+    head, tail = head.astype(np.int64), tail.astype(np.int64)
+    if not np.array_equal(np.sort(np.concatenate((head, tail))), np.arange(n_chol)):
+        raise ValueError("Head and tail must partition the original Cholesky indices exactly.")
+    prob = np.asarray(tail_prob, dtype=np.float64)
+    if prob.shape != tail.shape or not np.isfinite(prob).all() or np.any(prob <= 0):
+        raise ValueError("Every tail vector needs a finite, positive probability.")
+    if prob.size and not np.isclose(prob.sum(), 1.0, rtol=1e-10, atol=1e-12):
+        raise ValueError("Tail probabilities must sum to one.")
+    prob = prob.copy() / prob.sum() if prob.size else prob.copy()
+    width = (n_chol + n_model - 1) // n_model
+    groups = [list(head[d::n_model]) for d in range(n_model)]
+    head_counts = np.array([len(g) for g in groups])
+    remaining = width - head_counts
+    mass = np.zeros(n_model)
+    for i in np.argsort(-prob, kind="stable"):
+        d = int(np.argmin(np.where(remaining > 0, mass, np.inf)))
+        groups[d].append(int(tail[i]))
+        remaining[d] -= 1
+        mass[d] += prob[i]
+    permutation = np.full((n_model, width), -1, dtype=np.int64)
+    for d, group in enumerate(groups):
+        permutation[d, :len(group)] = group
+    permutation = permutation.ravel()
+    inverse = np.empty(n_chol, dtype=np.int64)
+    valid = permutation >= 0
+    inverse[permutation[valid]] = np.flatnonzero(valid)
+    head_new, tail_new = inverse[head].astype(np.int32), inverse[tail].astype(np.int32)
+    hwidth = int(head_counts.max(initial=0))
+    local_head = np.broadcast_to(np.arange(hwidth, dtype=np.int32), (n_model, hwidth)).copy()
+    head_valid = local_head < head_counts[:, None]
+    local_head[~head_valid] = 0
+    local_prob = np.zeros(n_model * width, dtype=np.float64)
+    local_prob[tail_new] = prob
+    return CholeskyLayout(permutation, inverse, head_new, tail_new, prob,
+                          local_head, head_valid, local_prob.reshape(n_model, width))
+
+
+def shard_cholesky_layout(
+    x: NDArray[np.generic], mesh: Mesh, layout: CholeskyLayout, *, dtype: DTypeLike | None = None,
+) -> jax.Array:
+    """Place a host array using the layout without a full permuted host copy.
+
+    Use the same layout for all original-order Cholesky arrays, or build
+    derived contexts from the reordered Hamiltonian. Does not mutate ``x``.
+    """
+    if not isinstance(x, np.ndarray) or x.ndim == 0 or x.shape[0] != layout.n_chol:
+        raise ValueError("Expected an original-order NumPy array with layout.n_chol rows.")
+    if not has_model_axis(mesh) or _mesh_axis_size(mesh, "model") != layout.n_model:
+        raise ValueError("Mesh model size does not match the Cholesky layout.")
+    target_dtype = x.dtype if dtype is None else np.dtype(dtype)
+
+    def block(index):
+        indices = layout.permutation[index[0]]
+        out = np.zeros((indices.size, *x.shape[1:]), dtype=target_dtype)
+        valid = indices >= 0
+        out[valid] = x[indices[valid]]
+        return out
+
+    return jax.make_array_from_callback(
+        (layout.permutation.size, *x.shape[1:]), NamedSharding(mesh, P("model")),
+        block, dtype=target_dtype,
+    )
 
 
 def make_data_mesh() -> Mesh:

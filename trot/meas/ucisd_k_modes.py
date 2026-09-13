@@ -9,6 +9,7 @@ from typing import Literal, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.sharding import PartitionSpec as P
 from jax import lax, tree_util
 
 from .. import walkers as wk
@@ -46,7 +47,10 @@ from .cisd_modes import (
     average_cisd_mode_population_statistics,
     select_cisd_mode_pair_sampling,
 )
-from .pair_sampling import local_common_and_head, local_pair_mesh, local_pair_tail
+from .pair_sampling import (
+    ModelPairSamplingData, local_cholesky_head, local_cholesky_tail,
+    local_common_and_head, local_pair_mesh, local_pair_tail,
+)
 
 _UCISD_K_MODE_MEAS_CFG_ATTR = "_ucisd_k_mode_meas_cfg"
 
@@ -139,6 +143,7 @@ class UcisdKModeMeasCtx:
     chol_tail_prob: jax.Array
     n_mode_chunks: int
     energy_sampling: UcisdKModePairSamplingCfg | None
+    model_sampling: ModelPairSamplingData | None = None
 
     def tree_flatten(self):
         children = (
@@ -147,6 +152,7 @@ class UcisdKModeMeasCtx:
             self.chol_head_indices,
             self.chol_tail_indices,
             self.chol_tail_prob,
+            self.model_sampling,
         )
         return children, (self.n_mode_chunks, self.energy_sampling)
 
@@ -159,6 +165,7 @@ class UcisdKModeMeasCtx:
             chol_head_indices,
             chol_tail_indices,
             chol_tail_prob,
+            model_sampling,
         ) = children
         return cls(
             base=base,
@@ -166,6 +173,7 @@ class UcisdKModeMeasCtx:
             chol_head_indices=chol_head_indices,
             chol_tail_indices=chol_tail_indices,
             chol_tail_prob=chol_tail_prob,
+            model_sampling=model_sampling,
             n_mode_chunks=n_mode_chunks,
             energy_sampling=energy_sampling,
         )
@@ -646,6 +654,8 @@ def configure_ucisd_k_mode_pair_sampling(
     guide_scores: jax.Array,
 ) -> UcisdKModeMeasCtx:
     """Attach a prefix or guide-ranked head and normalized tail guide."""
+    if meas_ctx.model_sampling is not None:
+        raise ValueError("Rebuild the Cholesky layout and contexts before changing the frozen guide.")
     scores = jnp.asarray(guide_scores, dtype=jnp.float64)
     n_chol = int(meas_ctx.base.chol_b.shape[0])
     if scores.shape != (n_chol,):
@@ -679,6 +689,21 @@ def configure_ucisd_k_mode_pair_sampling(
     )
 
 
+def _local_cholesky_context_specs(ctx):
+    specs = jax.tree.map(lambda _: P(), ctx)
+    base = replace(specs.base, **{name: P("model") for name in (
+        "chol_b", "rot_chol_a", "rot_chol_b", "rot_chol_flat_a", "rot_chol_flat_b",
+        "lci1_a", "lci1_b",
+    )})
+    return replace(specs, base=base)
+
+
+def _local_cholesky_head_terms(common, indices, h, ctx, trial, *, n_chunks):
+    return _ucisd_k_mode_chol_terms_for_walkers(
+        common, h, ctx, trial, chol_indices=indices, n_chunks=n_chunks,
+    )
+
+
 def pair_sampled_block_energy(
     walkers: jax.Array,
     weights: jax.Array,
@@ -697,6 +722,8 @@ def pair_sampled_block_energy(
     if sampling is None:
         raise ValueError("pair_sampled_block_energy requires an energy sampling config.")
 
+    if meas_ctx.model_sampling is not None and sampling.sample_local_walkers:
+        raise ValueError("Local Cholesky sampling requires replicated walkers.")
     local_mesh = local_pair_mesh(walkers, sampling.sample_local_walkers)
     if local_mesh is not None:
         common, local_head, local_squared = local_common_and_head(
@@ -721,7 +748,13 @@ def pair_sampled_block_energy(
     weight_sum_safe = jnp.where(weight_sum == 0.0, 1.0, weight_sum)
     norm_weights = weights_real / weight_sum_safe
 
-    if local_mesh is not None:
+    if meas_ctx.model_sampling is not None:
+        head_sum, head_squared_norm = local_cholesky_head(
+            common, ham_data, meas_ctx, trial_data, terms_fn=_local_cholesky_head_terms,
+            context_specs_fn=_local_cholesky_context_specs, n_chunks=n_chunks,
+        )
+        head_energy = jnp.real(common.base + head_sum)
+    elif local_mesh is not None:
         head_energy = jnp.real(common.base + local_head)
         head_squared_norm = local_squared
     elif sampling.chol_head_size > 0 and sampling.walker_guide_policy == "head_rms":
@@ -830,11 +863,18 @@ def pair_sampled_block_energy(
             return BlockEnergyEstimate(energy=block_head, diagnostics=diagnostics)
         return block_head
 
-    if local_mesh is not None:
+    if meas_ctx.model_sampling is not None:
+        tail_estimate, sampling_noise = local_cholesky_tail(
+            common, accepted_weights, walker_probabilities, rng_key,
+            ham_data, meas_ctx, trial_data, pair_fn=_ucisd_k_mode_chol_pair_terms,
+            context_specs_fn=_local_cholesky_context_specs, n_chunks=n_chunks,
+        )
+    elif local_mesh is not None:
         tail_estimate, sampling_noise = local_pair_tail(
             local_mesh, common, accepted_weights, walker_probabilities, rng_key,
             ham_data, meas_ctx, trial_data, pair_fn=_ucisd_k_mode_chol_pair_terms, n_chunks=n_chunks,
         )
+    if meas_ctx.model_sampling is not None or local_mesh is not None:
         if sampling.track_half_sample_diagnostic:
             diagnostics[d_energy_sampling_noise] = sampling_noise
         energy = block_head + tail_estimate
@@ -1108,6 +1148,8 @@ def retune_ucisd_k_mode_pair_sampling(
     target_error: float | None = None,
 ) -> BlockEnergyRetuneResult:
     """Tune and install the production UCISD pair estimator after equilibration."""
+    if meas_ctx.model_sampling is not None:
+        raise ValueError("Local Cholesky sampling requires frozen settings (no automatic retuning).")
     if meas_ctx.energy_sampling is not None and meas_ctx.energy_sampling.sample_local_walkers:
         raise ValueError("Local walker sampling currently requires frozen settings (no retuning).")
     del equilibration_weights
